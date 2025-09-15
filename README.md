@@ -18,7 +18,7 @@ An experimental append-only database with time-travel queries.
 
 ```bash
 # Clone and build
-git clone https://github.com/driftdb/driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
 cd driftdb
 make build
 ```
