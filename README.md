@@ -16,6 +16,14 @@ An experimental append-only database with time-travel queries.
 
 ### Build from source
 
+If you don't have rust on your system, you can run the following commands in a docker container using the official rust image: 
+
+```bash
+docker run -it rust:1.89 /bin/bash
+```
+
+Building the app:
+
 ```bash
 # Clone and build
 git clone https://github.com/DavidLiedle/DriftDB.git
