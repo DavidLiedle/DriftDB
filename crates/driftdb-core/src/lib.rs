@@ -1,20 +1,20 @@
+pub mod backup;
+pub mod connection;
+pub mod encryption;
+pub mod engine;
 pub mod errors;
 pub mod events;
-pub mod schema;
-pub mod storage;
 pub mod index;
-pub mod snapshot;
-pub mod query;
-pub mod engine;
-pub mod wal;
-pub mod observability;
-pub mod backup;
-pub mod transaction;
-pub mod connection;
 pub mod migration;
+pub mod observability;
 pub mod optimizer;
-pub mod encryption;
+pub mod query;
 pub mod replication;
+pub mod schema;
+pub mod snapshot;
+pub mod storage;
+pub mod transaction;
+pub mod wal;
 
 #[cfg(test)]
 mod tests;

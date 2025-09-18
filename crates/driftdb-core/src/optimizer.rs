@@ -7,17 +7,15 @@
 //! - Predicate pushdown
 //! - Query plan caching
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 use crate::errors::Result;
-use crate::query::{Query, WhereCondition, AsOf};
-use crate::schema::Schema;
-use crate::index::IndexManager;
+use crate::query::{AsOf, Query, WhereCondition};
 
 /// Query execution plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,20 +67,11 @@ pub enum PlanStep {
         cost: f64,
     },
     /// Limit results
-    Limit {
-        count: usize,
-        cost: f64,
-    },
+    Limit { count: usize, cost: f64 },
     /// Time travel to specific version
-    TimeTravel {
-        as_of: AsOf,
-        cost: f64,
-    },
+    TimeTravel { as_of: AsOf, cost: f64 },
     /// Load snapshot
-    SnapshotLoad {
-        sequence: u64,
-        cost: f64,
-    },
+    SnapshotLoad { sequence: u64, cost: f64 },
     /// Replay events from WAL
     EventReplay {
         from_sequence: u64,
@@ -160,9 +149,12 @@ impl QueryOptimizer {
         }
 
         let plan = match query {
-            Query::Select { table, conditions, as_of, limit } => {
-                self.optimize_select(table, conditions, as_of.as_ref(), limit.as_ref())
-            }
+            Query::Select {
+                table,
+                conditions,
+                as_of,
+                limit,
+            } => self.optimize_select(table, conditions, as_of.as_ref(), limit.as_ref()),
             _ => {
                 // Non-select queries don't need optimization
                 Ok(QueryPlan {
@@ -214,7 +206,10 @@ impl QueryOptimizer {
         let best_access = self.choose_best_plan(&access_plans);
 
         if let Some(plan) = best_access {
-            uses_index = matches!(plan, PlanStep::IndexScan { .. } | PlanStep::IndexLookup { .. });
+            uses_index = matches!(
+                plan,
+                PlanStep::IndexScan { .. } | PlanStep::IndexLookup { .. }
+            );
             estimated_rows = self.rows_after_step(&plan, estimated_rows);
             estimated_cost += self.cost_of_step(&plan);
             steps.push(plan);
@@ -278,27 +273,15 @@ impl QueryOptimizer {
                     if condition.column == *index_name {
                         let selectivity = self.estimate_selectivity(table, condition);
                         let estimated_rows = (table_stats.row_count as f64 * selectivity) as usize;
+                        let depth_penalty = (index_stats.depth.max(1) as f64).ln().max(1.0);
 
-                        if condition.operator == "=" {
-                            // Point lookup
-                            plans.push(PlanStep::IndexLookup {
-                                table: table.to_string(),
-                                index: index_name.clone(),
-                                key: condition.value.to_string(),
-                                estimated_rows: 1,
-                                cost: self.cost_model.index_lookup_cost(),
-                            });
-                        } else {
-                            // Range scan
-                            plans.push(PlanStep::IndexScan {
-                                table: table.to_string(),
-                                index: index_name.clone(),
-                                start_key: Some(condition.value.to_string()),
-                                end_key: None,
-                                estimated_rows,
-                                cost: self.cost_model.index_scan_cost(estimated_rows),
-                            });
-                        }
+                        plans.push(PlanStep::IndexLookup {
+                            table: table.to_string(),
+                            index: index_name.clone(),
+                            key: condition.value.to_string(),
+                            estimated_rows: estimated_rows.max(1),
+                            cost: self.cost_model.index_lookup_cost() * depth_penalty,
+                        });
                     }
                 }
             }
@@ -317,7 +300,8 @@ impl QueryOptimizer {
 
     /// Choose the best plan based on cost
     fn choose_best_plan(&self, plans: &[PlanStep]) -> Option<PlanStep> {
-        plans.iter()
+        plans
+            .iter()
             .min_by(|a, b| {
                 let cost_a = self.cost_of_step(a);
                 let cost_b = self.cost_of_step(b);
@@ -344,7 +328,9 @@ impl QueryOptimizer {
                             from_sequence: snap_seq,
                             to_sequence: *seq,
                             estimated_events: (*seq - snap_seq) as usize,
-                            cost: self.cost_model.event_replay_cost((*seq - snap_seq) as usize),
+                            cost: self
+                                .cost_model
+                                .event_replay_cost((*seq - snap_seq) as usize),
                         })
                     } else {
                         None
@@ -364,6 +350,7 @@ impl QueryOptimizer {
                 // Convert timestamp to sequence (simplified)
                 (None, None)
             }
+            AsOf::Now => (None, None),
         }
     }
 
@@ -373,21 +360,10 @@ impl QueryOptimizer {
 
         if let Some(table_stats) = stats.get(table) {
             if let Some(col_stats) = table_stats.column_stats.get(&condition.column) {
-                // Use statistics to estimate selectivity
-                match condition.operator.as_str() {
-                    "=" => {
-                        // Point query selectivity
-                        if col_stats.distinct_values > 0 {
-                            1.0 / col_stats.distinct_values as f64
-                        } else {
-                            0.1 // Default
-                        }
-                    }
-                    "<" | ">" | "<=" | ">=" => {
-                        // Range query selectivity (simplified)
-                        0.3 // Default 30% selectivity for range
-                    }
-                    _ => 0.5 // Default 50% for unknown operators
+                if col_stats.distinct_values > 0 {
+                    1.0 / col_stats.distinct_values as f64
+                } else {
+                    0.1
                 }
             } else {
                 0.3 // No statistics, use default
@@ -399,13 +375,14 @@ impl QueryOptimizer {
 
     /// Check if condition is covered by index
     fn is_condition_covered_by_index(&self, condition: &WhereCondition, uses_index: bool) -> bool {
-        // Simplified: assume index covers equality conditions on indexed column
-        uses_index && condition.operator == "="
+        // Simplified: assume index aids equality predicates on non-null values
+        uses_index && !matches!(condition.value, serde_json::Value::Null)
     }
 
     /// Estimate rows in table
     fn estimate_table_rows(&self, table: &str) -> usize {
-        self.statistics.read()
+        self.statistics
+            .read()
             .get(table)
             .map(|s| s.row_count)
             .unwrap_or(10000) // Default estimate
@@ -560,7 +537,6 @@ mod tests {
             table: "users".to_string(),
             conditions: vec![WhereCondition {
                 column: "status".to_string(),
-                operator: "=".to_string(),
                 value: serde_json::json!("active"),
             }],
             as_of: None,

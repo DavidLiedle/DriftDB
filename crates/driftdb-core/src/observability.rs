@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn, instrument, trace};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 /// Global metrics collector
 pub struct Metrics {
@@ -127,7 +127,8 @@ impl Metrics {
         } else {
             self.write_bytes.fetch_add(bytes, Ordering::Relaxed);
         }
-        self.write_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.write_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     pub fn record_read(&self, bytes: u64, duration: Duration, success: bool) {
@@ -137,7 +138,8 @@ impl Metrics {
         } else {
             self.read_bytes.fetch_add(bytes, Ordering::Relaxed);
         }
-        self.read_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.read_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 }
 
@@ -234,18 +236,23 @@ impl<'a> InstrumentedOperation<'a> {
     pub fn complete(self, success: bool) {
         let duration = self.timer.elapsed();
         if success {
+            self.metrics.queries_total.fetch_add(1, Ordering::Relaxed);
             debug!(
                 operation = self.name,
                 duration_us = duration.as_micros(),
                 "Operation completed successfully"
             );
         } else {
+            self.metrics.queries_failed.fetch_add(1, Ordering::Relaxed);
             error!(
                 operation = self.name,
                 duration_us = duration.as_micros(),
                 "Operation failed"
             );
         }
+        self.metrics
+            .query_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 }
 
@@ -276,10 +283,7 @@ pub struct HealthCheck {
 
 /// Perform health checks
 #[instrument(skip(metrics))]
-pub fn perform_health_check(
-    metrics: Arc<Metrics>,
-    data_dir: &std::path::Path,
-) -> HealthStatus {
+pub fn perform_health_check(metrics: Arc<Metrics>, data_dir: &std::path::Path) -> HealthStatus {
     let start_time = Instant::now();
     let mut checks = Vec::new();
 
@@ -288,7 +292,11 @@ pub fn perform_health_check(
     let disk_status = check_disk_space(data_dir);
     checks.push(HealthCheck {
         name: "disk_space".to_string(),
-        status: if disk_status.0 { HealthState::Healthy } else { HealthState::Unhealthy },
+        status: if disk_status.0 {
+            HealthState::Healthy
+        } else {
+            HealthState::Unhealthy
+        },
         message: disk_status.1,
         latency_ms: disk_check_start.elapsed().as_millis() as u64,
     });
@@ -298,7 +306,11 @@ pub fn perform_health_check(
     let memory_status = check_memory_usage();
     checks.push(HealthCheck {
         name: "memory".to_string(),
-        status: if memory_status.0 { HealthState::Healthy } else { HealthState::Degraded },
+        status: if memory_status.0 {
+            HealthState::Healthy
+        } else {
+            HealthState::Degraded
+        },
         message: memory_status.1,
         latency_ms: mem_check_start.elapsed().as_millis() as u64,
     });
@@ -308,7 +320,11 @@ pub fn perform_health_check(
     let wal_status = check_wal_health(data_dir);
     checks.push(HealthCheck {
         name: "wal".to_string(),
-        status: if wal_status.0 { HealthState::Healthy } else { HealthState::Unhealthy },
+        status: if wal_status.0 {
+            HealthState::Healthy
+        } else {
+            HealthState::Unhealthy
+        },
         message: wal_status.1,
         latency_ms: wal_check_start.elapsed().as_millis() as u64,
     });
@@ -336,9 +352,15 @@ fn check_disk_space(data_dir: &std::path::Path) -> (bool, Option<String>) {
         Ok(bytes) => {
             let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
             if gb < 1.0 {
-                (false, Some(format!("Low disk space: {:.2} GB available", gb)))
+                (
+                    false,
+                    Some(format!("Low disk space: {:.2} GB available", gb)),
+                )
             } else if gb < 5.0 {
-                (true, Some(format!("Disk space warning: {:.2} GB available", gb)))
+                (
+                    true,
+                    Some(format!("Disk space warning: {:.2} GB available", gb)),
+                )
             } else {
                 (true, None)
             }
@@ -374,19 +396,21 @@ fn check_wal_health(data_dir: &std::path::Path) -> (bool, Option<String>) {
 
 /// Initialize tracing with appropriate filters
 pub fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,driftdb=debug"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,driftdb=debug"));
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::layer()
-            .with_target(true)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true))
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_file(true)
+                .with_line_number(true),
+        )
         .init();
 
     info!("DriftDB tracing initialized");

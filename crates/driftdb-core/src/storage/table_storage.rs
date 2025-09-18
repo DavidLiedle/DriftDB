@@ -1,12 +1,13 @@
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::errors::{DriftError, Result};
-use crate::events::Event;
+use crate::events::{Event, EventType};
 use crate::schema::Schema;
+use crate::storage::streaming::{EventStreamIterator, StreamConfig};
 use crate::storage::{Segment, SegmentWriter, TableMeta};
 
 pub struct TableStorage {
@@ -84,7 +85,9 @@ impl TableStorage {
             if bytes_written > self.segment_rotation_threshold() {
                 writer.sync()?;
                 meta.segment_count += 1;
-                let new_segment_path = self.path.join("segments")
+                let new_segment_path = self
+                    .path
+                    .join("segments")
                     .join(format!("{:08}.seg", meta.segment_count));
                 let new_segment = Segment::new(new_segment_path, meta.segment_count);
                 *writer_guard = Some(new_segment.create()?);
@@ -95,6 +98,128 @@ impl TableStorage {
 
         meta.save_to_file(self.path.join("meta.json"))?;
         Ok(event.sequence)
+    }
+
+    pub fn append_event_preserving_sequence(&self, event: &Event) -> Result<()> {
+        let mut meta = self.meta.write();
+        if event.sequence <= meta.last_sequence {
+            return Ok(());
+        }
+
+        let mut writer_guard = self.current_writer.write();
+
+        if let Some(writer) = writer_guard.as_mut() {
+            let bytes_written = writer.append_event(event)?;
+
+            if bytes_written > self.segment_rotation_threshold() {
+                writer.sync()?;
+                meta.segment_count += 1;
+                let new_segment_path = self
+                    .path
+                    .join("segments")
+                    .join(format!("{:08}.seg", meta.segment_count));
+                let new_segment = Segment::new(new_segment_path, meta.segment_count);
+                *writer_guard = Some(new_segment.create()?);
+            }
+        } else {
+            return Err(DriftError::Other("No writer available".into()));
+        }
+
+        meta.last_sequence = event.sequence;
+        meta.save_to_file(self.path.join("meta.json"))?;
+        Ok(())
+    }
+
+    pub fn rewrite_segments(&self, events: &[Event]) -> Result<()> {
+        self.sync()?;
+
+        {
+            let mut writer_guard = self.current_writer.write();
+            *writer_guard = None;
+        }
+
+        let segments_dir = self.path.join("segments");
+        for entry in fs::read_dir(&segments_dir)? {
+            let entry = entry?;
+            if entry
+                .path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s == "seg")
+                .unwrap_or(false)
+            {
+                fs::remove_file(entry.path())?;
+            }
+        }
+
+        let segment = Segment::new(segments_dir.join("00000001.seg"), 1);
+        let mut writer = segment.create()?;
+        for event in events {
+            writer.append_event(event)?;
+        }
+        writer.sync()?;
+
+        {
+            let mut meta = self.meta.write();
+            meta.segment_count = 1;
+            meta.last_sequence = events.last().map(|e| e.sequence).unwrap_or(0);
+            meta.save_to_file(self.path.join("meta.json"))?;
+        }
+
+        {
+            let mut writer_guard = self.current_writer.write();
+            *writer_guard = Some(writer);
+        }
+
+        Ok(())
+    }
+
+    pub fn load_rows_at(
+        &self,
+        keys: &HashSet<String>,
+        sequence: Option<u64>,
+    ) -> Result<HashMap<String, serde_json::Value>> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut config = StreamConfig::default();
+        config.event_buffer_size = usize::MAX;
+        let stream = EventStreamIterator::with_config(self.path(), sequence, config)?;
+
+        let mut state = HashMap::new();
+
+        for event_result in stream {
+            let event = event_result?;
+            let pk = event.primary_key.to_string();
+            if !keys.contains(&pk) {
+                continue;
+            }
+
+            match event.event_type {
+                EventType::Insert => {
+                    state.insert(pk.clone(), event.payload);
+                }
+                EventType::Patch => {
+                    if let Some(existing) = state.get_mut(&pk) {
+                        if let (
+                            serde_json::Value::Object(existing_map),
+                            serde_json::Value::Object(patch_map),
+                        ) = (existing, &event.payload)
+                        {
+                            for (key, value) in patch_map {
+                                existing_map.insert(key.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+                EventType::SoftDelete => {
+                    state.remove(&pk);
+                }
+            }
+        }
+
+        Ok(state)
     }
 
     pub fn flush(&self) -> Result<()> {
@@ -118,7 +243,9 @@ impl TableStorage {
         let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                entry.path().extension()
+                entry
+                    .path()
+                    .extension()
                     .and_then(|s| s.to_str())
                     .map(|s| s == "seg")
                     .unwrap_or(false)
@@ -136,7 +263,10 @@ impl TableStorage {
         Ok(all_events)
     }
 
-    pub fn reconstruct_state_at(&self, sequence: Option<u64>) -> Result<HashMap<String, serde_json::Value>> {
+    pub fn reconstruct_state_at(
+        &self,
+        sequence: Option<u64>,
+    ) -> Result<HashMap<String, serde_json::Value>> {
         let events = self.read_all_events()?;
         let mut state = HashMap::new();
 
@@ -153,8 +283,11 @@ impl TableStorage {
                 }
                 crate::events::EventType::Patch => {
                     if let Some(existing) = state.get_mut(&event.primary_key.to_string()) {
-                        if let (serde_json::Value::Object(existing_map), serde_json::Value::Object(patch_map)) =
-                            (existing, &event.payload) {
+                        if let (
+                            serde_json::Value::Object(existing_map),
+                            serde_json::Value::Object(patch_map),
+                        ) = (existing, &event.payload)
+                        {
                             for (key, value) in patch_map {
                                 existing_map.insert(key.clone(), value.clone());
                             }

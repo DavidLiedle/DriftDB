@@ -10,13 +10,13 @@
 use std::sync::Arc;
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use tracing::{debug, error, info, instrument};
+use sha2::Sha256;
+use tracing::{debug, info, instrument};
 
 use crate::errors::{DriftError, Result};
 
@@ -138,6 +138,7 @@ impl KeyManager {
     pub fn get_or_create_key(&self, key_id: &str) -> Result<Vec<u8>> {
         // Check cache
         if let Some(data_key) = self.data_keys.read().get(key_id) {
+            debug!("Reusing cached key {}", data_key.key_id);
             if data_key.metadata.status == KeyStatus::Active {
                 return Ok(data_key.key_material.clone());
             }
@@ -146,9 +147,14 @@ impl KeyManager {
         // Derive new key
         let key_material = self.derive_data_key(key_id)?;
 
+        let algorithm = match self.config.cipher_suite {
+            CipherSuite::Aes256Gcm => "AES-256-GCM",
+            CipherSuite::ChaCha20Poly1305 => "ChaCha20-Poly1305",
+        };
+
         let metadata = KeyMetadata {
             key_id: key_id.to_string(),
-            algorithm: "AES-256-GCM".to_string(),
+            algorithm: algorithm.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -170,10 +176,19 @@ impl KeyManager {
     /// Rotate a key
     #[instrument(skip(self))]
     pub fn rotate_key(&self, key_id: &str) -> Result<()> {
+        if !self.config.encrypt_at_rest {
+            debug!(
+                "Encryption at rest disabled; skipping rotation for {}",
+                key_id
+            );
+            return Ok(());
+        }
+
         info!("Rotating key: {}", key_id);
 
         // Mark old key as rotating
         if let Some(old_key) = self.data_keys.write().get_mut(key_id) {
+            debug!("Marking key {} as rotating", old_key.key_id);
             old_key.metadata.status = KeyStatus::Rotating;
         }
 
@@ -183,17 +198,24 @@ impl KeyManager {
         // In production, would re-encrypt all data with new key
         // For now, just update the key
 
+        let algorithm = match self.config.cipher_suite {
+            CipherSuite::Aes256Gcm => "AES-256-GCM",
+            CipherSuite::ChaCha20Poly1305 => "ChaCha20-Poly1305",
+        };
+
         let metadata = KeyMetadata {
             key_id: key_id.to_string(),
-            algorithm: "AES-256-GCM".to_string(),
+            algorithm: algorithm.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
-            rotated_at: Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)),
+            rotated_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            ),
             status: KeyStatus::Active,
         };
 
@@ -265,7 +287,8 @@ impl EncryptionService {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = cipher.encrypt(nonce, data)
+        let ciphertext = cipher
+            .encrypt(nonce, data)
             .map_err(|e| DriftError::Other(format!("Encryption failed: {}", e)))?;
 
         // Prepend nonce to ciphertext
@@ -287,7 +310,8 @@ impl EncryptionService {
         let key = Key::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
-        let plaintext = cipher.decrypt(nonce, actual_ciphertext)
+        let plaintext = cipher
+            .decrypt(nonce, actual_ciphertext)
             .map_err(|e| DriftError::Other(format!("Decryption failed: {}", e)))?;
 
         Ok(plaintext)
@@ -306,7 +330,11 @@ impl EncryptionService {
     }
 
     /// Encrypt a field (for column-level encryption)
-    pub fn encrypt_field(&self, value: &serde_json::Value, field_name: &str) -> Result<serde_json::Value> {
+    pub fn encrypt_field(
+        &self,
+        value: &serde_json::Value,
+        field_name: &str,
+    ) -> Result<serde_json::Value> {
         let json_str = value.to_string();
         let encrypted = self.encrypt(json_str.as_bytes(), field_name)?;
         use base64::Engine;
@@ -319,12 +347,17 @@ impl EncryptionService {
     }
 
     /// Decrypt a field
-    pub fn decrypt_field(&self, value: &serde_json::Value, field_name: &str) -> Result<serde_json::Value> {
+    pub fn decrypt_field(
+        &self,
+        value: &serde_json::Value,
+        field_name: &str,
+    ) -> Result<serde_json::Value> {
         if let Some(obj) = value.as_object() {
             if obj.get("encrypted") == Some(&serde_json::json!(true)) {
                 if let Some(ciphertext) = obj.get("ciphertext").and_then(|v| v.as_str()) {
                     use base64::Engine;
-                    let decoded = base64::engine::general_purpose::STANDARD.decode(ciphertext)
+                    let decoded = base64::engine::general_purpose::STANDARD
+                        .decode(ciphertext)
                         .map_err(|e| DriftError::Other(format!("Base64 decode failed: {}", e)))?;
                     let decrypted = self.decrypt(&decoded, field_name)?;
                     let json_str = String::from_utf8(decrypted)

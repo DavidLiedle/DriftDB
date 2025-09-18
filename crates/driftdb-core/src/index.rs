@@ -88,7 +88,8 @@ impl IndexManager {
                 let index = Index::load_from_file(&index_path)?;
                 self.indexes.insert(column.clone(), index);
             } else {
-                self.indexes.insert(column.clone(), Index::new(column.clone()));
+                self.indexes
+                    .insert(column.clone(), Index::new(column.clone()));
             }
         }
         Ok(())
@@ -171,7 +172,8 @@ impl IndexManager {
         self.indexes.clear();
 
         for column in indexed_columns {
-            self.indexes.insert(column.clone(), Index::new(column.clone()));
+            self.indexes
+                .insert(column.clone(), Index::new(column.clone()));
         }
 
         for (pk, row) in state {

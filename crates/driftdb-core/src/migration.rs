@@ -15,9 +15,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::schema::{Schema, ColumnDef};
-use crate::storage::TableStorage;
-use crate::wal::Wal;
+use crate::schema::{ColumnDef, Schema};
 
 /// Migration version using semantic versioning
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -29,7 +27,11 @@ pub struct Version {
 
 impl Version {
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     pub fn from_str(s: &str) -> Result<Self> {
@@ -39,9 +41,15 @@ impl Version {
         }
 
         Ok(Self {
-            major: parts[0].parse().map_err(|_| DriftError::Other("Invalid major version".into()))?,
-            minor: parts[1].parse().map_err(|_| DriftError::Other("Invalid minor version".into()))?,
-            patch: parts[2].parse().map_err(|_| DriftError::Other("Invalid patch version".into()))?,
+            major: parts[0]
+                .parse()
+                .map_err(|_| DriftError::Other("Invalid major version".into()))?,
+            minor: parts[1]
+                .parse()
+                .map_err(|_| DriftError::Other("Invalid minor version".into()))?,
+            patch: parts[2]
+                .parse()
+                .map_err(|_| DriftError::Other("Invalid patch version".into()))?,
         })
     }
 }
@@ -62,10 +70,7 @@ pub enum MigrationType {
         default_value: Option<serde_json::Value>,
     },
     /// Remove a column
-    DropColumn {
-        table: String,
-        column: String,
-    },
+    DropColumn { table: String, column: String },
     /// Rename a column
     RenameColumn {
         table: String,
@@ -73,24 +78,13 @@ pub enum MigrationType {
         new_name: String,
     },
     /// Add an index
-    AddIndex {
-        table: String,
-        column: String,
-    },
+    AddIndex { table: String, column: String },
     /// Remove an index
-    DropIndex {
-        table: String,
-        column: String,
-    },
+    DropIndex { table: String, column: String },
     /// Create a new table
-    CreateTable {
-        name: String,
-        schema: Schema,
-    },
+    CreateTable { name: String, schema: Schema },
     /// Drop a table
-    DropTable {
-        name: String,
-    },
+    DropTable { name: String },
     /// Custom migration with SQL or code
     Custom {
         description: String,
@@ -140,7 +134,7 @@ impl Migration {
     }
 
     fn calculate_checksum(&self) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(self.version.to_string());
         hasher.update(&self.name);
@@ -172,6 +166,7 @@ pub struct MigrationManager {
     migrations_dir: PathBuf,
     history: BTreeMap<Version, AppliedMigration>,
     pending_migrations: BTreeMap<Version, Migration>,
+    table_schemas: BTreeMap<String, Schema>,
 }
 
 impl MigrationManager {
@@ -185,10 +180,12 @@ impl MigrationManager {
             migrations_dir: migrations_dir.clone(),
             history: BTreeMap::new(),
             pending_migrations: BTreeMap::new(),
+            table_schemas: BTreeMap::new(),
         };
 
         manager.load_history()?;
         manager.load_pending_migrations()?;
+        manager.load_table_schemas()?;
 
         Ok(manager)
     }
@@ -236,11 +233,39 @@ impl MigrationManager {
                 }
 
                 if !self.history.contains_key(&migration.version) {
-                    self.pending_migrations.insert(migration.version.clone(), migration);
+                    self.pending_migrations
+                        .insert(migration.version.clone(), migration);
                 }
             }
         }
 
+        Ok(())
+    }
+
+    fn load_table_schemas(&mut self) -> Result<()> {
+        let tables_dir = self.data_dir.join("tables");
+        if !tables_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(&tables_dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let schema_path = entry.path().join("schema.yaml");
+                if schema_path.exists() {
+                    let schema = Schema::load_from_file(&schema_path)?;
+                    self.table_schemas.insert(schema.name.clone(), schema);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn persist_schema(&self, schema: &Schema) -> Result<()> {
+        let table_dir = self.data_dir.join("tables").join(&schema.name);
+        fs::create_dir_all(&table_dir)?;
+        schema.save_to_file(table_dir.join("schema.yaml"))?;
         Ok(())
     }
 
@@ -261,13 +286,15 @@ impl MigrationManager {
         }
 
         // Save to pending directory
-        let file_path = self.migrations_dir
+        let file_path = self
+            .migrations_dir
             .join("pending")
             .join(format!("{}.json", migration.version));
         let content = serde_json::to_string_pretty(&migration)?;
         fs::write(file_path, content)?;
 
-        self.pending_migrations.insert(migration.version.clone(), migration);
+        self.pending_migrations
+            .insert(migration.version.clone(), migration);
         Ok(())
     }
 
@@ -284,7 +311,8 @@ impl MigrationManager {
     /// Apply a specific migration
     #[instrument(skip(self))]
     pub fn apply_migration(&mut self, version: &Version, dry_run: bool) -> Result<()> {
-        let migration = self.pending_migrations
+        let migration = self
+            .pending_migrations
             .get(version)
             .ok_or_else(|| DriftError::Other(format!("Migration {} not found", version)))?
             .clone();
@@ -319,7 +347,8 @@ impl MigrationManager {
         if result.is_ok() {
             self.pending_migrations.remove(version);
             // Remove from pending directory
-            let file_path = self.migrations_dir
+            let file_path = self
+                .migrations_dir
                 .join("pending")
                 .join(format!("{}.json", version));
             let _ = fs::remove_file(file_path);
@@ -329,39 +358,32 @@ impl MigrationManager {
     }
 
     /// Execute the actual migration
-    fn execute_migration(&self, migration: &Migration) -> Result<()> {
+    fn execute_migration(&mut self, migration: &Migration) -> Result<()> {
         match &migration.migration_type {
-            MigrationType::AddColumn { table, column, default_value } => {
-                self.add_column(table, column, default_value.as_ref())
-            }
-            MigrationType::DropColumn { table, column } => {
-                self.drop_column(table, column)
-            }
-            MigrationType::RenameColumn { table, old_name, new_name } => {
-                self.rename_column(table, old_name, new_name)
-            }
-            MigrationType::AddIndex { table, column } => {
-                self.add_index(table, column)
-            }
-            MigrationType::DropIndex { table, column } => {
-                self.drop_index(table, column)
-            }
-            MigrationType::CreateTable { name, schema } => {
-                self.create_table(name, schema)
-            }
-            MigrationType::DropTable { name } => {
-                self.drop_table(name)
-            }
-            MigrationType::Custom { up_script, .. } => {
-                self.execute_custom_script(up_script)
-            }
+            MigrationType::AddColumn {
+                table,
+                column,
+                default_value,
+            } => self.add_column(table, column, default_value.as_ref()),
+            MigrationType::DropColumn { table, column } => self.drop_column(table, column),
+            MigrationType::RenameColumn {
+                table,
+                old_name,
+                new_name,
+            } => self.rename_column(table, old_name, new_name),
+            MigrationType::AddIndex { table, column } => self.add_index(table, column),
+            MigrationType::DropIndex { table, column } => self.drop_index(table, column),
+            MigrationType::CreateTable { name, schema } => self.create_table(name, schema),
+            MigrationType::DropTable { name } => self.drop_table(name),
+            MigrationType::Custom { up_script, .. } => self.execute_custom_script(up_script),
         }
     }
 
     /// Rollback a migration
     #[instrument(skip(self))]
     pub fn rollback_migration(&mut self, version: &Version) -> Result<()> {
-        let applied = self.history
+        let applied = self
+            .history
             .get(version)
             .ok_or_else(|| DriftError::Other(format!("Migration {} not in history", version)))?;
 
@@ -405,51 +427,219 @@ impl MigrationManager {
 
     // Migration implementation helpers
 
-    fn add_column(&self, table: &str, column: &ColumnDef, default_value: Option<&serde_json::Value>) -> Result<()> {
-        debug!("Adding column {} to table {}", column.name, table);
-        // In production, would modify table schema and backfill data
+    fn add_column(
+        &mut self,
+        table: &str,
+        column: &ColumnDef,
+        default_value: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let updated_schema = {
+            let schema = self
+                .table_schemas
+                .get_mut(table)
+                .ok_or_else(|| DriftError::Other(format!("Table '{}' not found", table)))?;
+
+            if schema.has_column(&column.name) {
+                return Err(DriftError::Other(format!(
+                    "Column '{}' already exists on table '{}'",
+                    column.name, table
+                )));
+            }
+
+            debug!("Adding column {} to table {}", column.name, table);
+            schema.columns.push(column.clone());
+
+            if let Some(value) = default_value {
+                debug!(
+                    "Using default value for {}.{} -> {}",
+                    table, column.name, value
+                );
+            }
+
+            schema.validate()?;
+            schema.clone()
+        };
+
+        self.persist_schema(&updated_schema)?;
         Ok(())
     }
 
-    fn drop_column(&self, table: &str, column: &str) -> Result<()> {
-        debug!("Dropping column {} from table {}", column, table);
-        // In production, would remove column from schema
+    fn drop_column(&mut self, table: &str, column: &str) -> Result<()> {
+        let updated_schema = {
+            let schema = self
+                .table_schemas
+                .get_mut(table)
+                .ok_or_else(|| DriftError::Other(format!("Table '{}' not found", table)))?;
+
+            if column == schema.primary_key {
+                return Err(DriftError::Other("Cannot drop primary key column".into()));
+            }
+
+            let original_len = schema.columns.len();
+            schema.columns.retain(|col| col.name != column);
+
+            if schema.columns.len() == original_len {
+                return Err(DriftError::Other(format!(
+                    "Column '{}' not found on table '{}'",
+                    column, table
+                )));
+            }
+
+            debug!("Dropping column {} from table {}", column, table);
+            schema.validate()?;
+            schema.clone()
+        };
+
+        self.persist_schema(&updated_schema)?;
         Ok(())
     }
 
-    fn rename_column(&self, table: &str, old_name: &str, new_name: &str) -> Result<()> {
-        debug!("Renaming column {} to {} in table {}", old_name, new_name, table);
-        // In production, would update schema and rewrite data
+    fn rename_column(&mut self, table: &str, old_name: &str, new_name: &str) -> Result<()> {
+        let updated_schema = {
+            let schema = self
+                .table_schemas
+                .get_mut(table)
+                .ok_or_else(|| DriftError::Other(format!("Table '{}' not found", table)))?;
+
+            if schema.has_column(new_name) {
+                return Err(DriftError::Other(format!(
+                    "Column '{}' already exists on table '{}'",
+                    new_name, table
+                )));
+            }
+
+            let mut renamed = false;
+            for col in &mut schema.columns {
+                if col.name == old_name {
+                    col.name = new_name.to_string();
+                    renamed = true;
+                    break;
+                }
+            }
+
+            if !renamed {
+                return Err(DriftError::Other(format!(
+                    "Column '{}' not found on table '{}'",
+                    old_name, table
+                )));
+            }
+
+            if schema.primary_key == old_name {
+                schema.primary_key = new_name.to_string();
+            }
+
+            debug!(
+                "Renaming column {} to {} in table {}",
+                old_name, new_name, table
+            );
+            schema.validate()?;
+            schema.clone()
+        };
+
+        self.persist_schema(&updated_schema)?;
         Ok(())
     }
 
-    fn add_index(&self, table: &str, column: &str) -> Result<()> {
-        debug!("Adding index on {}.{}", table, column);
-        // In production, would build index in background
+    fn add_index(&mut self, table: &str, column: &str) -> Result<()> {
+        let updated_schema = {
+            let schema = self
+                .table_schemas
+                .get_mut(table)
+                .ok_or_else(|| DriftError::Other(format!("Table '{}' not found", table)))?;
+
+            let mut found = false;
+            for col in &mut schema.columns {
+                if col.name == column {
+                    col.index = true;
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                return Err(DriftError::Other(format!(
+                    "Column '{}' not found on table '{}'",
+                    column, table
+                )));
+            }
+
+            debug!("Adding index on {}.{}", table, column);
+            schema.clone()
+        };
+
+        self.persist_schema(&updated_schema)?;
         Ok(())
     }
 
-    fn drop_index(&self, table: &str, column: &str) -> Result<()> {
-        debug!("Dropping index on {}.{}", table, column);
-        // In production, would remove index files
+    fn drop_index(&mut self, table: &str, column: &str) -> Result<()> {
+        let updated_schema = {
+            let schema = self
+                .table_schemas
+                .get_mut(table)
+                .ok_or_else(|| DriftError::Other(format!("Table '{}' not found", table)))?;
+
+            let mut found = false;
+            for col in &mut schema.columns {
+                if col.name == column {
+                    col.index = false;
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                return Err(DriftError::Other(format!(
+                    "Column '{}' not found on table '{}'",
+                    column, table
+                )));
+            }
+
+            debug!("Dropping index on {}.{}", table, column);
+            schema.clone()
+        };
+
+        self.persist_schema(&updated_schema)?;
         Ok(())
     }
 
-    fn create_table(&self, name: &str, schema: &Schema) -> Result<()> {
+    fn create_table(&mut self, name: &str, schema: &Schema) -> Result<()> {
+        if self.table_schemas.contains_key(name) {
+            return Err(DriftError::Other(format!(
+                "Table '{}' already exists",
+                name
+            )));
+        }
+
         debug!("Creating table {} with schema", name);
-        // In production, would create new table directory and schema
+        let mut new_schema = schema.clone();
+        if !new_schema.has_column(&new_schema.primary_key) {
+            new_schema.columns.push(ColumnDef {
+                name: new_schema.primary_key.clone(),
+                col_type: "string".to_string(),
+                index: true,
+            });
+        }
+        new_schema.validate()?;
+        self.persist_schema(&new_schema)?;
+        self.table_schemas.insert(name.to_string(), new_schema);
         Ok(())
     }
 
-    fn drop_table(&self, name: &str) -> Result<()> {
+    fn drop_table(&mut self, name: &str) -> Result<()> {
         debug!("Dropping table {}", name);
-        // In production, would archive and remove table
+        self.table_schemas.remove(name);
+        let table_dir = self.data_dir.join("tables").join(name);
+        if table_dir.exists() {
+            fs::remove_dir_all(&table_dir)?;
+        }
         Ok(())
     }
 
-    fn execute_custom_script(&self, script: &str) -> Result<()> {
-        debug!("Executing custom migration script");
-        // In production, would parse and execute script
+    fn execute_custom_script(&mut self, script: &str) -> Result<()> {
+        debug!("Executing custom migration script ({} bytes)", script.len());
+        // Placeholder: write script to migrations log for auditing
+        let log_path = self.migrations_dir.join("last_custom_script.sql");
+        fs::write(log_path, script)?;
         Ok(())
     }
 
@@ -499,7 +689,7 @@ mod tests {
             "Initial schema".to_string(),
             MigrationType::CreateTable {
                 name: "users".to_string(),
-                schema: Schema::new("users", "id", vec![]),
+                schema: Schema::new("users".to_string(), "id".to_string(), vec![]),
             },
         );
 
@@ -507,7 +697,9 @@ mod tests {
         assert_eq!(manager.pending_migrations().len(), 1);
 
         // Apply migration
-        manager.apply_migration(&Version::new(1, 0, 0), false).unwrap();
+        manager
+            .apply_migration(&Version::new(1, 0, 0), false)
+            .unwrap();
         assert_eq!(manager.pending_migrations().len(), 0);
         assert_eq!(manager.current_version(), Some(Version::new(1, 0, 0)));
     }

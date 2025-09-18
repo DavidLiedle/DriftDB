@@ -9,15 +9,15 @@
 //! - Health checks
 
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{Cell, Row, Table};
 
-use driftdb_core::{Engine, DriftError};
+use driftdb_core::Engine;
 
 #[derive(Parser)]
 #[command(name = "driftdb-admin")]
@@ -329,9 +329,7 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
 
         table.add_row(Row::new(vec![
             Cell::new("Status"),
-            Cell::new("✓ Healthy").with_style(colored::Styles::ColoredString(
-                "Healthy".green().to_string(),
-            )),
+            Cell::new(&format!("{}", "✓ Healthy".green())),
         ]));
 
         table.printstd();
@@ -344,13 +342,16 @@ async fn monitor_metrics(data_dir: &PathBuf, interval: u64) -> Result<()> {
     println!("{}", "Real-time Monitoring".bold().blue());
     println!("Press Ctrl+C to stop\n");
 
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     loop {
         // Clear screen
         print!("\x1B[2J\x1B[1;1H");
 
-        println!("{}", format!("DriftDB Monitor - {}", chrono::Local::now()).bold());
+        println!(
+            "{}",
+            format!("DriftDB Monitor - {}", chrono::Local::now()).bold()
+        );
         println!("{}", "=".repeat(70));
 
         let mut table = Table::new();
@@ -404,13 +405,13 @@ async fn monitor_metrics(data_dir: &PathBuf, interval: u64) -> Result<()> {
 }
 
 async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()> {
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     match command {
         BackupCommands::Create {
             destination,
-            compress,
-            incremental,
+            compress: _compress,
+            incremental: _incremental,
         } => {
             println!("{}", "Creating backup...".yellow());
 
@@ -449,7 +450,9 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
             // Would implement actual restore
             println!("{}", "✓ Restore completed".green());
         }
-        BackupCommands::List { directory } => {
+        BackupCommands::List {
+            directory: _directory,
+        } => {
             println!("{}", "Available Backups".bold());
             println!("{}", "-".repeat(50));
 
@@ -500,7 +503,7 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
     Ok(())
 }
 
-async fn handle_replication(command: ReplicationCommands, data_dir: &PathBuf) -> Result<()> {
+async fn handle_replication(command: ReplicationCommands, _data_dir: &PathBuf) -> Result<()> {
     match command {
         ReplicationCommands::Status => {
             println!("{}", "Replication Status".bold());
@@ -517,9 +520,7 @@ async fn handle_replication(command: ReplicationCommands, data_dir: &PathBuf) ->
             table.add_row(Row::new(vec![
                 Cell::new("node-1"),
                 Cell::new("Master"),
-                Cell::new("✓ Active").with_style(colored::Styles::ColoredString(
-                    "Active".green().to_string(),
-                )),
+                Cell::new(&format!("{}", "✓ Active".green())),
                 Cell::new("-"),
             ]));
 
@@ -568,7 +569,7 @@ async fn check_health(data_dir: &PathBuf, verbose: bool) -> Result<()> {
     println!("{}", "Health Check".bold().blue());
     println!("{}", "=".repeat(50));
 
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     let checks = vec![
         ("Database Connection", true, "Connected"),
@@ -655,10 +656,10 @@ async fn analyze_tables(data_dir: &PathBuf, table: Option<String>) -> Result<()>
 
 async fn compact_storage(
     data_dir: &PathBuf,
-    table: Option<String>,
+    _table: Option<String>,
     show_progress: bool,
 ) -> Result<()> {
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     println!("{}", "Compacting storage...".yellow());
 
@@ -685,7 +686,7 @@ async fn compact_storage(
     Ok(())
 }
 
-async fn handle_migration(command: MigrateCommands, data_dir: &PathBuf) -> Result<()> {
+async fn handle_migration(command: MigrateCommands, _data_dir: &PathBuf) -> Result<()> {
     match command {
         MigrateCommands::Status => {
             println!("{}", "Migration Status".bold());
@@ -717,7 +718,10 @@ async fn handle_migration(command: MigrateCommands, data_dir: &PathBuf) -> Resul
 
             table.printstd();
         }
-        MigrateCommands::Up { dry_run, target } => {
+        MigrateCommands::Up {
+            dry_run,
+            target: _target,
+        } => {
             if dry_run {
                 println!("{}", "DRY RUN MODE".yellow().bold());
             }
@@ -733,7 +737,7 @@ async fn handle_migration(command: MigrateCommands, data_dir: &PathBuf) -> Resul
     Ok(())
 }
 
-async fn run_dashboard(data_dir: &PathBuf) -> Result<()> {
+async fn run_dashboard(_data_dir: &PathBuf) -> Result<()> {
     println!("{}", "Starting interactive dashboard...".yellow());
     println!("(TUI dashboard would launch here)");
     // Would implement full TUI using ratatui
@@ -741,7 +745,7 @@ async fn run_dashboard(data_dir: &PathBuf) -> Result<()> {
 }
 
 async fn show_tables(data_dir: &PathBuf, verbose: bool) -> Result<()> {
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     println!("{}", "Tables".bold());
 
@@ -782,7 +786,7 @@ async fn show_tables(data_dir: &PathBuf, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-async fn show_indexes(data_dir: &PathBuf, table: Option<String>) -> Result<()> {
+async fn show_indexes(_data_dir: &PathBuf, _table: Option<String>) -> Result<()> {
     println!("{}", "Indexes".bold());
 
     let mut index_table = Table::new();
@@ -807,7 +811,7 @@ async fn show_indexes(data_dir: &PathBuf, table: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn show_connections(data_dir: &PathBuf) -> Result<()> {
+async fn show_connections(_data_dir: &PathBuf) -> Result<()> {
     println!("{}", "Connection Pool Status".bold());
 
     println!("Active connections: 15 / 100");
@@ -817,7 +821,7 @@ async fn show_connections(data_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn show_transactions(data_dir: &PathBuf, active_only: bool) -> Result<()> {
+async fn show_transactions(_data_dir: &PathBuf, active_only: bool) -> Result<()> {
     println!("{}", "Transactions".bold());
 
     let mut table = Table::new();
@@ -850,8 +854,8 @@ async fn show_transactions(data_dir: &PathBuf, active_only: bool) -> Result<()> 
 }
 
 async fn verify_integrity(
-    data_dir: &PathBuf,
-    table: Option<String>,
+    _data_dir: &PathBuf,
+    _table: Option<String>,
     check_checksums: bool,
 ) -> Result<()> {
     println!("{}", "Verifying data integrity...".yellow());

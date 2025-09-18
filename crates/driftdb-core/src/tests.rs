@@ -1,14 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use crate::*;
     use crate::errors::Result;
     use crate::events::{Event, EventType};
     use crate::schema::{ColumnDef, Schema};
     use crate::storage::frame::{Frame, FramedRecord};
     use crate::storage::segment::Segment;
     use serde_json::json;
+    use std::io::{Seek, Write as _};
     use tempfile::TempDir;
-    use std::io::{Seek, Write};
 
     #[test]
     fn test_frame_crc_verification() -> Result<()> {
@@ -88,11 +87,7 @@ mod tests {
         let segment = Segment::new(segment_path.clone(), 1);
 
         let mut writer = segment.create()?;
-        let event = Event::new_insert(
-            "test".to_string(),
-            json!("key1"),
-            json!({"data": "valid"}),
-        );
+        let event = Event::new_insert("test".to_string(), json!("key1"), json!({"data": "valid"}));
         writer.append_event(&event)?;
         writer.sync()?;
         drop(writer);
@@ -143,13 +138,11 @@ mod tests {
         let invalid_schema = Schema::new(
             "invalid".to_string(),
             "missing_pk".to_string(),
-            vec![
-                ColumnDef {
-                    name: "id".to_string(),
-                    col_type: "string".to_string(),
-                    index: false,
-                },
-            ],
+            vec![ColumnDef {
+                name: "id".to_string(),
+                col_type: "string".to_string(),
+                index: false,
+            }],
         );
 
         assert!(invalid_schema.validate().is_err());
@@ -202,10 +195,7 @@ mod tests {
         let seq2 = storage.append_event(event2)?;
         assert_eq!(seq2, 2);
 
-        let event3 = Event::new_soft_delete(
-            "products".to_string(),
-            json!("SKU001"),
-        );
+        let event3 = Event::new_soft_delete("products".to_string(), json!("SKU001"));
 
         let seq3 = storage.append_event(event3)?;
         assert_eq!(seq3, 3);
@@ -287,7 +277,12 @@ mod tests {
         use crate::query::{parse_driftql, Query};
 
         let create_query = parse_driftql("CREATE TABLE users (pk=id, INDEX(email, status))")?;
-        if let Query::CreateTable { name, primary_key, indexed_columns } = create_query {
+        if let Query::CreateTable {
+            name,
+            primary_key,
+            indexed_columns,
+        } = create_query
+        {
             assert_eq!(name, "users");
             assert_eq!(primary_key, "id");
             assert_eq!(indexed_columns, vec!["email", "status"]);
@@ -295,7 +290,8 @@ mod tests {
             panic!("Expected CreateTable query");
         }
 
-        let insert_query = parse_driftql(r#"INSERT INTO users {"id": "user1", "email": "test@example.com"}"#)?;
+        let insert_query =
+            parse_driftql(r#"INSERT INTO users {"id": "user1", "email": "test@example.com"}"#)?;
         if let Query::Insert { table, data } = insert_query {
             assert_eq!(table, "users");
             assert_eq!(data["id"], "user1");
@@ -304,7 +300,13 @@ mod tests {
         }
 
         let select_query = parse_driftql("SELECT * FROM users WHERE status=\"active\" LIMIT 10")?;
-        if let Query::Select { table, conditions, limit, .. } = select_query {
+        if let Query::Select {
+            table,
+            conditions,
+            limit,
+            ..
+        } = select_query
+        {
             assert_eq!(table, "users");
             assert_eq!(conditions.len(), 1);
             assert_eq!(conditions[0].column, "status");
@@ -351,8 +353,6 @@ mod tests {
         Ok(())
     }
 }
-
-use std::io::Write;
 
 #[test]
 fn test_frame_roundtrip() {

@@ -6,22 +6,20 @@
 //! - Read replicas for load distribution
 //! - Point-in-time recovery from replicas
 
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, error, info, warn, instrument};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::events::Event;
-use crate::wal::{WalEntry, WalOperation};
+use crate::wal::WalEntry;
 
 /// Replication configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,44 +81,21 @@ pub enum ReplicationMessage {
         last_seq: u64,
     },
     /// WAL entry to replicate
-    WalEntry {
-        entry: WalEntry,
-        sequence: u64,
-    },
+    WalEntry { entry: WalEntry, sequence: u64 },
     /// Acknowledgment from replica
-    Ack {
-        sequence: u64,
-        timestamp_ms: u64,
-    },
+    Ack { sequence: u64, timestamp_ms: u64 },
     /// Heartbeat for liveness
-    Heartbeat {
-        sequence: u64,
-        timestamp_ms: u64,
-    },
+    Heartbeat { sequence: u64, timestamp_ms: u64 },
     /// Request for missing entries
-    CatchupRequest {
-        from_seq: u64,
-        to_seq: u64,
-    },
+    CatchupRequest { from_seq: u64, to_seq: u64 },
     /// Batch of catch-up entries
-    CatchupResponse {
-        entries: Vec<WalEntry>,
-    },
+    CatchupResponse { entries: Vec<WalEntry> },
     /// Initiate failover
-    FailoverRequest {
-        new_master: String,
-        reason: String,
-    },
+    FailoverRequest { new_master: String, reason: String },
     /// Vote for failover
-    FailoverVote {
-        node_id: String,
-        accept: bool,
-    },
+    FailoverVote { node_id: String, accept: bool },
     /// New master announcement
-    NewMaster {
-        node_id: String,
-        sequence: u64,
-    },
+    NewMaster { node_id: String, sequence: u64 },
 }
 
 /// Replica connection state
@@ -191,14 +166,12 @@ impl ReplicationCoordinator {
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting replication coordinator as {:?}", self.config.role);
 
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
 
         match self.config.role {
             NodeRole::Master => self.start_as_master(shutdown_rx).await?,
-            NodeRole::Slave | NodeRole::StandbyMaster => {
-                self.start_as_replica(shutdown_rx).await?
-            }
+            NodeRole::Slave | NodeRole::StandbyMaster => self.start_as_replica(shutdown_rx).await?,
         }
 
         Ok(())
@@ -207,7 +180,10 @@ impl ReplicationCoordinator {
     /// Start as master node
     async fn start_as_master(&self, mut shutdown_rx: mpsc::Receiver<()>) -> Result<()> {
         let listener = TcpListener::bind(&self.config.listen_addr).await?;
-        info!("Master listening for replicas on {}", self.config.listen_addr);
+        info!(
+            "Master listening for replicas on {}",
+            self.config.listen_addr
+        );
 
         // Accept replica connections
         let replicas = self.replicas.clone();
@@ -255,8 +231,16 @@ impl ReplicationCoordinator {
         match stream.read(&mut buf).await {
             Ok(n) if n > 0 => {
                 if let Ok(msg) = bincode::deserialize::<ReplicationMessage>(&buf[..n]) {
-                    if let ReplicationMessage::Hello { node_id, role, last_seq } = msg {
-                        info!("Replica {} connected with last_seq {}", node_id, last_seq);
+                    if let ReplicationMessage::Hello {
+                        node_id,
+                        role,
+                        last_seq,
+                    } = msg
+                    {
+                        info!(
+                            "Replica {} connected with last_seq {} to master {}",
+                            node_id, last_seq, master_id
+                        );
 
                         let conn = ReplicaConnection {
                             node_id: node_id.clone(),
@@ -269,7 +253,7 @@ impl ReplicationCoordinator {
                             stream: Arc::new(Mutex::new(stream)),
                         };
 
-                        replicas.write().insert(node_id, conn);
+                        replicas.write().insert(node_id.clone(), conn);
                     }
                 }
             }
@@ -279,7 +263,10 @@ impl ReplicationCoordinator {
 
     /// Start as replica node
     async fn start_as_replica(&self, mut shutdown_rx: mpsc::Receiver<()>) -> Result<()> {
-        let master_addr = self.config.master_addr.as_ref()
+        let master_addr = self
+            .config
+            .master_addr
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Master address not configured".into()))?;
 
         info!("Connecting to master at {}", master_addr);
@@ -399,18 +386,53 @@ impl ReplicationCoordinator {
                     // Clone the replicas to avoid holding lock across await
                     let replica_streams: Vec<_> = {
                         let replicas_guard = replicas.read();
-                        replicas_guard.values()
-                            .map(|r| r.stream.clone())
+                        replicas_guard
+                            .values()
+                            .map(|r| {
+                                (
+                                    r.node_id.clone(),
+                                    r.addr,
+                                    r.lag_ms,
+                                    r.is_sync,
+                                    r.stream.clone(),
+                                    r.last_ack_seq,
+                                    r.role.clone(),
+                                    r.last_ack_time,
+                                )
+                            })
                             .collect()
                     };
 
-                    for stream in replica_streams {
+                    for (node_id, addr, lag_ms, is_sync, stream, last_ack, role, last_ack_time) in
+                        replica_streams
+                    {
                         let data_clone = data.clone();
+                        let stream_node_id = node_id.clone();
+                        let stream_addr = addr;
                         tokio::spawn(async move {
                             if let Ok(mut stream_guard) = stream.try_lock() {
-                                let _ = stream_guard.write_all(&data_clone).await;
+                                if let Err(e) = stream_guard.write_all(&data_clone).await {
+                                    warn!(
+                                        "Failed to send heartbeat to {} ({}): {}",
+                                        stream_node_id, stream_addr, e
+                                    );
+                                }
                             }
                         });
+
+                        debug!(
+                            %node_id,
+                            ?addr,
+                            lag_ms,
+                            is_sync,
+                            ?role,
+                            last_ack_seq = last_ack,
+                            last_ack_time = last_ack_time
+                                .duration_since(UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                            "Heartbeat dispatched to replica"
+                        );
                     }
                 }
             }
@@ -427,15 +449,51 @@ impl ReplicationCoordinator {
         let msg = ReplicationMessage::WalEntry { entry, sequence };
         let data = bincode::serialize(&msg)?;
 
-        let replicas = self.replicas.read();
+        let replica_info: Vec<_> = {
+            let replicas = self.replicas.read();
+            replicas
+                .iter()
+                .map(|(id, replica)| {
+                    (
+                        id.clone(),
+                        replica.addr,
+                        replica.is_sync,
+                        replica.last_ack_seq,
+                        replica.role.clone(),
+                        replica.last_ack_time,
+                        replica.stream.clone(),
+                    )
+                })
+                .collect()
+        };
+
         let mut sync_count = 0;
 
-        for (_, replica) in replicas.iter() {
-            if let Ok(mut stream) = replica.stream.try_lock() {
-                if stream.write_all(&data).await.is_ok() {
-                    if replica.is_sync {
+        for (id, addr, is_sync, last_ack_seq, role, last_ack_time, stream) in replica_info {
+            let stream_id = id.clone();
+            let stream_addr = addr;
+            if let Ok(mut guard) = stream.try_lock() {
+                if guard.write_all(&data).await.is_ok() {
+                    debug!(
+                        replica = %id,
+                        ?addr,
+                        ?role,
+                        last_ack_seq,
+                        last_ack_time = last_ack_time
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                        target_sequence = sequence,
+                        "Replicated WAL entry"
+                    );
+                    if is_sync {
                         sync_count += 1;
                     }
+                } else {
+                    warn!(
+                        "Failed to replicate WAL entry to {} ({})",
+                        stream_id, stream_addr
+                    );
                 }
             }
         }
@@ -443,23 +501,23 @@ impl ReplicationCoordinator {
         // Wait for sync replicas if configured
         if self.config.mode == ReplicationMode::Synchronous {
             if sync_count < self.config.min_sync_replicas {
-                return Err(DriftError::Other(
-                    format!("Insufficient sync replicas: {} < {}",
-                            sync_count, self.config.min_sync_replicas)
-                ));
+                return Err(DriftError::Other(format!(
+                    "Insufficient sync replicas: {} < {}",
+                    sync_count, self.config.min_sync_replicas
+                )));
             }
 
             // Wait for acknowledgments
             let (tx, rx) = oneshot::channel();
-            self.sync_waiters.lock().await
+            self.sync_waiters
+                .lock()
+                .await
                 .entry(sequence)
                 .or_insert_with(Vec::new)
                 .push(tx);
 
-            tokio::time::timeout(
-                Duration::from_millis(self.config.sync_interval_ms * 10),
-                rx
-            ).await
+            tokio::time::timeout(Duration::from_millis(self.config.sync_interval_ms * 10), rx)
+                .await
                 .map_err(|_| DriftError::Other("Replication timeout".into()))?
                 .map_err(|_| DriftError::Other("Replication failed".into()))?;
         }

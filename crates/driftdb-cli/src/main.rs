@@ -109,8 +109,7 @@ enum Commands {
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("driftdb=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("driftdb=info")),
         )
         .init();
 
@@ -121,15 +120,17 @@ fn main() -> Result<()> {
             Engine::init(&path)?;
             println!("Initialized DriftDB at {}", path.display());
         }
-        Commands::Sql { data, execute, file } => {
-            let mut engine = Engine::open(&data)
-                .context("Failed to open database")?;
+        Commands::Sql {
+            data,
+            execute,
+            file,
+        } => {
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
 
             let queries = if let Some(query) = execute {
                 vec![query]
             } else if let Some(file) = file {
-                let content = fs::read_to_string(&file)
-                    .context("Failed to read SQL file")?;
+                let content = fs::read_to_string(&file).context("Failed to read SQL file")?;
                 content
                     .lines()
                     .filter(|line| !line.trim().is_empty() && !line.trim().starts_with("--"))
@@ -142,7 +143,8 @@ fn main() -> Result<()> {
             for query_str in queries {
                 let query = driftdb_core::query::parse_driftql(&query_str)
                     .context("Failed to parse query")?;
-                let result = engine.execute_query(query)
+                let result = engine
+                    .execute_query(query)
                     .context("Failed to execute query")?;
 
                 match result {
@@ -162,11 +164,9 @@ fn main() -> Result<()> {
             }
         }
         Commands::Ingest { data, table, file } => {
-            let mut engine = Engine::open(&data)
-                .context("Failed to open database")?;
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let file = fs::File::open(&file)
-                .context("Failed to open JSONL file")?;
+            let file = fs::File::open(&file).context("Failed to open JSONL file")?;
             let reader = BufReader::new(file);
 
             let mut count = 0;
@@ -176,15 +176,16 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                let data: serde_json::Value = serde_json::from_str(&line)
-                    .context("Failed to parse JSON")?;
+                let data: serde_json::Value =
+                    serde_json::from_str(&line).context("Failed to parse JSON")?;
 
                 let query = Query::Insert {
                     table: table.clone(),
                     data,
                 };
 
-                engine.execute_query(query)
+                engine
+                    .execute_query(query)
                     .context("Failed to insert row")?;
                 count += 1;
             }
@@ -199,8 +200,7 @@ fn main() -> Result<()> {
             limit,
             json: output_json,
         } => {
-            let engine = Engine::open(&data)
-                .context("Failed to open database")?;
+            let engine = Engine::open(&data).context("Failed to open database")?;
 
             let conditions = if let Some(where_clause) = r#where {
                 parse_where_clause(&where_clause)?
@@ -218,7 +218,8 @@ fn main() -> Result<()> {
             };
 
             let mut engine_mut = engine;
-            let result = engine_mut.execute_query(query)
+            let result = engine_mut
+                .execute_query(query)
                 .context("Failed to execute select")?;
 
             match result {
@@ -235,17 +236,14 @@ fn main() -> Result<()> {
             }
         }
         Commands::Drift { data, table, key } => {
-            let mut engine = Engine::open(&data)
-                .context("Failed to open database")?;
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
 
             let primary_key = parse_key_value(&key)?;
 
-            let query = Query::ShowDrift {
-                table,
-                primary_key,
-            };
+            let query = Query::ShowDrift { table, primary_key };
 
-            let result = engine.execute_query(query)
+            let result = engine
+                .execute_query(query)
                 .context("Failed to get drift history")?;
 
             match result {
@@ -258,11 +256,13 @@ fn main() -> Result<()> {
             }
         }
         Commands::Snapshot { data, table } => {
-            let mut engine = Engine::open(&data)
-                .context("Failed to open database")?;
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let query = Query::Snapshot { table: table.clone() };
-            let result = engine.execute_query(query)
+            let query = Query::Snapshot {
+                table: table.clone(),
+            };
+            let result = engine
+                .execute_query(query)
                 .context("Failed to create snapshot")?;
 
             match result {
@@ -271,11 +271,13 @@ fn main() -> Result<()> {
             }
         }
         Commands::Compact { data, table } => {
-            let mut engine = Engine::open(&data)
-                .context("Failed to open database")?;
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let query = Query::Compact { table: table.clone() };
-            let result = engine.execute_query(query)
+            let query = Query::Compact {
+                table: table.clone(),
+            };
+            let result = engine
+                .execute_query(query)
                 .context("Failed to compact table")?;
 
             match result {
@@ -284,11 +286,9 @@ fn main() -> Result<()> {
             }
         }
         Commands::Doctor { data } => {
-            let engine = Engine::open(&data)
-                .context("Failed to open database")?;
+            let engine = Engine::open(&data).context("Failed to open database")?;
 
-            let report = engine.doctor()
-                .context("Failed to run doctor")?;
+            let report = engine.doctor().context("Failed to run doctor")?;
 
             for line in report {
                 println!("{}", line);
@@ -324,13 +324,13 @@ fn parse_as_of(as_of: Option<&str>) -> Result<Option<driftdb_core::query::AsOf>>
         None => Ok(None),
         Some("@now") => Ok(Some(driftdb_core::query::AsOf::Now)),
         Some(s) if s.starts_with("@seq:") => {
-            let seq = s[5..].parse::<u64>()
-                .context("Invalid sequence number")?;
+            let seq = s[5..].parse::<u64>().context("Invalid sequence number")?;
             Ok(Some(driftdb_core::query::AsOf::Sequence(seq)))
         }
         Some(s) => {
-            let timestamp = OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-                .context("Invalid timestamp format")?;
+            let timestamp =
+                OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                    .context("Invalid timestamp format")?;
             Ok(Some(driftdb_core::query::AsOf::Timestamp(timestamp)))
         }
     }
