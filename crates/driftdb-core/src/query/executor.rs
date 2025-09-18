@@ -1,15 +1,18 @@
-use std::collections::HashMap;
 use serde_json::json;
 
+use super::{AsOf, Query, QueryResult, WhereCondition};
 use crate::engine::Engine;
 use crate::errors::Result;
 use crate::events::Event;
-use super::{AsOf, Query, QueryResult, WhereCondition};
 
 impl Engine {
     pub fn execute_query(&mut self, query: Query) -> Result<QueryResult> {
         match query {
-            Query::CreateTable { name, primary_key, indexed_columns } => {
+            Query::CreateTable {
+                name,
+                primary_key,
+                indexed_columns,
+            } => {
                 self.create_table(&name, &primary_key, indexed_columns)?;
                 Ok(QueryResult::Success {
                     message: format!("Table '{}' created", name),
@@ -17,10 +20,14 @@ impl Engine {
             }
             Query::Insert { table, data } => {
                 let pk_field = self.get_table_primary_key(&table)?;
-                let primary_key = data.get(&pk_field)
-                    .ok_or_else(|| crate::errors::DriftError::InvalidQuery(
-                        format!("Missing primary key field '{}'", pk_field)
-                    ))?
+                let primary_key = data
+                    .get(&pk_field)
+                    .ok_or_else(|| {
+                        crate::errors::DriftError::InvalidQuery(format!(
+                            "Missing primary key field '{}'",
+                            pk_field
+                        ))
+                    })?
                     .clone();
 
                 let event = Event::new_insert(table.clone(), primary_key, data);
@@ -30,7 +37,11 @@ impl Engine {
                     message: format!("Inserted with sequence {}", seq),
                 })
             }
-            Query::Patch { table, primary_key, updates } => {
+            Query::Patch {
+                table,
+                primary_key,
+                updates,
+            } => {
                 let event = Event::new_patch(table.clone(), primary_key, updates);
                 let seq = self.apply_event(event)?;
 
@@ -46,7 +57,12 @@ impl Engine {
                     message: format!("Soft deleted with sequence {}", seq),
                 })
             }
-            Query::Select { table, conditions, as_of, limit } => {
+            Query::Select {
+                table,
+                conditions,
+                as_of,
+                limit,
+            } => {
                 let rows = self.select(&table, conditions, as_of, limit)?;
                 Ok(QueryResult::Rows { data: rows })
             }
@@ -76,14 +92,17 @@ impl Engine {
         as_of: Option<AsOf>,
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
 
         let sequence = match as_of {
             Some(AsOf::Sequence(seq)) => Some(seq),
             Some(AsOf::Timestamp(ts)) => {
                 let events = storage.read_all_events()?;
-                events.iter()
+                events
+                    .iter()
                     .filter(|e| e.timestamp <= ts)
                     .map(|e| e.sequence)
                     .max()
@@ -91,21 +110,29 @@ impl Engine {
             Some(AsOf::Now) | None => None,
         };
 
-        let state = storage.reconstruct_state_at(sequence)?;
+        let max_results = limit.unwrap_or(usize::MAX);
+        let mut results: Vec<serde_json::Value> = Vec::new();
 
-        let mut results: Vec<serde_json::Value> = state
-            .into_iter()
-            .filter_map(|(_, row)| {
-                if Self::matches_conditions(&row, &conditions) {
-                    Some(row)
-                } else {
-                    None
+        if let Some(candidate_keys) = self.index_candidate_keys(table, &conditions) {
+            if !candidate_keys.is_empty() {
+                for (_, row) in storage.load_rows_at(&candidate_keys, sequence)? {
+                    if Self::matches_conditions(&row, &conditions) {
+                        results.push(row);
+                        if results.len() >= max_results {
+                            break;
+                        }
+                    }
                 }
-            })
-            .collect();
-
-        if let Some(limit) = limit {
-            results.truncate(limit);
+            }
+        } else {
+            for (_, row) in storage.reconstruct_state_at(sequence)? {
+                if Self::matches_conditions(&row, &conditions) {
+                    results.push(row);
+                    if results.len() >= max_results {
+                        break;
+                    }
+                }
+            }
         }
 
         Ok(results)
@@ -125,8 +152,14 @@ impl Engine {
         })
     }
 
-    fn get_drift_history(&self, table: &str, primary_key: serde_json::Value) -> Result<Vec<serde_json::Value>> {
-        let storage = self.tables.get(table)
+    fn get_drift_history(
+        &self,
+        table: &str,
+        primary_key: serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>> {
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
 
         let events = storage.read_all_events()?;
@@ -149,7 +182,9 @@ impl Engine {
     }
 
     fn get_table_primary_key(&self, table: &str) -> Result<String> {
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
         Ok(storage.schema().primary_key.clone())
     }

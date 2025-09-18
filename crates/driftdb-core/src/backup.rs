@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -50,6 +51,9 @@ impl BackupManager {
         let backup_path = backup_path.as_ref();
         info!("Starting full backup to {:?}", backup_path);
 
+        let timer = Instant::now();
+        let mut total_bytes = 0u64;
+
         // Create backup directory
         fs::create_dir_all(backup_path)?;
 
@@ -82,10 +86,13 @@ impl BackupManager {
 
         // Backup each table
         for table in &tables {
+            total_bytes +=
+                self.calculate_directory_size(&self.data_dir.join("tables").join(table))?;
             self.backup_table(table, backup_path)?;
         }
 
         // Backup WAL
+        total_bytes += self.calculate_directory_size(&self.data_dir.join("wal"))?;
         self.backup_wal(backup_path)?;
 
         // Compute and save metadata with checksum
@@ -98,6 +105,7 @@ impl BackupManager {
         serde_json::to_writer_pretty(metadata_file, &final_metadata)?;
 
         info!("Full backup completed successfully");
+        self.metrics.record_read(total_bytes, timer.elapsed(), true);
         Ok(final_metadata)
     }
 
@@ -109,8 +117,13 @@ impl BackupManager {
         since_sequence: u64,
     ) -> Result<BackupMetadata> {
         let backup_path = backup_path.as_ref();
-        info!("Starting incremental backup since sequence {} to {:?}",
-              since_sequence, backup_path);
+        info!(
+            "Starting incremental backup since sequence {} to {:?}",
+            since_sequence, backup_path
+        );
+
+        let timer = Instant::now();
+        let mut total_bytes = 0u64;
 
         // Create backup directory
         fs::create_dir_all(backup_path)?;
@@ -125,6 +138,7 @@ impl BackupManager {
             for entry in entries {
                 let entry = entry?;
                 let src_path = entry.path();
+                total_bytes += src_path.metadata().map(|m| m.len()).unwrap_or(0);
                 let file_name = entry.file_name();
                 let dst_path = wal_dir_dst.join(file_name);
 
@@ -151,6 +165,7 @@ impl BackupManager {
         serde_json::to_writer_pretty(metadata_file, &metadata)?;
 
         info!("Incremental backup completed successfully");
+        self.metrics.record_read(total_bytes, timer.elapsed(), true);
         Ok(metadata)
     }
 
@@ -168,6 +183,9 @@ impl BackupManager {
 
         info!("Starting restore from {:?} to {:?}", backup_path, target);
 
+        let timer = Instant::now();
+        let total_bytes = self.calculate_directory_size(backup_path)?;
+
         // Load metadata
         let metadata_path = backup_path.join("metadata.json");
         let metadata_file = File::open(metadata_path)?;
@@ -177,7 +195,7 @@ impl BackupManager {
         let computed_checksum = self.compute_backup_checksum(backup_path)?;
         if computed_checksum != metadata.checksum {
             return Err(DriftError::Other(
-                "Backup checksum verification failed".into()
+                "Backup checksum verification failed".into(),
             ));
         }
 
@@ -193,6 +211,8 @@ impl BackupManager {
         self.restore_wal(backup_path, &target)?;
 
         info!("Restore completed successfully");
+        self.metrics
+            .record_write(total_bytes, timer.elapsed(), true);
         Ok(())
     }
 
@@ -202,6 +222,9 @@ impl BackupManager {
         let backup_path = backup_path.as_ref();
         info!("Verifying backup at {:?}", backup_path);
 
+        let timer = Instant::now();
+        let mut bytes_verified = 0u64;
+
         // Load metadata
         let metadata_path = backup_path.join("metadata.json");
         if !metadata_path.exists() {
@@ -210,6 +233,7 @@ impl BackupManager {
         }
 
         let metadata_file = File::open(metadata_path)?;
+        bytes_verified += metadata_file.metadata().map(|m| m.len()).unwrap_or(0);
         let metadata: BackupMetadata = serde_json::from_reader(metadata_file)?;
 
         // Verify checksum
@@ -226,9 +250,12 @@ impl BackupManager {
                 error!("Table backup missing: {}", table);
                 return Ok(false);
             }
+            bytes_verified += self.calculate_directory_size(&table_backup)?;
         }
 
         info!("Backup verification successful");
+        self.metrics
+            .record_read(bytes_verified, timer.elapsed(), true);
         Ok(true)
     }
 
@@ -307,7 +334,8 @@ impl BackupManager {
 
             // For decompression, adjust destination filename
             let dst_file_name = if matches!(compression, CompressionType::None)
-                && file_name.to_str().map_or(false, |s| s.ends_with(".zst")) {
+                && file_name.to_str().map_or(false, |s| s.ends_with(".zst"))
+            {
                 // For now, special case for schema.zst -> schema.yaml
                 // In production, we'd store original extension in metadata
                 let name_str = file_name.to_str().unwrap();
@@ -338,6 +366,27 @@ impl BackupManager {
         }
 
         Ok(())
+    }
+
+    fn calculate_directory_size(&self, path: &Path) -> Result<u64> {
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let mut total = 0u64;
+        let mut dirs = vec![path.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let entry_path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    dirs.push(entry_path);
+                } else if entry.file_type()?.is_file() {
+                    total += entry.metadata()?.len();
+                }
+            }
+        }
+        Ok(total)
     }
 
     fn copy_with_compression(
@@ -383,7 +432,9 @@ impl BackupManager {
                 encoder.finish()?;
             }
             CompressionType::Gzip => {
-                return Err(DriftError::Other("Gzip compression not yet implemented".into()));
+                return Err(DriftError::Other(
+                    "Gzip compression not yet implemented".into(),
+                ));
             }
         }
 
@@ -391,7 +442,7 @@ impl BackupManager {
     }
 
     fn compute_backup_checksum(&self, backup_path: &Path) -> Result<String> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
 
@@ -408,9 +459,7 @@ impl BackupManager {
             return Ok(());
         }
 
-        let mut entries: Vec<_> = fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .collect();
+        let mut entries: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
 
         // Sort for consistent hashing
         entries.sort_by_key(|e| e.path());
@@ -479,20 +528,30 @@ mod tests {
         }
 
         // The file should be compressed - it creates schema.zst (replacing .yaml with .zst)
-        let backup_file = backup_dir.path()
+        let backup_file = backup_dir
+            .path()
             .join("tables")
             .join("test_table")
-            .join("schema.zst");  // Note: extension is replaced, not appended
-        assert!(backup_file.exists(), "Backup file should exist as schema.zst");
+            .join("schema.zst"); // Note: extension is replaced, not appended
+        assert!(
+            backup_file.exists(),
+            "Backup file should exist as schema.zst"
+        );
 
         // Restore to new location
-        manager.restore_from_backup(backup_dir.path(), Some(restore_dir.path())).unwrap();
+        manager
+            .restore_from_backup(backup_dir.path(), Some(restore_dir.path()))
+            .unwrap();
 
         // Verify restored data
-        let restored_file = restore_dir.path()
+        let restored_file = restore_dir
+            .path()
             .join("tables")
             .join("test_table")
             .join("schema.yaml");
-        assert!(restored_file.exists(), "Restored file should exist without .zst extension");
+        assert!(
+            restored_file.exists(),
+            "Restored file should exist without .zst extension"
+        );
     }
 }

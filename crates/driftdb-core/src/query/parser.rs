@@ -1,8 +1,8 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until, take_while1},
-    character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1},
-    combinator::{map, opt, recognize, value},
+    character::complete::{alpha1, alphanumeric1, char, multispace0},
+    combinator::{map, opt, recognize},
     multi::{many0, separated_list0},
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
@@ -41,7 +41,7 @@ fn json_value(input: &str) -> IResult<&str, serde_json::Value> {
     } else {
         let (input, raw) = recognize(tuple((
             opt(char('-')),
-            take_while1(|c: char| c.is_numeric() || c == '.')
+            take_while1(|c: char| c.is_numeric() || c == '.'),
         )))(input)?;
         if let Ok(num) = raw.parse::<f64>() {
             Ok((input, serde_json::json!(num)))
@@ -92,7 +92,10 @@ fn insert(input: &str) -> IResult<&str, Query> {
     // Find the JSON object starting from '{'
     let trimmed = input.trim_start();
     if !trimmed.starts_with('{') {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     // Find the matching closing brace
@@ -124,7 +127,10 @@ fn insert(input: &str) -> IResult<&str, Query> {
     }
 
     if depth != 0 {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     let json_str = &trimmed[..end_idx];
@@ -152,7 +158,10 @@ fn patch(input: &str) -> IResult<&str, Query> {
     // Parse the JSON object for updates
     let trimmed = input.trim_start();
     if !trimmed.starts_with('{') {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     let mut depth = 0;
@@ -183,7 +192,10 @@ fn patch(input: &str) -> IResult<&str, Query> {
     }
 
     if depth != 0 {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     let json_str = &trimmed[..end_idx];
@@ -238,15 +250,19 @@ fn as_of_clause(input: &str) -> IResult<&str, AsOf> {
     let (input, _) = ws(tag_no_case("OF"))(input)?;
 
     alt((
-        map(preceded(tag("@seq:"), take_while1(|c: char| c.is_numeric())), |s: &str| {
-            AsOf::Sequence(s.parse().unwrap_or(0))
-        }),
+        map(
+            preceded(tag("@seq:"), take_while1(|c: char| c.is_numeric())),
+            |s: &str| AsOf::Sequence(s.parse().unwrap_or(0)),
+        ),
         map(tag("@now"), |_| AsOf::Now),
-        map(delimited(char('"'), take_until("\""), char('"')), |s: &str| {
-            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-                .map(AsOf::Timestamp)
-                .unwrap_or(AsOf::Now)
-        }),
+        map(
+            delimited(char('"'), take_until("\""), char('"')),
+            |s: &str| {
+                time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                    .map(AsOf::Timestamp)
+                    .unwrap_or(AsOf::Now)
+            },
+        ),
     ))(input)
 }
 
@@ -258,10 +274,7 @@ fn select(input: &str) -> IResult<&str, Query> {
 
     let (input, conditions) = opt(preceded(
         ws(tag_no_case("WHERE")),
-        separated_list0(
-            ws(tag_no_case("AND")),
-            where_condition,
-        ),
+        separated_list0(ws(tag_no_case("AND")), where_condition),
     ))(input)?;
 
     let (input, as_of) = opt(as_of_clause)(input)?;

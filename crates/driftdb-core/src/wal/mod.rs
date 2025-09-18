@@ -31,11 +31,11 @@ pub enum WalOperation {
 }
 
 /// WAL entry with CRC for integrity
-#[derive(Debug, Serialize, Deserialize)]
-struct WalEntry {
-    sequence: u64,
-    operation: WalOperation,
-    crc32: u32,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalEntry {
+    pub sequence: u64,
+    pub operation: WalOperation,
+    pub crc32: u32,
 }
 
 impl WalEntry {
@@ -50,8 +50,7 @@ impl WalEntry {
     }
 
     fn calculate_crc(&self) -> u32 {
-        let data = rmp_serde::to_vec(&(&self.sequence, &self.operation))
-            .unwrap_or_default();
+        let data = rmp_serde::to_vec(&(&self.sequence, &self.operation)).unwrap_or_default();
         crc32fast::hash(&data)
     }
 
@@ -96,7 +95,10 @@ impl Wal {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let operation = WalOperation::Begin { txn_id, timestamp_ms };
+        let operation = WalOperation::Begin {
+            txn_id,
+            timestamp_ms,
+        };
         self.write_operation(operation)?;
         Ok(txn_id)
     }
@@ -128,7 +130,10 @@ impl Wal {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let operation = WalOperation::Checkpoint { sequence, timestamp_ms };
+        let operation = WalOperation::Checkpoint {
+            sequence,
+            timestamp_ms,
+        };
         self.write_operation(operation)?;
 
         // Optionally rotate the WAL file after checkpoint
@@ -203,9 +208,10 @@ impl Wal {
 
             // Verify integrity
             if !entry.verify() {
-                return Err(DriftError::CorruptSegment(
-                    format!("Corrupted WAL entry at sequence {}", entry.sequence)
-                ));
+                return Err(DriftError::CorruptSegment(format!(
+                    "Corrupted WAL entry at sequence {}",
+                    entry.sequence
+                )));
             }
 
             callback(entry.operation)?;
@@ -231,10 +237,7 @@ struct WalWriter {
 
 impl WalWriter {
     fn new(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         Ok(Self {
             file: BufWriter::new(file),
@@ -346,9 +349,10 @@ impl Iterator for WalReader {
         }
 
         let len = u32::from_le_bytes(len_bytes) as usize;
-        if len == 0 || len > 10 * 1024 * 1024 { // Sanity check: max 10MB per entry
+        if len == 0 || len > 10 * 1024 * 1024 {
+            // Sanity check: max 10MB per entry
             return Some(Err(DriftError::CorruptSegment(
-                "Invalid WAL entry length".into()
+                "Invalid WAL entry length".into(),
             )));
         }
 
@@ -416,7 +420,8 @@ mod tests {
         wal.replay_from(None, |op| {
             replayed.push(op);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(replayed.len(), 3); // Begin, Write, Commit
     }

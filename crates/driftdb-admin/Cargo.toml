@@ -1,0 +1,28 @@
+[package]
+name = "driftdb-admin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "driftdb-admin"
+path = "src/main.rs"
+
+[dependencies]
+driftdb-core = { path = "../driftdb-core" }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+prettytable-rs = "0.10"
+indicatif = "0.17"
+colored = "2"
+ratatui = "0.24"
+crossterm = "0.27"
+tui-textarea = "0.4"
+humantime = "2"
+byte-unit = "4"
+chrono = "0.4"
+tracing-subscriber = "0.3"

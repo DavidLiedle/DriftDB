@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use crate::errors::Result;
@@ -58,8 +58,8 @@ impl Snapshot {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let compressed = std::io::Read::bytes(reader)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let compressed =
+            std::io::Read::bytes(reader).collect::<std::result::Result<Vec<_>, _>>()?;
         let data = zstd::decode_all(&compressed[..])?;
         Ok(bincode::deserialize(&data)?)
     }

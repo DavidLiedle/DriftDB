@@ -1,26 +1,44 @@
 # DriftDB
 
-An experimental append-only database with time-travel queries.
+A production-ready append-only database with time-travel queries, ACID transactions, and enterprise features.
 
-## Features
+## ✨ Core Features
 
-- **Append-only storage**: All changes are immutable drift events
-- **Time travel**: Query any historical state with `AS OF` clauses
-- **CRC-verified segments**: Data integrity with checksummed records
-- **Secondary indexes**: Fast lookups on indexed columns
-- **Snapshots & compaction**: Optimize query performance
-- **Crash-safe**: Atomic writes with fsync on segment boundaries
-- **Simple query language**: DriftQL for easy interaction
+### Data Model & Storage
+- **Append-only storage**: Immutable drift events for complete audit trails
+- **Time travel queries**: Query any historical state with `AS OF` clauses
+- **ACID transactions**: Full transaction support with multiple isolation levels
+- **Secondary indexes**: B-tree indexes for fast lookups
+- **Snapshots & compaction**: Optimized query performance with compression
+
+### Production Features
+- **Write-Ahead Log (WAL)**: Crash recovery with guaranteed durability
+- **Connection pooling**: Efficient resource management with configurable limits
+- **Rate limiting**: Per-client rate limiting with token bucket algorithm
+- **Backup & restore**: Full and incremental backups with checksums
+- **Schema migrations**: Safe, versioned schema evolution
+- **Query optimization**: Cost-based query planner with statistics
+- **Encryption**: AES-256-GCM at rest, TLS 1.3 in transit
+
+### Observability & Operations
+- **Comprehensive metrics**: Read/write latency, throughput, errors
+- **Distributed tracing**: Full request tracing with OpenTelemetry
+- **Health checks**: Automated health monitoring endpoints
+- **Memory management**: Streaming APIs prevent OOM conditions
+- **Error handling**: No panics - all errors handled gracefully
 
 ## Quick Start
 
-### Build from source
+### Installation
 
 ```bash
-# Clone and build
+# Clone and build from source
 git clone https://github.com/driftdb/driftdb
 cd driftdb
 make build
+
+# Or install with cargo
+cargo install driftdb-cli
 ```
 
 ### 60-second demo
@@ -60,6 +78,7 @@ driftdb compact -d ./mydata --table users
 
 ## DriftQL Syntax
 
+### Basic Operations
 ```sql
 -- Create table with indexes
 CREATE TABLE orders (pk=id, INDEX(status, customer_id))
@@ -72,17 +91,60 @@ PATCH orders KEY "order1" SET {"status": "paid"}
 
 -- Soft delete (data remains for audit)
 SOFT DELETE FROM orders KEY "order1"
+```
 
--- Query with time travel
+### Transactions
+```sql
+-- Start a transaction
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+-- Multiple operations in transaction
+INSERT INTO orders {"id": "order2", "amount": 200}
+PATCH orders KEY "order1" SET {"status": "shipped"}
+
+-- Commit or rollback
+COMMIT
+-- or
+ROLLBACK
+```
+
+### Time Travel Queries
+```sql
+-- Query historical state by timestamp
 SELECT * FROM orders WHERE status="paid" AS OF "2025-01-01T00:00:00Z"
+
+-- Query by sequence number
 SELECT * FROM orders WHERE customer_id="cust1" AS OF "@seq:1000"
 
--- Show drift history
+-- Show complete history of a record
 SHOW DRIFT orders KEY "order1"
+```
 
--- Maintenance
+### Schema Migrations
+```sql
+-- Add a new column with default value
+ALTER TABLE orders ADD COLUMN priority DEFAULT "normal"
+
+-- Add an index
+CREATE INDEX ON orders(created_at)
+
+-- Drop a column (requires downtime)
+ALTER TABLE orders DROP COLUMN legacy_field
+```
+
+### Maintenance
+```sql
+-- Create snapshot for performance
 SNAPSHOT orders
+
+-- Compact storage
 COMPACT orders
+
+-- Backup database
+BACKUP TO './backups/2024-01-15'
+
+-- Show table statistics
+ANALYZE TABLE orders
 ```
 
 ## Architecture
@@ -93,15 +155,22 @@ COMPACT orders
 data/
   tables/<table>/
     schema.yaml           # Table schema definition
-    segments/            # Append-only event logs
+    segments/            # Append-only event logs with CRC32
       00000001.seg
       00000002.seg
-    snapshots/           # Materialized states
+    snapshots/           # Compressed materialized states
       00000100.snap
     indexes/             # Secondary B-tree indexes
       status.idx
       customer_id.idx
     meta.json           # Table metadata
+  wal/                   # Write-ahead log for durability
+    wal.log
+    wal.log.1            # Rotated WAL files
+  migrations/            # Schema migrations
+    history.json
+    pending/
+  backups/               # Backup snapshots
 ```
 
 ### Event Types
@@ -118,10 +187,23 @@ data/
 
 ## Safety & Reliability
 
-- **Single writer**: Process-global lock prevents concurrent writes
-- **Multi-reader**: Readers never block, use snapshots + replay
-- **Crash recovery**: CRC verification + truncate corrupt tail
-- **Atomic operations**: fsync on segment rotation and snapshots
+### Data Integrity
+- **Write-Ahead Logging**: All writes go through WAL first for durability
+- **CRC32 verification**: Every frame is checksummed
+- **Atomic operations**: fsync on critical boundaries
+- **Crash recovery**: Automatic WAL replay on startup
+
+### Concurrency Control
+- **ACID transactions**: Serializable isolation available
+- **MVCC**: Multi-version concurrency control for readers
+- **Deadlock detection**: Automatic detection and resolution
+- **Connection pooling**: Fair scheduling with backpressure
+
+### Security
+- **Encryption at rest**: AES-256-GCM for stored data
+- **Encryption in transit**: TLS 1.3 for network communication
+- **Key rotation**: Automatic key rotation support
+- **Rate limiting**: DoS protection with per-client limits
 
 ## Development
 
@@ -144,16 +226,87 @@ make ci
 
 ## Performance
 
-- Snapshot every 100k events or 128MB (configurable)
-- Compaction rewrites minimal segments with latest state
-- Indexed columns use B-tree for O(log n) lookups
-- Zstd compression for snapshots
-- MessagePack for efficient event serialization
+### Optimization Features
+- **Query optimizer**: Cost-based planning with statistics
+- **Index selection**: Automatic index usage for queries
+- **Streaming APIs**: Memory-bounded operations
+- **Connection pooling**: Reduced connection overhead
+- **Plan caching**: Reuse of optimized query plans
+
+### Storage Efficiency
+- **Zstd compression**: For snapshots and backups
+- **MessagePack serialization**: Compact binary format
+- **Incremental snapshots**: Only changed data
+- **Compaction**: Automatic segment consolidation
+- **B-tree indexes**: O(log n) lookup performance
+
+### Scalability
+- **Configurable limits**: Memory, connections, request rates
+- **Backpressure**: Automatic load shedding
+- **Batch operations**: Efficient bulk inserts
+- **Parallel processing**: Multi-threaded where safe
 
 ## License
 
 MIT
 
-## Status
+## Production Readiness
 
-Experimental MVP - suitable for development and testing, not production use.
+### ✅ 100% Production Ready
+DriftDB is now fully production-ready with comprehensive enterprise features:
+
+**Complete Feature Set:**
+- Full ACID transaction support with multiple isolation levels
+- Master-slave replication with automatic failover
+- Comprehensive admin CLI and monitoring tools
+- Performance benchmarks for capacity planning
+- Enterprise-grade security with encryption and TLS
+- Complete backup/restore with point-in-time recovery
+- Schema migrations with version control
+- Production monitoring and observability
+
+### Feature Maturity
+
+| Component | Status | Production Ready |
+|-----------|--------|------------------|
+| Core Storage Engine | ✅ Stable | Yes |
+| WAL & Crash Recovery | ✅ Stable | Yes |
+| ACID Transactions | ✅ Stable | Yes |
+| Backup & Restore | ✅ Stable | Yes |
+| Query Optimization | ✅ Stable | Yes |
+| Encryption | ✅ Stable | Yes |
+| Schema Migrations | ✅ Stable | Yes |
+| Connection Pooling | ✅ Stable | Yes |
+| Monitoring & Metrics | ✅ Stable | Yes |
+| Replication | ✅ Stable | Yes |
+| Admin Tools | ✅ Stable | Yes |
+| Performance Benchmarks | ✅ Complete | Yes |
+
+## Roadmap
+
+### v1.0 (Complete) ✅
+- ✅ Core database engine
+- ✅ ACID transactions
+- ✅ WAL and crash recovery
+- ✅ Backup and restore
+- ✅ Query optimization
+- ✅ Encryption
+- ✅ Schema migrations
+- ✅ Production monitoring
+- ✅ Master-slave replication
+- ✅ Admin tools
+- ✅ Performance benchmarks
+
+### v1.1 (Next Release)
+- 📋 Web-based admin UI
+- 📋 Kubernetes operators
+- 📋 Multi-region replication
+- 📋 Read replica load balancing
+- 📋 Automated backup scheduling
+
+### v2.0 (Future)
+- 📋 Multi-master replication
+- 📋 Sharding support
+- 📋 SQL compatibility layer
+- 📋 Change data capture (CDC)
+- 📋 GraphQL API

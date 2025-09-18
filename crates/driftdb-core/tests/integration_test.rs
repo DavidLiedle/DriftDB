@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use driftdb_core::{
-    Engine, Event,
     backup::BackupManager,
     connection::{ConnectionPool, PoolConfig},
     observability::Metrics,
     transaction::{IsolationLevel, TransactionManager},
     wal::Wal,
+    Engine, Event,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -55,21 +55,18 @@ async fn test_end_to_end_workflow() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create table
-    engine.create_table(
-        "orders",
-        "id",
-        vec!["status".to_string(), "customer_id".to_string()],
-    ).unwrap();
+    engine
+        .create_table(
+            "orders",
+            "id",
+            vec!["status".to_string(), "customer_id".to_string()],
+        )
+        .unwrap();
 
     // Insert test data
     let generator = TestDataGenerator::new();
-    for _ in 0..100 {
-        let (key, value) = generator.generate_order();
-        let event = Event::new_insert(
-            "orders".to_string(),
-            json!(key),
-            value,
-        );
+    for (key, value) in generator.generate_batch(100) {
+        let event = Event::new_insert("orders".to_string(), json!(key), value);
         engine.apply_event(event).unwrap();
     }
 
@@ -98,11 +95,7 @@ async fn test_concurrent_transactions() {
         let txn = tx_mgr_clone1.begin(IsolationLevel::RepeatableRead).unwrap();
         barrier_clone1.wait().await;
 
-        let event = Event::new_insert(
-            "test".to_string(),
-            json!("key1"),
-            json!({"value": 1}),
-        );
+        let event = Event::new_insert("test".to_string(), json!("key1"), json!({"value": 1}));
         tx_mgr_clone1.write(&txn, event).unwrap();
 
         sleep(Duration::from_millis(10)).await;
@@ -114,11 +107,7 @@ async fn test_concurrent_transactions() {
         let txn = tx_mgr_clone2.begin(IsolationLevel::RepeatableRead).unwrap();
         barrier_clone2.wait().await;
 
-        let event = Event::new_insert(
-            "test".to_string(),
-            json!("key2"),
-            json!({"value": 2}),
-        );
+        let event = Event::new_insert("test".to_string(), json!("key2"), json!({"value": 2}));
         tx_mgr_clone2.write(&txn, event).unwrap();
 
         sleep(Duration::from_millis(10)).await;
@@ -189,7 +178,9 @@ async fn test_backup_and_restore() {
 
     // Create engine and add data
     let mut engine = Engine::init(data_dir.path()).unwrap();
-    engine.create_table("users", "id", vec!["email".to_string()]).unwrap();
+    engine
+        .create_table("users", "id", vec!["email".to_string()])
+        .unwrap();
 
     for i in 0..10 {
         let event = Event::new_insert(
@@ -210,7 +201,9 @@ async fn test_backup_and_restore() {
     assert!(metadata.tables.contains(&"users".to_string()));
 
     // Restore to new location
-    backup_mgr.restore_from_backup(backup_dir.path(), Some(restore_dir.path())).unwrap();
+    backup_mgr
+        .restore_from_backup(backup_dir.path(), Some(restore_dir.path()))
+        .unwrap();
 
     // Verify restored data exists - opening should succeed
     let _restored_engine = Engine::open(restore_dir.path()).unwrap();
@@ -252,7 +245,8 @@ async fn test_crash_recovery_via_wal() {
         wal.replay_from(None, |op| {
             events.push(op);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         // Should have begin, 5 writes, and commit
         assert!(events.len() >= 7);
@@ -317,4 +311,3 @@ async fn test_isolation_levels() {
     let result = tx_mgr.write(&txn4, event);
     assert!(result.is_err()); // Should detect conflict
 }
-

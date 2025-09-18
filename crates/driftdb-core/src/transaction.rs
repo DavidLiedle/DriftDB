@@ -7,6 +7,7 @@
 //! - Durability: WAL ensures committed data survives crashes
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::events::{Event, EventType};
+use crate::events::Event;
 use crate::observability::Metrics;
 use crate::wal::Wal;
 
@@ -58,9 +59,9 @@ pub struct Transaction {
     pub state: TransactionState,
     pub start_time: Instant,
     pub snapshot_version: u64,
-    pub read_set: HashSet<String>,    // Keys read
+    pub read_set: HashSet<String>,         // Keys read
     pub write_set: HashMap<String, Event>, // Pending writes
-    pub locked_keys: HashSet<String>, // Keys locked for this transaction
+    pub locked_keys: HashSet<String>,      // Keys locked for this transaction
     pub timeout: Duration,
 }
 
@@ -80,11 +81,17 @@ impl Transaction {
     }
 
     pub fn is_active(&self) -> bool {
-        matches!(self.state, TransactionState::Active | TransactionState::Preparing)
+        matches!(
+            self.state,
+            TransactionState::Active | TransactionState::Preparing
+        )
     }
 
     pub fn is_terminated(&self) -> bool {
-        matches!(self.state, TransactionState::Committed | TransactionState::Aborted)
+        matches!(
+            self.state,
+            TransactionState::Committed | TransactionState::Aborted
+        )
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -138,7 +145,8 @@ impl LockManager {
 
         // Grant read lock
         let mut read_locks = self.read_locks.write();
-        read_locks.entry(key.to_string())
+        read_locks
+            .entry(key.to_string())
             .or_insert_with(HashSet::new)
             .insert(txn_id);
 
@@ -179,22 +187,33 @@ impl LockManager {
     }
 
     /// Wait for a lock (with deadlock detection)
-    fn wait_for_lock(&self, txn_id: u64, key: &str, lock_type: LockType, blocking_txn: u64) -> Result<()> {
+    fn wait_for_lock(
+        &self,
+        txn_id: u64,
+        key: &str,
+        lock_type: LockType,
+        blocking_txn: u64,
+    ) -> Result<()> {
         // Simple deadlock detection: check if blocking_txn is waiting for txn_id
         if self.would_cause_deadlock(txn_id, blocking_txn) {
-            error!("Deadlock detected: txn {} waiting for txn {}", txn_id, blocking_txn);
+            error!(
+                "Deadlock detected: txn {} waiting for txn {}",
+                txn_id, blocking_txn
+            );
             return Err(DriftError::Lock("Deadlock detected".to_string()));
         }
 
         // Add to wait queue
         let mut wait_queue = self.wait_queue.lock();
-        wait_queue.entry(key.to_string())
+        wait_queue
+            .entry(key.to_string())
             .or_insert_with(Vec::new)
             .push((txn_id, lock_type));
 
         // Update waits-for graph
         let mut waits_for = self.waits_for.lock();
-        waits_for.entry(txn_id)
+        waits_for
+            .entry(txn_id)
             .or_insert_with(HashSet::new)
             .insert(blocking_txn);
 
@@ -239,7 +258,7 @@ impl LockManager {
 
         // Release write locks and notify waiters
         let released_keys: Vec<String> = {
-            let mut write_locks = self.write_locks.write();
+            let write_locks = self.write_locks.read();
             write_locks
                 .iter()
                 .filter_map(|(key, &owner)| {
@@ -305,13 +324,23 @@ impl TransactionManager {
         }
     }
 
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let wal = Arc::new(Wal::new(path.as_ref())?);
+        let metrics = Arc::new(Metrics::new());
+        Ok(Self::new(wal, metrics))
+    }
+
     /// Begin a new transaction
     #[instrument(skip(self))]
     pub fn begin(&self, isolation: IsolationLevel) -> Result<Arc<Mutex<Transaction>>> {
         let txn_id = self.next_txn_id.fetch_add(1, Ordering::SeqCst);
         let snapshot_version = self.current_version.load(Ordering::SeqCst);
 
-        let txn = Arc::new(Mutex::new(Transaction::new(txn_id, isolation, snapshot_version)));
+        let txn = Arc::new(Mutex::new(Transaction::new(
+            txn_id,
+            isolation,
+            snapshot_version,
+        )));
 
         // Record in WAL
         self.wal.begin_transaction()?;
@@ -319,14 +348,25 @@ impl TransactionManager {
         // Add to active transactions
         self.active_transactions.write().insert(txn_id, txn.clone());
 
-        info!("Started transaction {} with isolation {:?}", txn_id, isolation);
+        info!(
+            "Started transaction {} with isolation {:?}",
+            txn_id, isolation
+        );
         self.metrics.queries_total.fetch_add(1, Ordering::Relaxed);
 
         Ok(txn)
     }
 
     /// Read a value within a transaction
-    pub fn read(&self, txn: &Arc<Mutex<Transaction>>, key: &str) -> Result<Option<serde_json::Value>> {
+    pub fn read<F>(
+        &self,
+        txn: &Arc<Mutex<Transaction>>,
+        key: &str,
+        fetch: F,
+    ) -> Result<Option<serde_json::Value>>
+    where
+        F: FnOnce(u64) -> Result<Option<serde_json::Value>>,
+    {
         let mut txn_guard = txn.lock();
 
         if !txn_guard.is_active() {
@@ -344,7 +384,10 @@ impl TransactionManager {
         }
 
         // Acquire read lock for isolation
-        if matches!(txn_guard.isolation, IsolationLevel::RepeatableRead | IsolationLevel::Serializable) {
+        if matches!(
+            txn_guard.isolation,
+            IsolationLevel::RepeatableRead | IsolationLevel::Serializable
+        ) {
             self.lock_manager.acquire_read_lock(txn_guard.id, key)?;
             txn_guard.locked_keys.insert(key.to_string());
         }
@@ -352,9 +395,10 @@ impl TransactionManager {
         // Record read for conflict detection
         txn_guard.read_set.insert(key.to_string());
 
-        // In production, would read from storage at snapshot_version
-        // For now, return None (key not found)
-        Ok(None)
+        let snapshot_seq = txn_guard.snapshot_version;
+        let result = fetch(snapshot_seq)?;
+
+        Ok(result)
     }
 
     /// Write a value within a transaction
@@ -397,7 +441,9 @@ impl TransactionManager {
         if txn_guard.isolation == IsolationLevel::Serializable {
             if !self.validate_transaction(&txn_guard)? {
                 self.abort_internal(&mut txn_guard)?;
-                return Err(DriftError::Other("Transaction validation failed".to_string()));
+                return Err(DriftError::Other(
+                    "Transaction validation failed".to_string(),
+                ));
             }
         }
 
@@ -477,7 +523,9 @@ impl TransactionManager {
 
             // Check for read-write conflicts
             for read_key in &txn.read_set {
-                if other.write_set.contains_key(read_key) && other.snapshot_version < txn.snapshot_version {
+                if other.write_set.contains_key(read_key)
+                    && other.snapshot_version < txn.snapshot_version
+                {
                     debug!("Read-write conflict detected on key {}", read_key);
                     return Ok(false);
                 }
@@ -515,6 +563,83 @@ impl TransactionManager {
             total_started: self.next_txn_id.load(Ordering::SeqCst) - 1,
             current_version: self.current_version.load(Ordering::SeqCst),
         }
+    }
+
+    // Simplified methods for Engine integration
+    pub fn simple_begin(
+        &mut self,
+        isolation: IsolationLevel,
+        snapshot_sequence: u64,
+    ) -> Result<u64> {
+        let txn_id = self.next_txn_id.fetch_add(1, Ordering::SeqCst);
+        let txn = Arc::new(Mutex::new(Transaction::new(
+            txn_id,
+            isolation,
+            snapshot_sequence,
+        )));
+        self.active_transactions.write().insert(txn_id, txn);
+
+        Ok(txn_id)
+    }
+
+    pub fn add_write(&mut self, txn_id: u64, event: Event) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?
+            .clone();
+
+        drop(active_txns);
+
+        let mut txn_guard = txn.lock();
+        let key = event.primary_key.to_string();
+
+        self.lock_manager.acquire_write_lock(txn_guard.id, &key)?;
+        txn_guard.locked_keys.insert(key.clone());
+        txn_guard.write_set.insert(key, event);
+        Ok(())
+    }
+
+    pub fn simple_commit(&mut self, txn_id: u64) -> Result<Vec<Event>> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?
+            .clone();
+
+        drop(active_txns);
+
+        let mut txn_guard = txn.lock();
+        txn_guard.state = TransactionState::Committed;
+
+        let events: Vec<Event> = txn_guard.write_set.values().cloned().collect();
+
+        drop(txn_guard);
+
+        self.lock_manager.release_transaction_locks(txn_id);
+        self.active_transactions.write().remove(&txn_id);
+
+        Ok(events)
+    }
+
+    pub fn rollback(&mut self, txn_id: u64) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?
+            .clone();
+
+        drop(active_txns);
+
+        let mut txn_guard = txn.lock();
+        txn_guard.state = TransactionState::Aborted;
+
+        drop(txn_guard);
+
+        self.lock_manager.release_transaction_locks(txn_id);
+        self.active_transactions.write().remove(&txn_id);
+
+        Ok(())
     }
 }
 

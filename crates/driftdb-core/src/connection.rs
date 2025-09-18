@@ -15,12 +15,12 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Semaphore, OwnedSemaphorePermit};
-use tracing::{debug, error, info, instrument, warn};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::{debug, info, instrument};
 
 use crate::errors::{DriftError, Result};
 use crate::observability::Metrics;
-use crate::transaction::{TransactionManager, IsolationLevel};
+use crate::transaction::{IsolationLevel, TransactionManager};
 
 /// Connection pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,7 +269,9 @@ impl ConnectionPool {
 
         self.connections.write().insert(conn_id, conn);
         self.available.lock().push_back(conn_id);
-        self.metrics.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .active_connections
+            .fetch_add(1, Ordering::Relaxed);
 
         debug!("Created connection {}", conn_id);
         Ok(conn_id)
@@ -286,25 +288,32 @@ impl ConnectionPool {
         // Get or create client session
         let client_session = {
             let mut clients = self.clients.write();
-            clients.entry(client_addr)
-                .or_insert_with(|| Arc::new(ClientSession::new(
-                    client_addr,
-                    self.config.rate_limit_per_client,
-                )))
+            clients
+                .entry(client_addr)
+                .or_insert_with(|| {
+                    Arc::new(ClientSession::new(
+                        client_addr,
+                        self.config.rate_limit_per_client,
+                    ))
+                })
                 .clone()
         };
 
         // Check rate limiting and concurrency
         if !client_session.can_make_request(self.config.max_concurrent_per_client) {
             self.metrics.queries_failed.fetch_add(1, Ordering::Relaxed);
-            return Err(DriftError::Other("Rate limit or concurrency limit exceeded".to_string()));
+            return Err(DriftError::Other(
+                "Rate limit or concurrency limit exceeded".to_string(),
+            ));
         }
 
         // Try to acquire semaphore permit
         let permit = match tokio::time::timeout(
             self.config.connection_timeout,
             self.semaphore.clone().acquire_owned(),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) | Err(_) => {
                 return Err(DriftError::Other("Connection timeout".to_string()));
@@ -368,7 +377,9 @@ impl ConnectionPool {
     fn remove_connection(&self, conn_id: u64) {
         self.connections.write().remove(&conn_id);
         self.available.lock().retain(|&id| id != conn_id);
-        self.metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.metrics
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
         debug!("Removed connection {}", conn_id);
     }
 
@@ -400,9 +411,11 @@ impl ConnectionPool {
             // Ensure minimum connections
             let _ = self.ensure_min_connections();
 
-            debug!("Health check completed: {} connections, {} clients",
-                   self.connections.read().len(),
-                   clients.len());
+            debug!(
+                "Health check completed: {} connections, {} clients",
+                self.connections.read().len(),
+                clients.len()
+            );
         }
     }
 
@@ -480,7 +493,8 @@ impl ConnectionGuard {
     /// Get current transaction
     pub fn transaction(&self) -> Option<Arc<Mutex<crate::transaction::Transaction>>> {
         let connections = self.pool.connections.read();
-        connections.get(&self.conn_id)
+        connections
+            .get(&self.conn_id)
             .and_then(|conn| conn.lock().current_transaction.clone())
     }
 }
