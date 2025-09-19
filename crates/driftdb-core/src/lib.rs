@@ -6,6 +6,15 @@ pub mod index;
 pub mod snapshot;
 pub mod query;
 pub mod engine;
+pub mod wal;
+pub mod observability;
+pub mod backup;
+pub mod transaction;
+pub mod connection;
+pub mod migration;
+pub mod optimizer;
+pub mod encryption;
+pub mod replication;
 
 #[cfg(test)]
 mod tests;

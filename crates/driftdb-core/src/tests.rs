@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use crate::*;
     use crate::errors::Result;
     use crate::events::{Event, EventType};
     use crate::schema::{ColumnDef, Schema};
@@ -352,7 +351,6 @@ mod tests {
     }
 }
 
-use std::io::Write;
 
 #[test]
 fn test_frame_roundtrip() {

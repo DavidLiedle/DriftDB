@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use fs2::FileExt;
 
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
@@ -14,12 +15,23 @@ pub struct TableStorage {
     schema: Schema,
     meta: Arc<RwLock<TableMeta>>,
     current_writer: Arc<RwLock<Option<SegmentWriter>>>,
+    _lock_file: Option<fs::File>,
 }
 
 impl TableStorage {
     pub fn create<P: AsRef<Path>>(base_path: P, schema: Schema) -> Result<Self> {
         let path = base_path.as_ref().join("tables").join(&schema.name);
         fs::create_dir_all(&path)?;
+
+        // Acquire exclusive lock on the table
+        let lock_path = path.join(".lock");
+        let lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        lock_file.try_lock_exclusive()
+            .map_err(|e| DriftError::Other(format!("Failed to acquire table lock: {}", e)))?;
 
         let schema_path = path.join("schema.yaml");
         schema.save_to_file(&schema_path)?;
@@ -40,6 +52,7 @@ impl TableStorage {
             schema,
             meta: Arc::new(RwLock::new(meta)),
             current_writer: Arc::new(RwLock::new(Some(writer))),
+            _lock_file: Some(lock_file),
         })
     }
 
@@ -49,6 +62,16 @@ impl TableStorage {
         if !path.exists() {
             return Err(DriftError::TableNotFound(table_name.to_string()));
         }
+
+        // Acquire exclusive lock on the table
+        let lock_path = path.join(".lock");
+        let lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        lock_file.try_lock_exclusive()
+            .map_err(|e| DriftError::Other(format!("Failed to acquire table lock: {}", e)))?;
 
         let schema = Schema::load_from_file(path.join("schema.yaml"))?;
         let meta = TableMeta::load_from_file(path.join("meta.json"))?;
@@ -68,6 +91,7 @@ impl TableStorage {
             schema,
             meta: Arc::new(RwLock::new(meta)),
             current_writer: Arc::new(RwLock::new(Some(writer))),
+            _lock_file: Some(lock_file),
         })
     }
 
@@ -81,8 +105,10 @@ impl TableStorage {
         if let Some(writer) = writer_guard.as_mut() {
             let bytes_written = writer.append_event(&event)?;
 
+            // Always sync after writing to ensure data is persisted
+            writer.sync()?;
+
             if bytes_written > self.segment_rotation_threshold() {
-                writer.sync()?;
                 meta.segment_count += 1;
                 let new_segment_path = self.path.join("segments")
                     .join(format!("{:08}.seg", meta.segment_count));
@@ -180,5 +206,15 @@ impl TableStorage {
 
     fn segment_rotation_threshold(&self) -> u64 {
         10 * 1024 * 1024
+    }
+}
+
+impl Drop for TableStorage {
+    fn drop(&mut self) {
+        // The lock file will be automatically unlocked when dropped
+        // But we can be explicit about it
+        if let Some(ref lock_file) = self._lock_file {
+            let _ = fs2::FileExt::unlock(lock_file);
+        }
     }
 }

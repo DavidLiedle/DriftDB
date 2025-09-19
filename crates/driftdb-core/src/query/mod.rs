@@ -3,7 +3,6 @@ pub mod executor;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 pub use parser::parse_driftql;
 
@@ -48,6 +47,7 @@ pub enum Query {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhereCondition {
     pub column: String,
+    pub operator: String,
     pub value: Value,
 }
 

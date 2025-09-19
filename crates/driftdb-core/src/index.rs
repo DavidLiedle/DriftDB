@@ -24,13 +24,13 @@ impl Index {
         if let Some(val_str) = value.as_str() {
             self.entries
                 .entry(val_str.to_string())
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(primary_key.to_string());
         } else if !value.is_null() {
             let val_str = value.to_string();
             self.entries
                 .entry(val_str)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(primary_key.to_string());
         }
     }

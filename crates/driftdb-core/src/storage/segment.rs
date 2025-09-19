@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::errors::{DriftError, Result};
+use crate::errors::Result;
 use crate::events::Event;
 use crate::storage::frame::{Frame, FramedRecord};
 

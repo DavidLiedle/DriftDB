@@ -1,8 +1,8 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until, take_while1},
-    character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1},
-    combinator::{map, opt, recognize, value},
+    character::complete::{alpha1, alphanumeric1, char, multispace0},
+    combinator::{map, opt, recognize},
     multi::{many0, separated_list0},
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
@@ -228,6 +228,7 @@ fn where_condition(input: &str) -> IResult<&str, WhereCondition> {
         input,
         WhereCondition {
             column: column.to_string(),
+            operator: "=".to_string(),
             value,
         },
     ))

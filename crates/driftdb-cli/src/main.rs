@@ -312,7 +312,11 @@ fn parse_where_clause(clause: &str) -> Result<Vec<driftdb_core::query::WhereCond
                 json!(value_str)
             };
 
-            conditions.push(driftdb_core::query::WhereCondition { column, value });
+            conditions.push(driftdb_core::query::WhereCondition {
+                column,
+                operator: "=".to_string(),
+                value
+            });
         }
     }
 

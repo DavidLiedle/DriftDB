@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use crate::errors::Result;
@@ -29,8 +29,12 @@ impl Snapshot {
             sequence,
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_else(|_| {
+                    // Fallback to a reasonable timestamp if system time is broken
+                    tracing::error!("System time is before UNIX epoch, using fallback timestamp");
+                    0
+                }),
             row_count: state.len(),
             state,
         })
