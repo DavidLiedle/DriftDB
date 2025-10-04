@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  driftdb:
+    build: .
+    image: driftdb:latest
+    container_name: driftdb-server
+    ports:
+      - "5433:5433"
+    volumes:
+      - driftdb-data:/var/lib/driftdb
+    environment:
+      - DRIFTDB_DATA_PATH=/var/lib/driftdb
+      - DRIFTDB_LISTEN=0.0.0.0:5433
+      - DRIFTDB_MAX_CONNECTIONS=100
+      - DRIFTDB_TEMPORAL=true
+    restart: unless-stopped
+    networks:
+      - driftdb-net
+
+  # Optional: PostgreSQL client for testing
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: driftdb-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@driftdb.local
+      - PGADMIN_DEFAULT_PASSWORD=driftdb
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    ports:
+      - "8080:80"
+    networks:
+      - driftdb-net
+    depends_on:
+      - driftdb
+
+volumes:
+  driftdb-data:
+    driver: local
+
+networks:
+  driftdb-net:
+    driver: bridge

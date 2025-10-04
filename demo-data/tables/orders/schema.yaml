@@ -1,0 +1,12 @@
+name: orders
+primary_key: id
+columns:
+- name: id
+  type: string
+  index: false
+- name: status
+  type: string
+  index: true
+- name: customer_id
+  type: string
+  index: true

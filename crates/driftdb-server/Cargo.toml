@@ -1,0 +1,54 @@
+[package]
+name = "driftdb-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "driftdb-server"
+path = "src/main.rs"
+
+[dependencies]
+driftdb-core = { path = "../driftdb-core" }
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = "0.7"
+postgres-protocol = "0.6"
+bytes = "1"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "1.0"
+clap = { version = "4", features = ["derive", "env"] }
+uuid = { workspace = true }
+md5 = "0.7"
+hex = "0.4"
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = "0.12"
+async-trait = "0.1"
+futures = "0.3"
+pin-project = "1"
+dashmap = "5"
+arc-swap = "1"
+rand = "0.8"
+parking_lot = "0.12"
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
+# HTTP server and metrics
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+prometheus = "0.13"
+lazy_static = "1.4"
+chrono = { version = "0.4", features = ["serde"] }
+sysinfo = "0.30"
+sqlparser = "0.51"
+# TLS support
+tokio-rustls = "0.25"
+rustls = "0.22"
+rustls-pemfile = "2.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }

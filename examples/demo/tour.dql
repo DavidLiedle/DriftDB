@@ -1,0 +1,26 @@
+-- DriftDB Demo Tour
+-- This script demonstrates the key features of DriftDB
+
+-- Create our orders table with indexes on status and customer_id
+CREATE TABLE orders (pk=id, INDEX(status, customer_id))
+
+-- The data has been pre-loaded via the ingest command
+-- Now let's query it!
+
+-- Find some paid orders
+SELECT * FROM orders WHERE status="paid" LIMIT 3
+
+-- Time travel: Query orders as they were at sequence 5000
+SELECT * FROM orders WHERE customer_id="CUST-007" AS OF "@seq:5000"
+
+-- Show the drift history of a specific order
+SHOW DRIFT orders KEY "ORD-2025-000123"
+
+-- Create a snapshot for faster queries
+SNAPSHOT orders
+
+-- Compact the table to optimize storage
+COMPACT orders
+
+-- Now queries will be faster as they can use the snapshot!
+SELECT * FROM orders WHERE status="paid" LIMIT 3

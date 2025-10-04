@@ -1,5 +1,6 @@
 # Rust
 target/
+/target
 Cargo.lock
 *.rs.bk
 
@@ -17,6 +18,7 @@ build/
 
 # Test data
 data/
+*_data/
 *.db
 *.sqlite
 *.log

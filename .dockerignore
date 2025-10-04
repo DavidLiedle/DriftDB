@@ -1,0 +1,27 @@
+# Ignore build artifacts
+target/
+Cargo.lock
+
+# Ignore local data
+data/
+*.db
+*.wal
+*.snapshot
+
+# Ignore development files
+.git/
+.gitignore
+*.md
+.env
+.vscode/
+.idea/
+
+# Ignore test files
+tests/
+benches/
+examples/
+
+# Keep only source code and manifests
+!Cargo.toml
+!Cargo.lock
+!crates/

@@ -1,0 +1,7 @@
+{
+  "last_sequence": 8,
+  "last_snapshot_sequence": 0,
+  "segment_count": 1,
+  "snapshot_interval": 100000,
+  "compact_threshold": 134217728
+}

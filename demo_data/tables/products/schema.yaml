@@ -1,0 +1,12 @@
+name: products
+primary_key: id
+columns:
+- name: id
+  type: string
+  index: false
+- name: name
+  type: string
+  index: true
+- name: category
+  type: string
+  index: true
