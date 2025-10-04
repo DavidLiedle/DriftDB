@@ -29,7 +29,7 @@ SELECT * FROM events;                -- Shows 'modified'
 - **All 5 standard JOIN types**: INNER, LEFT, RIGHT, FULL OUTER, CROSS (including self-joins)
 - **Subqueries**: IN/NOT IN, EXISTS/NOT EXISTS (including correlated!), scalar subqueries
 - **Common Table Expressions (CTEs)**: WITH clause including RECURSIVE CTEs
-- **Transactions**: BEGIN, COMMIT, ROLLBACK with ACID guarantees
+- **Transactions**: BEGIN, COMMIT, ROLLBACK with ACID guarantees and savepoint support
 - **Views**: CREATE/DROP VIEW with persistence across restarts
 - **DDL operations**: CREATE TABLE, ALTER TABLE ADD COLUMN, CREATE INDEX, TRUNCATE
 - **Aggregation functions**: COUNT(*), COUNT(DISTINCT), SUM, AVG, MIN, MAX
@@ -639,8 +639,10 @@ DriftDB is currently in **alpha** stage with significant recent improvements but
 - ✅ GROUP BY and HAVING clauses
 - ✅ ORDER BY and LIMIT clauses
 - ✅ Column selection (SELECT column1, column2)
-- 📋 JOIN operations
-- 📋 Subqueries
+- ✅ JOIN operations (INNER, LEFT, RIGHT, FULL OUTER, CROSS)
+- ✅ Subqueries (IN, EXISTS, NOT IN, NOT EXISTS, scalar subqueries)
+- ✅ ROLLBACK support with savepoints
+- ✅ Common Table Expressions (CTEs) including RECURSIVE
 
 ### v0.6.0 (Release Candidate)
 - 📋 Production monitoring
