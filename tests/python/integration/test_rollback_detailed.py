@@ -11,7 +11,7 @@ def test_rollback_detailed():
     print("=" * 50)
 
     try:
-        # Connect to DriftDB
+        # Connect to DriftDB with autocommit on
         conn = psycopg2.connect(
             host="127.0.0.1",
             port=5433,
@@ -19,6 +19,7 @@ def test_rollback_detailed():
             user="driftdb",
             password="driftdb"
         )
+        conn.autocommit = True
         cur = conn.cursor()
 
         # Clean up previous test data
@@ -68,6 +69,7 @@ def test_rollback_detailed():
             user="driftdb",
             password="driftdb"
         )
+        conn2.autocommit = True
         cur2 = conn2.cursor()
 
         # Check count from another connection (should be isolated)

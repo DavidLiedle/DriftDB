@@ -19,6 +19,7 @@ def test_column_ordering():
             user="driftdb",
             password="driftdb"
         )
+        conn.autocommit = True
         cur = conn.cursor()
 
         # Create test table

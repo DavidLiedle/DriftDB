@@ -20,6 +20,12 @@ try:
 
     cursor = conn.cursor()
 
+    # Cleanup first
+    try:
+        cursor.execute("DROP TABLE IF EXISTS users")
+    except:
+        pass
+
     # Test 1: Create a test table
     print("\n1. Creating test table...")
     try:

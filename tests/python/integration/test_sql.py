@@ -22,6 +22,13 @@ def test_sql_execution():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         print("✓ Connected successfully")
 
+        # Cleanup first
+        try:
+            cursor.execute("DROP TABLE IF EXISTS users")
+            conn.commit()
+        except:
+            pass
+
         # Test 1: CREATE TABLE
         print("\n1. Creating table 'users'...")
         cursor.execute("""

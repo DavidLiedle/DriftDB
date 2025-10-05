@@ -23,6 +23,13 @@ def test_full_sql_execution():
         conn.autocommit = True
         cur = conn.cursor()
 
+        # Cleanup first
+        try:
+            cur.execute("DROP TABLE IF EXISTS users")
+            cur.execute("DROP TABLE IF EXISTS orders")
+        except:
+            pass
+
         # Test 1: CREATE TABLE
         print("\n1. Testing CREATE TABLE...")
         try:

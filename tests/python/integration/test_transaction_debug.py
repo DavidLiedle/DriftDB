@@ -10,7 +10,7 @@ def test_transaction_debug():
     print("=== TRANSACTION DEBUG TEST ===")
 
     try:
-        # Connect with autocommit off (default)
+        # Connect with autocommit on (required for explicit transaction control)
         conn = psycopg2.connect(
             host="127.0.0.1",
             port=5433,
@@ -18,6 +18,7 @@ def test_transaction_debug():
             user="driftdb",
             password="driftdb"
         )
+        conn.autocommit = True
 
         print(f"Connection autocommit: {conn.autocommit}")
 
