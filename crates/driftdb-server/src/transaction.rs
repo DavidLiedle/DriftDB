@@ -211,14 +211,17 @@ impl TransactionManager {
                             .insert_record(&write.table, write.data)
                             .map_err(|e| anyhow!("Failed to insert: {}", e))?;
                     }
-                    WriteOperation::Update { id: _ } => {
-                        // For DriftDB, updates are typically done as patches
-                        // This is a simplified implementation
-                        warn!("UPDATE operations not fully implemented in transaction");
+                    WriteOperation::Update { id } => {
+                        // Apply update (update record)
+                        engine
+                            .update_record(&write.table, id, write.data)
+                            .map_err(|e| anyhow!("Failed to update: {}", e))?;
                     }
-                    WriteOperation::Delete { id: _ } => {
-                        // DriftDB uses soft deletes
-                        warn!("DELETE operations not fully implemented in transaction");
+                    WriteOperation::Delete { id } => {
+                        // Apply delete (soft delete for audit trail)
+                        engine
+                            .delete_record(&write.table, id)
+                            .map_err(|e| anyhow!("Failed to delete: {}", e))?;
                     }
                 }
             }

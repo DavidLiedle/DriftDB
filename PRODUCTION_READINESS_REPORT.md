@@ -90,10 +90,13 @@ Based on comprehensive testing:
 
 ## Known Limitations
 
-### 1. ROLLBACK Not Implemented
+### 1. ROLLBACK Partially Implemented (In Progress)
 - **Impact**: Medium
-- **Status**: Transaction isolation not yet implemented
-- **Workaround**: Use application-level transaction handling
+- **Status**: INSERT buffering works, DELETE buffering code added (2024-10-04, needs testing)
+- **Current Behavior**: ROLLBACK discards pending INSERTs correctly
+- **In Progress**: DELETE operations now buffered in transactions (verification pending)
+- **Not Implemented**: UPDATE buffering in transactions
+- **Workaround**: Use application-level transaction handling for UPDATE operations
 - **Note**: BEGIN/COMMIT work perfectly
 
 ### 2. Column Ordering (Minor)
@@ -104,6 +107,7 @@ Based on comprehensive testing:
 
 ### 3. No Native TLS/SSL
 - **Impact**: Medium for internet-facing deployments
+- **Status**: Command-line flags exist (`--tls-enabled`, etc.) but implementation incomplete
 - **Workaround**: Deploy behind TLS-terminating proxy (nginx, HAProxy)
 - **Standard practice**: Most databases deploy this way in production
 

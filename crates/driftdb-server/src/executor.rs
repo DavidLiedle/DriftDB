@@ -12,7 +12,7 @@ use time;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::transaction::{IsolationLevel, TransactionManager};
+use crate::transaction::{IsolationLevel, PendingWrite, TransactionManager, WriteOperation};
 
 #[cfg(test)]
 #[path = "executor_subquery_tests.rs"]
@@ -2113,8 +2113,6 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_delete(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write()?;
-
         // Parse DELETE FROM table_name [WHERE condition]
         let sql_clean = sql.trim().trim_end_matches(';');
         let lower = sql_clean.to_lowercase();
@@ -2133,55 +2131,126 @@ impl<'a> QueryExecutor<'a> {
             after_delete
         };
 
-        // Get all data from table
-        let all_data = engine
-            .get_table_data(table_name)
-            .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+        // Check if we're in a transaction
+        let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
+        info!("DELETE: in_transaction={}, session={}", in_transaction, self.session_id);
 
-        // Parse WHERE conditions if present
-        let conditions = if let Some(pos) = where_pos {
-            let where_clause = &after_delete[pos + 7..].trim();
-            Some(self.parse_where_clause(where_clause)?)
-        } else {
-            None
-        };
+        if in_transaction {
+            // Buffer DELETE operations for transaction
+            let engine = self.engine_read()?;
 
-        // Count deleted rows
-        let mut deleted_count = 0;
+            // Get all data from table
+            let all_data = engine
+                .get_table_data(table_name)
+                .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
-        // Delete matching rows
-        for row in all_data {
-            if let Value::Object(map) = row {
-                // Check if row matches WHERE conditions (if any)
-                let matches = if let Some(ref conds) = conditions {
-                    conds.iter().all(|(column, operator, value)| {
-                        if let Some(field_value) = map.get(column) {
-                            self.matches_condition(field_value, operator, value)
-                        } else {
-                            false
-                        }
-                    })
-                } else {
-                    true // No WHERE clause means delete all (dangerous!)
-                };
+            // Parse WHERE conditions if present
+            let conditions = if let Some(pos) = where_pos {
+                let where_clause = &after_delete[pos + 7..].trim();
+                Some(self.parse_where_clause(where_clause)?)
+            } else {
+                None
+            };
 
-                if matches {
-                    // Get primary key for this row
-                    let primary_key = map
-                        .get("id")
-                        .cloned()
-                        .ok_or_else(|| anyhow!("Row missing primary key"))?;
+            // Collect matching IDs to delete
+            let mut deleted_count = 0;
+            for row in all_data {
+                if let Value::Object(map) = row {
+                    // Check if row matches WHERE conditions (if any)
+                    let matches = if let Some(ref conds) = conditions {
+                        conds.iter().all(|(column, operator, value)| {
+                            if let Some(field_value) = map.get(column) {
+                                self.matches_condition(field_value, operator, value)
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        true // No WHERE clause means delete all
+                    };
 
-                    // Delete the row (soft delete for audit trail)
-                    engine.delete_record(table_name, primary_key)?;
-                    deleted_count += 1;
+                    if matches {
+                        // Get primary key for this row
+                        let primary_key = map
+                            .get("id")
+                            .cloned()
+                            .ok_or_else(|| anyhow!("Row missing primary key"))?;
+
+                        // Buffer the delete in transaction
+                        let write = PendingWrite {
+                            table: table_name.to_string(),
+                            operation: WriteOperation::Delete { id: primary_key },
+                            data: Value::Object(map.clone()),
+                        };
+
+                        self.transaction_manager
+                            .add_pending_write(&self.session_id, write)
+                            .await
+                            .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
+
+                        deleted_count += 1;
+                    }
                 }
             }
-        }
 
-        Ok(QueryResult::Delete {
-            count: deleted_count,
-        })
+            info!("Buffered {} DELETE operations for transaction in session {}", deleted_count, self.session_id);
+            Ok(QueryResult::Delete {
+                count: deleted_count,
+            })
+        } else {
+            // Not in transaction, apply immediately
+            let mut engine = self.engine_write()?;
+
+            // Get all data from table
+            let all_data = engine
+                .get_table_data(table_name)
+                .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+
+            // Parse WHERE conditions if present
+            let conditions = if let Some(pos) = where_pos {
+                let where_clause = &after_delete[pos + 7..].trim();
+                Some(self.parse_where_clause(where_clause)?)
+            } else {
+                None
+            };
+
+            // Count deleted rows
+            let mut deleted_count = 0;
+
+            // Delete matching rows
+            for row in all_data {
+                if let Value::Object(map) = row {
+                    // Check if row matches WHERE conditions (if any)
+                    let matches = if let Some(ref conds) = conditions {
+                        conds.iter().all(|(column, operator, value)| {
+                            if let Some(field_value) = map.get(column) {
+                                self.matches_condition(field_value, operator, value)
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        true // No WHERE clause means delete all (dangerous!)
+                    };
+
+                    if matches {
+                        // Get primary key for this row
+                        let primary_key = map
+                            .get("id")
+                            .cloned()
+                            .ok_or_else(|| anyhow!("Row missing primary key"))?;
+
+                        // Delete the row (soft delete for audit trail)
+                        engine.delete_record(table_name, primary_key)?;
+                        deleted_count += 1;
+                    }
+                }
+            }
+
+            Ok(QueryResult::Delete {
+                count: deleted_count,
+            })
+        }
     }
 
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
