@@ -1337,7 +1337,15 @@ impl<'a> QueryExecutor<'a> {
             return self.execute_legacy(sql).await;
         }
 
-        // For SQL commands, we'll use the bridge with sync locks
+        // Check if we're in a transaction for DML operations
+        let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
+
+        // Handle DELETE with transaction awareness
+        if (lower.starts_with("delete from ") || lower.starts_with("delete ")) && in_transaction {
+            return self.execute_delete(sql).await;
+        }
+
+        // For SQL commands (including non-transactional DML), use the bridge
         // No more deadlock since we're using parking_lot!
         let mut engine = self.engine_write()?;
         let result = driftdb_core::sql_bridge::execute_sql(&mut *engine, sql);
@@ -2137,60 +2145,67 @@ impl<'a> QueryExecutor<'a> {
 
         if in_transaction {
             // Buffer DELETE operations for transaction
-            let engine = self.engine_read()?;
+            // Collect all pending writes first, then buffer them after dropping the lock
+            let pending_writes = {
+                let engine = self.engine_read()?;
 
-            // Get all data from table
-            let all_data = engine
-                .get_table_data(table_name)
-                .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+                // Get all data from table
+                let all_data = engine
+                    .get_table_data(table_name)
+                    .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
-            // Parse WHERE conditions if present
-            let conditions = if let Some(pos) = where_pos {
-                let where_clause = &after_delete[pos + 7..].trim();
-                Some(self.parse_where_clause(where_clause)?)
-            } else {
-                None
-            };
+                // Parse WHERE conditions if present
+                let conditions = if let Some(pos) = where_pos {
+                    let where_clause = &after_delete[pos + 7..].trim();
+                    Some(self.parse_where_clause(where_clause)?)
+                } else {
+                    None
+                };
 
-            // Collect matching IDs to delete
-            let mut deleted_count = 0;
-            for row in all_data {
-                if let Value::Object(map) = row {
-                    // Check if row matches WHERE conditions (if any)
-                    let matches = if let Some(ref conds) = conditions {
-                        conds.iter().all(|(column, operator, value)| {
-                            if let Some(field_value) = map.get(column) {
-                                self.matches_condition(field_value, operator, value)
-                            } else {
-                                false
-                            }
-                        })
-                    } else {
-                        true // No WHERE clause means delete all
-                    };
-
-                    if matches {
-                        // Get primary key for this row
-                        let primary_key = map
-                            .get("id")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("Row missing primary key"))?;
-
-                        // Buffer the delete in transaction
-                        let write = PendingWrite {
-                            table: table_name.to_string(),
-                            operation: WriteOperation::Delete { id: primary_key },
-                            data: Value::Object(map.clone()),
+                // Collect matching rows to delete
+                let mut writes = Vec::new();
+                for row in all_data {
+                    if let Value::Object(map) = row {
+                        // Check if row matches WHERE conditions (if any)
+                        let matches = if let Some(ref conds) = conditions {
+                            conds.iter().all(|(column, operator, value)| {
+                                if let Some(field_value) = map.get(column) {
+                                    self.matches_condition(field_value, operator, value)
+                                } else {
+                                    false
+                                }
+                            })
+                        } else {
+                            true // No WHERE clause means delete all
                         };
 
-                        self.transaction_manager
-                            .add_pending_write(&self.session_id, write)
-                            .await
-                            .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
+                        if matches {
+                            // Get primary key for this row
+                            let primary_key = map
+                                .get("id")
+                                .cloned()
+                                .ok_or_else(|| anyhow!("Row missing primary key"))?;
 
-                        deleted_count += 1;
+                            // Collect the delete operation
+                            let write = PendingWrite {
+                                table: table_name.to_string(),
+                                operation: WriteOperation::Delete { id: primary_key },
+                                data: Value::Object(map.clone()),
+                            };
+                            writes.push(write);
+                        }
                     }
                 }
+                writes
+            }; // engine guard is dropped here
+
+            // Now buffer all the writes (can safely await now)
+            let deleted_count = pending_writes.len();
+            for write in pending_writes {
+                self.transaction_manager
+                    .add_pending_write(&self.session_id, write)
+                    .await
+                    .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
             }
 
             info!("Buffered {} DELETE operations for transaction in session {}", deleted_count, self.session_id);
