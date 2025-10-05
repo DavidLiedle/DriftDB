@@ -1,6 +1,6 @@
 # DriftDB Development Roadmap
 
-**Last Updated**: 2025-10-04
+**Last Updated**: 2025-10-05
 **Current Version**: v0.7.3-alpha
 
 This roadmap outlines the path from alpha to production-ready v1.0, organized by priority and dependencies.
