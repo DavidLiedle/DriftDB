@@ -1347,6 +1347,9 @@ impl<'a> QueryExecutor<'a> {
         if (lower.starts_with("insert into ") || lower.starts_with("insert ")) && in_transaction {
             return self.execute_insert(sql).await;
         }
+        if lower.starts_with("update ") && in_transaction {
+            return self.execute_update(sql).await;
+        }
 
         // For SQL commands (including non-transactional DML), use the bridge
         // No more deadlock since we're using parking_lot!
@@ -2027,8 +2030,6 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_update(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write()?;
-
         // Parse UPDATE table_name SET column = value [WHERE condition]
         let sql_clean = sql.trim().trim_end_matches(';');
         let lower = sql_clean.to_lowercase();
@@ -2066,60 +2067,143 @@ impl<'a> QueryExecutor<'a> {
             updates.insert(column.to_string(), value);
         }
 
-        // Get all data from table
-        let all_data = engine
-            .get_table_data(table_name)
-            .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+        // Check if we're in a transaction
+        let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
+        info!("UPDATE: in_transaction={}, session={}", in_transaction, self.session_id);
 
-        // Parse WHERE conditions if present
-        let conditions = if let Some(pos) = where_pos {
-            let where_clause = &after_set[pos + 7..].trim();
-            Some(self.parse_where_clause(where_clause)?)
-        } else {
-            None
-        };
+        if in_transaction {
+            // Buffer UPDATE operations for transaction
+            // Collect all pending writes first, then buffer them after dropping the lock
+            let pending_writes = {
+                let engine = self.engine_read()?;
 
-        // Count updated rows
-        let mut updated_count = 0;
+                // Get all data from table
+                let all_data = engine
+                    .get_table_data(table_name)
+                    .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
-        // Apply updates to matching rows
-        for row in all_data {
-            if let Value::Object(mut map) = row {
-                // Check if row matches WHERE conditions (if any)
-                let matches = if let Some(ref conds) = conditions {
-                    conds.iter().all(|(column, operator, value)| {
-                        if let Some(field_value) = map.get(column) {
-                            self.matches_condition(field_value, operator, value)
-                        } else {
-                            false
-                        }
-                    })
+                // Parse WHERE conditions if present
+                let conditions = if let Some(pos) = where_pos {
+                    let where_clause = &after_set[pos + 7..].trim();
+                    Some(self.parse_where_clause(where_clause)?)
                 } else {
-                    true // No WHERE clause means update all
+                    None
                 };
 
-                if matches {
-                    // Get primary key for this row
-                    let primary_key = map
-                        .get("id")
-                        .cloned()
-                        .ok_or_else(|| anyhow!("Row missing primary key"))?;
+                // Collect matching rows to update
+                let mut writes = Vec::new();
+                for row in all_data {
+                    if let Value::Object(mut map) = row {
+                        // Check if row matches WHERE conditions (if any)
+                        let matches = if let Some(ref conds) = conditions {
+                            conds.iter().all(|(column, operator, value)| {
+                                if let Some(field_value) = map.get(column) {
+                                    self.matches_condition(field_value, operator, value)
+                                } else {
+                                    false
+                                }
+                            })
+                        } else {
+                            true // No WHERE clause means update all
+                        };
 
-                    // Apply updates to the row
-                    for (col, val) in &updates {
-                        map.insert(col.clone(), val.clone());
+                        if matches {
+                            // Get primary key for this row
+                            let primary_key = map
+                                .get("id")
+                                .cloned()
+                                .ok_or_else(|| anyhow!("Row missing primary key"))?;
+
+                            // Apply updates to the row
+                            for (col, val) in &updates {
+                                map.insert(col.clone(), val.clone());
+                            }
+
+                            // Collect the update operation
+                            let write = PendingWrite {
+                                table: table_name.to_string(),
+                                operation: WriteOperation::Update { id: primary_key },
+                                data: Value::Object(map.clone()),
+                            };
+                            writes.push(write);
+                        }
                     }
+                }
+                writes
+            }; // engine guard is dropped here
 
-                    // Save updated row back to database
-                    engine.update_record(table_name, primary_key, Value::Object(map))?;
-                    updated_count += 1;
+            // Now buffer all the writes (can safely await now)
+            let updated_count = pending_writes.len();
+            for write in pending_writes {
+                self.transaction_manager
+                    .add_pending_write(&self.session_id, write)
+                    .await
+                    .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
+            }
+
+            info!("Buffered {} UPDATE operations for transaction in session {}", updated_count, self.session_id);
+            Ok(QueryResult::Update {
+                count: updated_count,
+            })
+        } else {
+            // Not in transaction, apply immediately
+            let mut engine = self.engine_write()?;
+
+            // Get all data from table
+            let all_data = engine
+                .get_table_data(table_name)
+                .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+
+            // Parse WHERE conditions if present
+            let conditions = if let Some(pos) = where_pos {
+                let where_clause = &after_set[pos + 7..].trim();
+                Some(self.parse_where_clause(where_clause)?)
+            } else {
+                None
+            };
+
+            // Count updated rows
+            let mut updated_count = 0;
+
+            // Apply updates to matching rows
+            for row in all_data {
+                if let Value::Object(mut map) = row {
+                    // Check if row matches WHERE conditions (if any)
+                    let matches = if let Some(ref conds) = conditions {
+                        conds.iter().all(|(column, operator, value)| {
+                            if let Some(field_value) = map.get(column) {
+                                self.matches_condition(field_value, operator, value)
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        true // No WHERE clause means update all
+                    };
+
+                    if matches {
+                        // Get primary key for this row
+                        let primary_key = map
+                            .get("id")
+                            .cloned()
+                            .ok_or_else(|| anyhow!("Row missing primary key"))?;
+
+                        // Apply updates to the row
+                        for (col, val) in &updates {
+                            map.insert(col.clone(), val.clone());
+                        }
+
+                        // Save updated row back to database
+                        engine.update_record(table_name, primary_key, Value::Object(map))?;
+                        updated_count += 1;
+                    }
                 }
             }
-        }
 
-        Ok(QueryResult::Update {
-            count: updated_count,
-        })
+            Ok(QueryResult::Update {
+                count: updated_count,
+            })
+        }
     }
 
     async fn execute_delete(&self, sql: &str) -> Result<QueryResult> {
