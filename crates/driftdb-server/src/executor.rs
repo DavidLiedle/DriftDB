@@ -1340,9 +1340,12 @@ impl<'a> QueryExecutor<'a> {
         // Check if we're in a transaction for DML operations
         let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
 
-        // Handle DELETE with transaction awareness
+        // Handle DML operations with transaction awareness
         if (lower.starts_with("delete from ") || lower.starts_with("delete ")) && in_transaction {
             return self.execute_delete(sql).await;
+        }
+        if (lower.starts_with("insert into ") || lower.starts_with("insert ")) && in_transaction {
+            return self.execute_insert(sql).await;
         }
 
         // For SQL commands (including non-transactional DML), use the bridge
@@ -1889,8 +1892,6 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_insert(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write()?;
-
         // Parse INSERT INTO table_name (columns) VALUES (values)
         let sql_clean = sql.trim().trim_end_matches(';');
         let lower = sql_clean.to_lowercase();
@@ -1967,7 +1968,8 @@ impl<'a> QueryExecutor<'a> {
 
             info!("Buffered INSERT for transaction in session {}", self.session_id);
         } else {
-            // Not in transaction, apply immediately
+            // Not in transaction, apply immediately (acquire lock only when needed)
+            let mut engine = self.engine_write()?;
             engine
                 .insert_record(table_name, doc)
                 .map_err(|e| anyhow!("Insert failed: {}", e))?;
