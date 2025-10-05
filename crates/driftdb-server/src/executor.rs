@@ -403,6 +403,7 @@ impl<'a> QueryExecutor<'a> {
     fn convert_sql_result(
         &self,
         core_result: driftdb_core::query::QueryResult,
+        table_columns: Option<Vec<String>>,
     ) -> Result<QueryResult> {
         use driftdb_core::query::QueryResult as CoreResult;
         use serde_json::Value;
@@ -450,12 +451,16 @@ impl<'a> QueryExecutor<'a> {
                         rows: vec![],
                     })
                 } else {
-                    // Extract columns from first row
-                    let columns: Vec<String> = if let Some(Value::Object(first_row)) = data.first()
-                    {
-                        first_row.keys().cloned().collect()
+                    // Use provided columns from schema, or fall back to HashMap keys
+                    let columns: Vec<String> = if let Some(cols) = table_columns {
+                        cols
                     } else {
-                        vec![]
+                        // Fallback to HashMap keys
+                        if let Some(Value::Object(first_row)) = data.first() {
+                            first_row.keys().cloned().collect()
+                        } else {
+                            vec![]
+                        }
                     };
 
                     // Convert rows
@@ -487,6 +492,31 @@ impl<'a> QueryExecutor<'a> {
             }
             CoreResult::Error { message } => Err(anyhow!("SQL execution error: {}", message)),
         }
+    }
+
+    /// Extract table name from SELECT SQL
+    fn extract_table_from_sql_static(sql: &str) -> Result<String> {
+        use sqlparser::dialect::GenericDialect;
+        use sqlparser::parser::Parser;
+
+        let dialect = GenericDialect {};
+        let ast = Parser::parse_sql(&dialect, sql).map_err(|e| anyhow!("Parse error: {}", e))?;
+
+        if let Some(statement) = ast.first() {
+            if let sqlparser::ast::Statement::Query(query) = statement {
+                if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                    if let Some(table_with_joins) = select.from.first() {
+                        if let sqlparser::ast::TableFactor::Table { name, .. } =
+                            &table_with_joins.relation
+                        {
+                            return Ok(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!("Could not extract table name"))
     }
 
     pub fn new(engine: Arc<SyncRwLock<Engine>>) -> QueryExecutor<'static> {
@@ -1352,14 +1382,21 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // For SQL commands (including non-transactional DML), use the bridge
-        // No more deadlock since we're using parking_lot!
         let mut engine = self.engine_write()?;
+
+        // Extract table name and get columns BEFORE executing query to avoid deadlock
+        let table_columns = if let Ok(table_name) = Self::extract_table_from_sql_static(sql) {
+            engine.get_table_columns(&table_name).ok()
+        } else {
+            None
+        };
+
         let result = driftdb_core::sql_bridge::execute_sql(&mut *engine, sql);
 
         match result {
             Ok(core_result) => {
-                // Use the existing convert_sql_result function
-                self.convert_sql_result(core_result)
+                // Pass the columns we extracted while holding the lock
+                self.convert_sql_result(core_result, table_columns)
             }
             Err(e) => {
                 debug!("SQL execution failed: {}", e);
@@ -4810,17 +4847,10 @@ impl<'a> QueryExecutor<'a> {
         Ok(5) // Assuming 5 columns per table for now
     }
 
-    /// Get table columns
-    async fn get_table_columns(&self, _engine: &Engine, _table_name: &str) -> Result<Vec<String>> {
-        // This is a placeholder - in reality we'd get the actual table schema
-        // For now, return common column names
-        Ok(vec![
-            "id".to_string(),
-            "name".to_string(),
-            "value".to_string(),
-            "created_at".to_string(),
-            "updated_at".to_string(),
-        ])
+    /// Get table columns in schema order
+    async fn get_table_columns(&self, engine: &Engine, table_name: &str) -> Result<Vec<String>> {
+        // Get column names from the engine's schema in the order they were defined
+        engine.get_table_columns(table_name).map_err(|e| anyhow!("{}", e))
     }
 
     /// Use indexes to optimize WHERE clause filtering

@@ -2,6 +2,21 @@
 
 All notable changes to DriftDB will be documented in this file.
 
+## [0.8.0-alpha] - 2025-10-05 - Column Ordering Fix
+
+### 🐛 Bug Fixes
+- **Fixed column ordering in SELECT queries** - Columns now returned in schema order
+  - SELECT * queries were returning columns in alphabetical order instead of schema definition order
+  - Root cause: HashMap iteration order in result conversion
+  - Fix: Extract table schema columns while holding engine lock and pass to result converter
+  - Prevents deadlock by getting columns before query execution completes
+
+### 🔧 Technical Changes
+- Modified `convert_sql_result()` to accept pre-extracted column ordering
+- Added `extract_table_from_sql_static()` helper for SQL parsing
+- Updated executor to get table columns before releasing write lock
+- Removed debug logging from sql/executor.rs
+
 ## [0.7.3-alpha] - 2024-01-24 - Time-Travel Performance Fix
 
 ### 🚀 Performance Improvements

@@ -23,6 +23,13 @@ impl<'a> SqlExecutor<'a> {
 
     /// Execute SQL and return simplified QueryResult
     pub fn execute_sql(&mut self, stmt: &TemporalStatement) -> Result<QueryResult> {
+        // Try to extract table name from statement for proper column ordering
+        let table_name_opt = if let Statement::Query(query) = &stmt.statement {
+            self.extract_query_components(query).ok().map(|(name, _)| name)
+        } else {
+            None
+        };
+
         match self.execute(stmt) {
             Ok(result) => {
                 // Convert TemporalQueryResult to QueryResult
@@ -31,15 +38,33 @@ impl<'a> SqlExecutor<'a> {
                         message: "Query executed successfully".to_string(),
                     })
                 } else {
-                    // Extract columns from first row
-                    let columns = if let Some(first) = result.rows.first() {
-                        if let serde_json::Value::Object(map) = first {
-                            map.keys().cloned().collect()
-                        } else {
-                            vec!["value".to_string()]
-                        }
+                    // Get columns in schema order if we know the table name
+                    let columns = if let Some(table_name) = table_name_opt {
+                        self.engine
+                            .get_table_columns(&table_name)
+                            .unwrap_or_else(|_| {
+                                // Fallback to HashMap keys if schema lookup fails
+                                if let Some(first) = result.rows.first() {
+                                    if let serde_json::Value::Object(map) = first {
+                                        map.keys().cloned().collect()
+                                    } else {
+                                        vec!["value".to_string()]
+                                    }
+                                } else {
+                                    vec![]
+                                }
+                            })
                     } else {
-                        vec![]
+                        // Non-query statements or fallback
+                        if let Some(first) = result.rows.first() {
+                            if let serde_json::Value::Object(map) = first {
+                                map.keys().cloned().collect()
+                            } else {
+                                vec!["value".to_string()]
+                            }
+                        } else {
+                            vec![]
+                        }
                     };
 
                     // Convert rows to arrays
