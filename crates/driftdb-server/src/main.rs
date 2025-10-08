@@ -5,6 +5,8 @@
 
 mod advanced_pool;
 mod advanced_pool_routes;
+mod alert_routes;
+mod alerting;
 mod errors;
 mod executor;
 mod health;
@@ -197,6 +199,18 @@ struct Args {
     /// Threshold for suspicious failed login attempts
     #[arg(long, env = "DRIFTDB_AUDIT_LOGIN_THRESHOLD", default_value = "5")]
     audit_login_threshold: u32,
+
+    /// Enable alerting system
+    #[arg(long, env = "DRIFTDB_ALERTING_ENABLED", default_value = "true")]
+    alerting_enabled: bool,
+
+    /// Alert evaluation interval in seconds
+    #[arg(long, env = "DRIFTDB_ALERT_EVAL_INTERVAL", default_value = "30")]
+    alert_eval_interval: u64,
+
+    /// Alert resolution timeout in seconds
+    #[arg(long, env = "DRIFTDB_ALERT_RESOLUTION_TIMEOUT", default_value = "300")]
+    alert_resolution_timeout: u64,
 }
 
 #[tokio::main]
@@ -338,6 +352,24 @@ async fn main() -> Result<()> {
         "Security audit logging enabled: log_path={}, suspicious_detection={}, threshold={}",
         args.audit_log_path, args.audit_suspicious_detection, args.audit_login_threshold
     );
+
+    // Initialize alerting system
+    let alert_manager = if args.alerting_enabled {
+        let alert_config = alerting::AlertManagerConfig {
+            enabled: true,
+            evaluation_interval: std::time::Duration::from_secs(args.alert_eval_interval),
+            resolution_timeout: std::time::Duration::from_secs(args.alert_resolution_timeout),
+        };
+        let manager = Arc::new(alerting::AlertManager::new(alert_config));
+        info!(
+            "Alerting system enabled: eval_interval={}s, resolution_timeout={}s",
+            args.alert_eval_interval, args.alert_resolution_timeout
+        );
+        Some(manager)
+    } else {
+        info!("Alerting system disabled");
+        None
+    };
 
     // Create session manager with authentication and rate limiting
     let session_manager = Arc::new(SessionManager::new(
@@ -501,6 +533,24 @@ async fn main() -> Result<()> {
         })
     };
 
+    // Start alert evaluation task if enabled
+    let alert_task = if let Some(ref manager) = alert_manager {
+        let manager_clone = manager.clone();
+        let eval_interval = std::time::Duration::from_secs(args.alert_eval_interval);
+
+        Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(eval_interval);
+            info!("Starting alert evaluation loop with interval: {:?}", eval_interval);
+
+            loop {
+                interval.tick().await;
+                manager_clone.evaluate_rules();
+            }
+        }))
+    } else {
+        None
+    };
+
     // Start HTTP server for health checks and metrics
     let http_server = {
         let engine_clone = engine.clone();
@@ -511,6 +561,7 @@ async fn main() -> Result<()> {
         let perf_monitor_clone = performance_monitor.clone();
         let query_opt_clone = query_optimizer.clone();
         let pool_opt_clone = pool_optimizer.clone();
+        let alert_manager_clone = alert_manager.clone();
 
         tokio::spawn(async move {
             let result = start_http_server(
@@ -522,6 +573,7 @@ async fn main() -> Result<()> {
                 perf_monitor_clone,
                 query_opt_clone,
                 pool_opt_clone,
+                alert_manager_clone,
             )
             .await;
 
@@ -587,6 +639,17 @@ async fn main() -> Result<()> {
                 error!("Pool management task failed: {}", e);
             }
         }
+        result = async {
+            if let Some(task) = alert_task {
+                task.await
+            } else {
+                std::future::pending().await
+            }
+        } => {
+            if let Err(e) = result {
+                error!("Alert evaluation task failed: {}", e);
+            }
+        }
     }
 
     // Graceful shutdown of connection pool
@@ -607,6 +670,7 @@ async fn start_http_server(
     performance_monitor: Option<Arc<PerformanceMonitor>>,
     query_optimizer: Option<Arc<QueryOptimizer>>,
     pool_optimizer: Option<Arc<ConnectionPoolOptimizer>>,
+    alert_manager: Option<Arc<alerting::AlertManager>>,
 ) -> Result<()> {
     use axum::Router;
     use tower_http::trace::TraceLayer;
@@ -637,6 +701,13 @@ async fn start_http_server(
         let performance_router = performance_routes::create_performance_routes(performance_state);
         app = app.merge(performance_router);
         info!("Performance monitoring routes enabled");
+    }
+
+    // Add alerting routes if enabled
+    if let Some(ref manager) = alert_manager {
+        let alert_router = alert_routes::create_router(manager.clone());
+        app = app.merge(alert_router);
+        info!("Alerting routes enabled");
     }
 
     // Start the server
