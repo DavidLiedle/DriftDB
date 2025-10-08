@@ -8,8 +8,8 @@ use axum::{extract::State, http::StatusCode, response::Response, routing::get, R
 use lazy_static::lazy_static;
 use parking_lot::RwLock;
 use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry,
-    TextEncoder,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
+    Registry, TextEncoder,
 };
 use sysinfo::{Pid, System};
 use tracing::{debug, error};
@@ -123,6 +123,225 @@ lazy_static! {
             .namespace("driftdb"),
         &["encrypted"]
     ).unwrap();
+
+    // ========== Enhanced Metrics for Production Monitoring ==========
+
+    /// Query latency histogram for percentile calculation (p50, p95, p99)
+    /// Use Prometheus histogram_quantile() function to calculate percentiles
+    pub static ref QUERY_LATENCY_HISTOGRAM: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("driftdb_query_latency_seconds", "Query execution latency in seconds for percentile calculation")
+            .namespace("driftdb")
+            .buckets(vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0]),
+        &["query_type"]
+    ).unwrap();
+
+    /// Transaction metrics
+    pub static ref TRANSACTION_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_transactions_total", "Total number of transactions")
+            .namespace("driftdb"),
+        &["type", "status"] // type: read-only, read-write; status: committed, rolled-back, aborted
+    ).unwrap();
+
+    pub static ref TRANSACTION_DURATION: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("driftdb_transaction_duration_seconds", "Transaction duration in seconds")
+            .namespace("driftdb")
+            .buckets(vec![0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0]),
+        &["type"]
+    ).unwrap();
+
+    pub static ref ACTIVE_TRANSACTIONS: Gauge = Gauge::new(
+        "driftdb_active_transactions",
+        "Number of currently active transactions"
+    ).unwrap();
+
+    /// Pool health and performance metrics
+    pub static ref POOL_WAIT_TIME_TOTAL: Counter = Counter::new(
+        "driftdb_pool_wait_time_seconds_total",
+        "Total time spent waiting for pool connections"
+    ).unwrap();
+
+    pub static ref POOL_TIMEOUTS_TOTAL: Counter = Counter::new(
+        "driftdb_pool_timeouts_total",
+        "Total number of connection acquisition timeouts"
+    ).unwrap();
+
+    pub static ref POOL_ERRORS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_pool_errors_total", "Total pool errors by type")
+            .namespace("driftdb"),
+        &["error_type"]
+    ).unwrap();
+
+    pub static ref POOL_UTILIZATION: Gauge = Gauge::new(
+        "driftdb_pool_utilization_percent",
+        "Pool utilization percentage (active / total)"
+    ).unwrap();
+
+    /// WAL (Write-Ahead Log) metrics
+    pub static ref WAL_WRITES_TOTAL: Counter = Counter::new(
+        "driftdb_wal_writes_total",
+        "Total number of WAL writes"
+    ).unwrap();
+
+    pub static ref WAL_SYNC_DURATION: Histogram = Histogram::with_opts(
+        HistogramOpts::new("driftdb_wal_sync_duration_seconds", "WAL fsync duration in seconds")
+            .namespace("driftdb")
+            .buckets(vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1])
+    ).unwrap();
+
+    pub static ref WAL_SIZE_BYTES: Gauge = Gauge::new(
+        "driftdb_wal_size_bytes",
+        "Current WAL size in bytes"
+    ).unwrap();
+
+    pub static ref WAL_SEGMENTS_TOTAL: Gauge = Gauge::new(
+        "driftdb_wal_segments_total",
+        "Total number of WAL segments"
+    ).unwrap();
+
+    /// Cache metrics
+    pub static ref CACHE_HITS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_cache_hits_total", "Total cache hits by cache type")
+            .namespace("driftdb"),
+        &["cache_type"]
+    ).unwrap();
+
+    pub static ref CACHE_MISSES_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_cache_misses_total", "Total cache misses by cache type")
+            .namespace("driftdb"),
+        &["cache_type"]
+    ).unwrap();
+
+    pub static ref CACHE_SIZE_BYTES: GaugeVec = GaugeVec::new(
+        Opts::new("driftdb_cache_size_bytes", "Cache size in bytes by cache type")
+            .namespace("driftdb"),
+        &["cache_type"]
+    ).unwrap();
+
+    pub static ref CACHE_EVICTIONS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_cache_evictions_total", "Total cache evictions by cache type")
+            .namespace("driftdb"),
+        &["cache_type"]
+    ).unwrap();
+
+    /// Index usage metrics
+    pub static ref INDEX_SCANS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_index_scans_total", "Total index scans by table and index")
+            .namespace("driftdb"),
+        &["table", "index"]
+    ).unwrap();
+
+    pub static ref TABLE_SCANS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_table_scans_total", "Total full table scans by table")
+            .namespace("driftdb"),
+        &["table"]
+    ).unwrap();
+
+    /// Disk I/O metrics
+    pub static ref DISK_READS_TOTAL: Counter = Counter::new(
+        "driftdb_disk_reads_total",
+        "Total number of disk reads"
+    ).unwrap();
+
+    pub static ref DISK_WRITES_TOTAL: Counter = Counter::new(
+        "driftdb_disk_writes_total",
+        "Total number of disk writes"
+    ).unwrap();
+
+    pub static ref DISK_READ_BYTES_TOTAL: Counter = Counter::new(
+        "driftdb_disk_read_bytes_total",
+        "Total bytes read from disk"
+    ).unwrap();
+
+    pub static ref DISK_WRITE_BYTES_TOTAL: Counter = Counter::new(
+        "driftdb_disk_write_bytes_total",
+        "Total bytes written to disk"
+    ).unwrap();
+
+    /// Replication metrics (for future use)
+    pub static ref REPLICATION_LAG_SECONDS: GaugeVec = GaugeVec::new(
+        Opts::new("driftdb_replication_lag_seconds", "Replication lag in seconds")
+            .namespace("driftdb"),
+        &["replica"]
+    ).unwrap();
+
+    pub static ref REPLICATION_BYTES_SENT: CounterVec = CounterVec::new(
+        Opts::new("driftdb_replication_bytes_sent_total", "Total bytes sent to replicas")
+            .namespace("driftdb"),
+        &["replica"]
+    ).unwrap();
+
+    pub static ref REPLICATION_STATUS: GaugeVec = GaugeVec::new(
+        Opts::new("driftdb_replication_status", "Replication status (1=healthy, 0=unhealthy)")
+            .namespace("driftdb"),
+        &["replica"]
+    ).unwrap();
+
+    /// Rate limiting metrics
+    pub static ref RATE_LIMIT_HITS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_rate_limit_hits_total", "Total rate limit hits by type")
+            .namespace("driftdb"),
+        &["limit_type"]
+    ).unwrap();
+
+    pub static ref RATE_LIMIT_BLOCKS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_rate_limit_blocks_total", "Total rate limit blocks by type")
+            .namespace("driftdb"),
+        &["limit_type"]
+    ).unwrap();
+
+    /// Authentication metrics
+    pub static ref AUTH_ATTEMPTS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_auth_attempts_total", "Total authentication attempts")
+            .namespace("driftdb"),
+        &["method", "result"] // method: password, trust, cert; result: success, failure
+    ).unwrap();
+
+    pub static ref AUTH_FAILURES_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_auth_failures_total", "Total authentication failures by reason")
+            .namespace("driftdb"),
+        &["reason"]
+    ).unwrap();
+
+    /// Snapshot and compaction metrics
+    pub static ref SNAPSHOTS_CREATED_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_snapshots_created_total", "Total snapshots created by table")
+            .namespace("driftdb"),
+        &["table"]
+    ).unwrap();
+
+    pub static ref COMPACTIONS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_compactions_total", "Total compactions by table")
+            .namespace("driftdb"),
+        &["table"]
+    ).unwrap();
+
+    pub static ref COMPACTION_DURATION: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("driftdb_compaction_duration_seconds", "Compaction duration in seconds")
+            .namespace("driftdb")
+            .buckets(vec![0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0]),
+        &["table"]
+    ).unwrap();
+
+    /// Slow query metrics
+    pub static ref SLOW_QUERIES_TOTAL: CounterVec = CounterVec::new(
+        Opts::new("driftdb_slow_queries_total", "Total slow queries by type")
+            .namespace("driftdb"),
+        &["query_type"]
+    ).unwrap();
+
+    pub static ref QUERY_ROWS_RETURNED: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("driftdb_query_rows_returned", "Number of rows returned by queries")
+            .namespace("driftdb")
+            .buckets(vec![1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0]),
+        &["query_type"]
+    ).unwrap();
+
+    pub static ref QUERY_ROWS_AFFECTED: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("driftdb_query_rows_affected", "Number of rows affected by queries")
+            .namespace("driftdb")
+            .buckets(vec![1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0]),
+        &["query_type"]
+    ).unwrap();
 }
 
 /// Initialize all metrics with the registry
@@ -143,7 +362,44 @@ pub fn init_metrics() -> anyhow::Result<()> {
     REGISTRY.register(Box::new(POOL_CONNECTIONS_CREATED.clone()))?;
     REGISTRY.register(Box::new(CONNECTION_ENCRYPTION.clone()))?;
 
-    debug!("Metrics initialized successfully");
+    // Register enhanced metrics
+    REGISTRY.register(Box::new(QUERY_LATENCY_HISTOGRAM.clone()))?;
+    REGISTRY.register(Box::new(TRANSACTION_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(TRANSACTION_DURATION.clone()))?;
+    REGISTRY.register(Box::new(ACTIVE_TRANSACTIONS.clone()))?;
+    REGISTRY.register(Box::new(POOL_WAIT_TIME_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(POOL_TIMEOUTS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(POOL_ERRORS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(POOL_UTILIZATION.clone()))?;
+    REGISTRY.register(Box::new(WAL_WRITES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(WAL_SYNC_DURATION.clone()))?;
+    REGISTRY.register(Box::new(WAL_SIZE_BYTES.clone()))?;
+    REGISTRY.register(Box::new(WAL_SEGMENTS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(CACHE_HITS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(CACHE_MISSES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(CACHE_SIZE_BYTES.clone()))?;
+    REGISTRY.register(Box::new(CACHE_EVICTIONS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(INDEX_SCANS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(TABLE_SCANS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(DISK_READS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(DISK_WRITES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(DISK_READ_BYTES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(DISK_WRITE_BYTES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(REPLICATION_LAG_SECONDS.clone()))?;
+    REGISTRY.register(Box::new(REPLICATION_BYTES_SENT.clone()))?;
+    REGISTRY.register(Box::new(REPLICATION_STATUS.clone()))?;
+    REGISTRY.register(Box::new(RATE_LIMIT_HITS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(RATE_LIMIT_BLOCKS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(AUTH_ATTEMPTS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(AUTH_FAILURES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(SNAPSHOTS_CREATED_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(COMPACTIONS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(COMPACTION_DURATION.clone()))?;
+    REGISTRY.register(Box::new(SLOW_QUERIES_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(QUERY_ROWS_RETURNED.clone()))?;
+    REGISTRY.register(Box::new(QUERY_ROWS_AFFECTED.clone()))?;
+
+    debug!("Metrics initialized successfully - {} metrics registered", 51);
     Ok(())
 }
 
@@ -371,6 +627,192 @@ pub fn update_pool_connections_created(total: u64) {
 pub fn record_connection_encryption(is_encrypted: bool) {
     let label = if is_encrypted { "true" } else { "false" };
     CONNECTION_ENCRYPTION.with_label_values(&[label]).inc();
+}
+
+// ========== Enhanced Metrics Helper Functions ==========
+
+/// Record query latency for percentile calculation
+pub fn record_query_latency(query_type: &str, duration_seconds: f64) {
+    QUERY_LATENCY_HISTOGRAM
+        .with_label_values(&[query_type])
+        .observe(duration_seconds);
+}
+
+/// Record transaction start
+pub fn record_transaction_start() {
+    ACTIVE_TRANSACTIONS.inc();
+}
+
+/// Record transaction completion
+pub fn record_transaction_complete(txn_type: &str, status: &str, duration_seconds: f64) {
+    ACTIVE_TRANSACTIONS.dec();
+    TRANSACTION_TOTAL
+        .with_label_values(&[txn_type, status])
+        .inc();
+    TRANSACTION_DURATION
+        .with_label_values(&[txn_type])
+        .observe(duration_seconds);
+}
+
+/// Record pool timeout
+pub fn record_pool_timeout() {
+    POOL_TIMEOUTS_TOTAL.inc();
+}
+
+/// Record pool error
+pub fn record_pool_error(error_type: &str) {
+    POOL_ERRORS_TOTAL.with_label_values(&[error_type]).inc();
+}
+
+/// Update pool utilization percentage
+pub fn update_pool_utilization(utilization_percent: f64) {
+    POOL_UTILIZATION.set(utilization_percent);
+}
+
+/// Record WAL write
+pub fn record_wal_write() {
+    WAL_WRITES_TOTAL.inc();
+}
+
+/// Record WAL sync duration
+pub fn record_wal_sync(duration_seconds: f64) {
+    WAL_SYNC_DURATION.observe(duration_seconds);
+}
+
+/// Update WAL size
+pub fn update_wal_size(size_bytes: u64) {
+    WAL_SIZE_BYTES.set(size_bytes as f64);
+}
+
+/// Update WAL segments count
+pub fn update_wal_segments(count: usize) {
+    WAL_SEGMENTS_TOTAL.set(count as f64);
+}
+
+/// Record cache hit
+pub fn record_cache_hit(cache_type: &str) {
+    CACHE_HITS_TOTAL.with_label_values(&[cache_type]).inc();
+}
+
+/// Record cache miss
+pub fn record_cache_miss(cache_type: &str) {
+    CACHE_MISSES_TOTAL.with_label_values(&[cache_type]).inc();
+}
+
+/// Update cache size
+pub fn update_cache_size(cache_type: &str, size_bytes: usize) {
+    CACHE_SIZE_BYTES
+        .with_label_values(&[cache_type])
+        .set(size_bytes as f64);
+}
+
+/// Record cache eviction
+pub fn record_cache_eviction(cache_type: &str) {
+    CACHE_EVICTIONS_TOTAL
+        .with_label_values(&[cache_type])
+        .inc();
+}
+
+/// Record index scan
+pub fn record_index_scan(table: &str, index: &str) {
+    INDEX_SCANS_TOTAL
+        .with_label_values(&[table, index])
+        .inc();
+}
+
+/// Record table scan
+pub fn record_table_scan(table: &str) {
+    TABLE_SCANS_TOTAL.with_label_values(&[table]).inc();
+}
+
+/// Record disk read
+pub fn record_disk_read(bytes: usize) {
+    DISK_READS_TOTAL.inc();
+    DISK_READ_BYTES_TOTAL.inc_by(bytes as f64);
+}
+
+/// Record disk write
+pub fn record_disk_write(bytes: usize) {
+    DISK_WRITES_TOTAL.inc();
+    DISK_WRITE_BYTES_TOTAL.inc_by(bytes as f64);
+}
+
+/// Update replication lag
+pub fn update_replication_lag(replica: &str, lag_seconds: f64) {
+    REPLICATION_LAG_SECONDS
+        .with_label_values(&[replica])
+        .set(lag_seconds);
+}
+
+/// Record replication bytes sent
+pub fn record_replication_bytes_sent(replica: &str, bytes: usize) {
+    REPLICATION_BYTES_SENT
+        .with_label_values(&[replica])
+        .inc_by(bytes as f64);
+}
+
+/// Update replication status
+pub fn update_replication_status(replica: &str, is_healthy: bool) {
+    let status = if is_healthy { 1.0 } else { 0.0 };
+    REPLICATION_STATUS.with_label_values(&[replica]).set(status);
+}
+
+/// Record rate limit hit
+pub fn record_rate_limit_hit(limit_type: &str) {
+    RATE_LIMIT_HITS_TOTAL
+        .with_label_values(&[limit_type])
+        .inc();
+}
+
+/// Record rate limit block
+pub fn record_rate_limit_block(limit_type: &str) {
+    RATE_LIMIT_BLOCKS_TOTAL
+        .with_label_values(&[limit_type])
+        .inc();
+}
+
+/// Record authentication attempt
+pub fn record_auth_attempt(method: &str, result: &str) {
+    AUTH_ATTEMPTS_TOTAL
+        .with_label_values(&[method, result])
+        .inc();
+}
+
+/// Record authentication failure
+pub fn record_auth_failure(reason: &str) {
+    AUTH_FAILURES_TOTAL.with_label_values(&[reason]).inc();
+}
+
+/// Record snapshot created
+pub fn record_snapshot_created(table: &str) {
+    SNAPSHOTS_CREATED_TOTAL.with_label_values(&[table]).inc();
+}
+
+/// Record compaction
+pub fn record_compaction(table: &str, duration_seconds: f64) {
+    COMPACTIONS_TOTAL.with_label_values(&[table]).inc();
+    COMPACTION_DURATION
+        .with_label_values(&[table])
+        .observe(duration_seconds);
+}
+
+/// Record slow query
+pub fn record_slow_query(query_type: &str) {
+    SLOW_QUERIES_TOTAL.with_label_values(&[query_type]).inc();
+}
+
+/// Record query rows returned
+pub fn record_query_rows_returned(query_type: &str, rows: usize) {
+    QUERY_ROWS_RETURNED
+        .with_label_values(&[query_type])
+        .observe(rows as f64);
+}
+
+/// Record query rows affected
+pub fn record_query_rows_affected(query_type: &str, rows: usize) {
+    QUERY_ROWS_AFFECTED
+        .with_label_values(&[query_type])
+        .observe(rows as f64);
 }
 
 #[cfg(test)]
