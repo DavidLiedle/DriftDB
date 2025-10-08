@@ -67,13 +67,53 @@ impl SessionManager {
         // Get peer address
         let peer_addr = stream.peer_addr().unwrap_or(addr);
 
-        // Check if this is a TLS connection
-        if stream.is_tls() {
+        // Check if this is a TLS connection and log/audit accordingly
+        let is_encrypted = stream.is_tls();
+
+        // Record connection encryption status in metrics
+        crate::metrics::record_connection_encryption(is_encrypted);
+
+        if is_encrypted {
             info!("Secure TLS connection established with {}", peer_addr);
+
+            // Log successful TLS connection to audit log
+            use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+            self.audit_logger.log_event(
+                AuditEventType::LoginSuccess,  // Reusing LoginSuccess for connection events
+                None,
+                peer_addr,
+                AuditSeverity::Info,
+                "Encrypted TLS connection established".to_string(),
+                serde_json::json!({
+                    "connection_type": "TLS",
+                    "encrypted": true
+                }),
+                AuditOutcome::Success,
+                None,
+            );
+        } else {
+            warn!("Unencrypted connection from {} (TLS not requested by client)", peer_addr);
+
+            // Log unencrypted connection to audit log as warning
+            use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+            self.audit_logger.log_event(
+                AuditEventType::SuspiciousActivity,
+                None,
+                peer_addr,
+                AuditSeverity::Warning,
+                "Unencrypted connection established (TLS available but not used)".to_string(),
+                serde_json::json!({
+                    "connection_type": "Plain",
+                    "encrypted": false,
+                    "tls_available": true
+                }),
+                AuditOutcome::Success,
+                None,
+            );
         }
 
         // Handle the same way as regular connections but with SecureStream
-        self.handle_connection_internal(stream, peer_addr).await
+        self.handle_connection_internal(stream, peer_addr, is_encrypted).await
     }
 
     pub async fn handle_connection(
@@ -83,13 +123,14 @@ impl SessionManager {
     ) -> Result<()> {
         // Wrap TcpStream in SecureStream::Plain for unified handling
         let secure_stream = SecureStream::Plain(stream);
-        self.handle_connection_internal(secure_stream, addr).await
+        self.handle_connection_internal(secure_stream, addr, false).await
     }
 
     async fn handle_connection_internal(
         self: Arc<Self>,
         mut stream: SecureStream,
         addr: SocketAddr,
+        is_encrypted: bool,
     ) -> Result<()> {
         // Check rate limiting first
         if !self.rate_limit_manager.allow_connection(addr) {
@@ -142,6 +183,7 @@ impl SessionManager {
             transaction_manager,
             slow_query_logger: self.slow_query_logger.clone(),
             audit_logger: self.audit_logger.clone(),
+            is_encrypted,
         };
 
         // Handle session
@@ -177,6 +219,7 @@ struct Session {
     transaction_manager: Arc<TransactionManager>,
     slow_query_logger: Arc<SlowQueryLogger>,
     audit_logger: Arc<SecurityAuditLogger>,
+    is_encrypted: bool,
 }
 
 impl Session {

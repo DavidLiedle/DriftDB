@@ -116,6 +116,13 @@ lazy_static! {
         "driftdb_pool_connections_created_total",
         "Total number of connections created by the pool"
     ).unwrap();
+
+    /// Connection encryption status
+    pub static ref CONNECTION_ENCRYPTION: CounterVec = CounterVec::new(
+        Opts::new("driftdb_connections_by_encryption", "Total connections by encryption status")
+            .namespace("driftdb"),
+        &["encrypted"]
+    ).unwrap();
 }
 
 /// Initialize all metrics with the registry
@@ -134,6 +141,7 @@ pub fn init_metrics() -> anyhow::Result<()> {
     REGISTRY.register(Box::new(POOL_ACTIVE.clone()))?;
     REGISTRY.register(Box::new(POOL_WAIT_TIME.clone()))?;
     REGISTRY.register(Box::new(POOL_CONNECTIONS_CREATED.clone()))?;
+    REGISTRY.register(Box::new(CONNECTION_ENCRYPTION.clone()))?;
 
     debug!("Metrics initialized successfully");
     Ok(())
@@ -357,6 +365,12 @@ pub fn record_pool_wait_time(duration_seconds: f64, success: bool) {
 #[allow(dead_code)]
 pub fn update_pool_connections_created(total: u64) {
     POOL_CONNECTIONS_CREATED.set(total as f64);
+}
+
+/// Record a connection encryption status
+pub fn record_connection_encryption(is_encrypted: bool) {
+    let label = if is_encrypted { "true" } else { "false" };
+    CONNECTION_ENCRYPTION.with_label_values(&[label]).inc();
 }
 
 #[cfg(test)]
