@@ -58,7 +58,12 @@ impl TransactionState {
         let txn_id = NEXT_TXN_ID.fetch_add(1, Ordering::SeqCst);
         let start_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| {
+                // System time is before Unix epoch - extremely rare but possible
+                // Fall back to 0, which is better than panicking
+                tracing::warn!("System time is before Unix epoch, using 0 for transaction start time");
+                std::time::Duration::from_secs(0)
+            })
             .as_millis() as u64;
 
         Self {

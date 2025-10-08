@@ -198,7 +198,7 @@ impl User {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_secs();
 
         Self {
@@ -219,7 +219,7 @@ impl User {
         if let Some(locked_until) = self.locked_until {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_secs();
             locked_until > now
         } else {
@@ -397,7 +397,7 @@ impl UserDb {
             user.last_login = Some(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                     .as_secs(),
             );
 
@@ -415,7 +415,7 @@ impl UserDb {
             if user.failed_attempts >= self.config.max_failed_attempts {
                 let lock_until = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                     .as_secs()
                     + self.config.lockout_duration_seconds;
 
@@ -458,7 +458,7 @@ impl UserDb {
             username: username.to_string(),
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_secs(),
             success,
             client_addr: client_addr.to_string(),

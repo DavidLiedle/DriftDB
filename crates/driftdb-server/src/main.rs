@@ -16,7 +16,9 @@ mod performance;
 mod performance_routes;
 mod protocol;
 mod security;
+mod security_audit;
 mod session;
+mod slow_query_log;
 mod tls;
 mod transaction;
 mod transaction_buffer;
@@ -33,7 +35,9 @@ use tracing::{debug, error, info, warn};
 use driftdb_core::{Engine, EnginePool, PoolConfig, RateLimitConfig, RateLimitManager};
 use parking_lot::RwLock as SyncRwLock;
 use performance::{PerformanceMonitor, QueryOptimizer, ConnectionPoolOptimizer};
+use security_audit::{AuditConfig, SecurityAuditLogger};
 use session::SessionManager;
+use slow_query_log::{SlowQueryConfig, SlowQueryLogger};
 use tls::{TlsConfig, TlsManager};
 
 #[derive(Parser, Debug)]
@@ -152,6 +156,42 @@ struct Args {
     /// Query execution plan cache size
     #[arg(long, env = "DRIFTDB_QUERY_CACHE_SIZE", default_value = "1000")]
     query_cache_size: usize,
+
+    /// Slow query threshold in milliseconds
+    #[arg(long, env = "DRIFTDB_SLOW_QUERY_THRESHOLD", default_value = "1000")]
+    slow_query_threshold: u64,
+
+    /// Maximum number of slow queries to keep in memory
+    #[arg(long, env = "DRIFTDB_SLOW_QUERY_MAX_STORED", default_value = "1000")]
+    slow_query_max_stored: usize,
+
+    /// Enable slow query logging to stdout
+    #[arg(long, env = "DRIFTDB_SLOW_QUERY_STDOUT", default_value = "false")]
+    slow_query_log_stdout: bool,
+
+    /// Path to slow query log file
+    #[arg(long, env = "DRIFTDB_SLOW_QUERY_LOG_PATH", default_value = "./logs/slow_queries.log")]
+    slow_query_log_path: String,
+
+    /// Enable security audit logging
+    #[arg(long, env = "DRIFTDB_AUDIT_ENABLED", default_value = "true")]
+    audit_enabled: bool,
+
+    /// Maximum number of audit entries to keep in memory
+    #[arg(long, env = "DRIFTDB_AUDIT_MAX_ENTRIES", default_value = "10000")]
+    audit_max_entries: usize,
+
+    /// Path to security audit log file
+    #[arg(long, env = "DRIFTDB_AUDIT_LOG_PATH", default_value = "./logs/security_audit.log")]
+    audit_log_path: String,
+
+    /// Enable detection of suspicious activity patterns
+    #[arg(long, env = "DRIFTDB_AUDIT_SUSPICIOUS_DETECTION", default_value = "true")]
+    audit_suspicious_detection: bool,
+
+    /// Threshold for suspicious failed login attempts
+    #[arg(long, env = "DRIFTDB_AUDIT_LOGIN_THRESHOLD", default_value = "5")]
+    audit_login_threshold: u32,
 }
 
 #[tokio::main]
@@ -265,11 +305,42 @@ async fn main() -> Result<()> {
         pool_metrics.clone(),
     ));
 
+    // Initialize slow query logger
+    let slow_query_config = SlowQueryConfig {
+        slow_threshold_ms: args.slow_query_threshold,
+        max_stored_queries: args.slow_query_max_stored,
+        log_to_file: true,
+        log_to_stdout: args.slow_query_log_stdout,
+        log_file_path: args.slow_query_log_path.clone(),
+    };
+    let slow_query_logger = Arc::new(SlowQueryLogger::new(slow_query_config));
+    info!(
+        "Slow query logging enabled: threshold={}ms, log_path={}, stdout={}",
+        args.slow_query_threshold, args.slow_query_log_path, args.slow_query_log_stdout
+    );
+
+    // Initialize security audit logger
+    let audit_config = AuditConfig {
+        enabled: args.audit_enabled,
+        max_stored_entries: args.audit_max_entries,
+        log_to_file: true,
+        log_file_path: args.audit_log_path.clone(),
+        log_suspicious_patterns: args.audit_suspicious_detection,
+        suspicious_login_threshold: args.audit_login_threshold,
+    };
+    let audit_logger = Arc::new(SecurityAuditLogger::new(audit_config));
+    info!(
+        "Security audit logging enabled: log_path={}, suspicious_detection={}, threshold={}",
+        args.audit_log_path, args.audit_suspicious_detection, args.audit_login_threshold
+    );
+
     // Create session manager with authentication and rate limiting
     let session_manager = Arc::new(SessionManager::new(
         engine_pool.clone(),
         auth_config,
         rate_limit_manager.clone(),
+        slow_query_logger.clone(),
+        audit_logger.clone(),
     ));
 
     // Initialize TLS if enabled

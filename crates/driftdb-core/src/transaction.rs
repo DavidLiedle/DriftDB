@@ -313,40 +313,28 @@ pub struct TransactionManager {
 }
 
 impl TransactionManager {
+    /// Create a new TransactionManager with default settings
+    /// This method is deprecated - use new_with_path or new_with_deps instead
+    #[deprecated(note = "Use new_with_path or new_with_deps to avoid hardcoded paths")]
     pub fn new() -> Result<Self> {
         // Get data path from environment or use a sensible default
         let data_path = std::env::var("DRIFTDB_DATA_PATH").unwrap_or_else(|_| "./data".to_string());
-        let wal_dir = std::path::PathBuf::from(data_path).join("wal");
+        Self::new_with_path(std::path::PathBuf::from(data_path))
+    }
+
+    /// Create a new TransactionManager with specified base path
+    pub fn new_with_path<P: AsRef<std::path::Path>>(base_path: P) -> Result<Self> {
+        let base_path = base_path.as_ref();
+        let wal_dir = base_path.join("wal");
         let wal_path = wal_dir.join("wal.log");
 
-        // Try to create the WAL directory
-        if let Err(e) = std::fs::create_dir_all(&wal_dir) {
-            eprintln!("WARNING: Failed to create WAL directory: {}", e);
-        }
+        // Create the WAL directory
+        std::fs::create_dir_all(&wal_dir).map_err(|e| {
+            DriftError::Other(format!("Failed to create WAL directory: {}", e))
+        })?;
 
-        // Create WAL with proper error handling
-        let wal = match WalManager::new(&wal_path, crate::wal::WalConfig::default()) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                eprintln!("ERROR: Failed to create WAL at {:?}: {}", wal_path, e);
-                eprintln!("FALLBACK: Using temporary directory for WAL (DATA NOT DURABLE!)");
-
-                // Try fallback to temp directory
-                let temp_dir = std::env::temp_dir().join("driftdb_wal_fallback");
-                let _ = std::fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join("wal.log");
-
-                match WalManager::new(temp_path, crate::wal::WalConfig::default()) {
-                    Ok(w) => Arc::new(w),
-                    Err(e2) => {
-                        return Err(DriftError::Other(format!(
-                            "Cannot create WAL even in temp directory: {}",
-                            e2
-                        )));
-                    }
-                }
-            }
-        };
+        // Create WAL
+        let wal = Arc::new(WalManager::new(&wal_path, crate::wal::WalConfig::default())?);
 
         Ok(Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),

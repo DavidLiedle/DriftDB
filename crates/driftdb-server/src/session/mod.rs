@@ -17,6 +17,8 @@ use self::prepared::PreparedStatementManager;
 use crate::executor::QueryExecutor;
 use crate::protocol::{self, Message, TransactionStatus};
 use crate::security::SqlValidator;
+use crate::security_audit::SecurityAuditLogger;
+use crate::slow_query_log::SlowQueryLogger;
 use crate::tls::SecureStream;
 use crate::transaction::TransactionManager;
 use driftdb_core::{EngineGuard, EnginePool, RateLimitManager};
@@ -26,6 +28,8 @@ pub struct SessionManager {
     next_process_id: AtomicU32,
     auth_db: Arc<protocol::auth::UserDb>,
     rate_limit_manager: Arc<RateLimitManager>,
+    slow_query_logger: Arc<SlowQueryLogger>,
+    audit_logger: Arc<SecurityAuditLogger>,
 }
 
 impl SessionManager {
@@ -33,12 +37,16 @@ impl SessionManager {
         engine_pool: EnginePool,
         auth_config: protocol::auth::AuthConfig,
         rate_limit_manager: Arc<RateLimitManager>,
+        slow_query_logger: Arc<SlowQueryLogger>,
+        audit_logger: Arc<SecurityAuditLogger>,
     ) -> Self {
         Self {
             engine_pool,
             next_process_id: AtomicU32::new(1000),
             auth_db: Arc::new(protocol::auth::UserDb::new(auth_config)),
             rate_limit_manager,
+            slow_query_logger,
+            audit_logger,
         }
     }
 
@@ -132,6 +140,8 @@ impl SessionManager {
             prepared_statements: PreparedStatementManager::new(),
             sql_validator: SqlValidator::new(),
             transaction_manager,
+            slow_query_logger: self.slow_query_logger.clone(),
+            audit_logger: self.audit_logger.clone(),
         };
 
         // Handle session
@@ -165,6 +175,8 @@ struct Session {
     prepared_statements: PreparedStatementManager,
     sql_validator: SqlValidator,
     transaction_manager: Arc<TransactionManager>,
+    slow_query_logger: Arc<SlowQueryLogger>,
+    audit_logger: Arc<SecurityAuditLogger>,
 }
 
 impl Session {
@@ -359,6 +371,14 @@ impl Session {
                 .unwrap_or(false);
             self.rate_limit_manager
                 .set_client_auth(self.addr, true, is_superuser);
+
+            // Log successful trust authentication
+            self.audit_logger.log_login_success(
+                username.to_string(),
+                self.addr,
+                format!("session_{}", self.process_id),
+            );
+
             self.send_message(stream, &Message::AuthenticationOk)
                 .await?;
             self.send_startup_complete(stream).await?;
@@ -465,6 +485,13 @@ impl Session {
                     username, client_addr
                 );
 
+                // Log successful authentication
+                self.audit_logger.log_login_success(
+                    username.to_string(),
+                    self.addr,
+                    format!("session_{}", self.process_id),
+                );
+
                 // Send authentication OK
                 self.send_message(stream, &Message::AuthenticationOk)
                     .await?;
@@ -490,6 +517,13 @@ impl Session {
                     "Authentication failed"
                 };
 
+                // Log failed authentication attempt
+                self.audit_logger.log_login_failure(
+                    username.to_string(),
+                    self.addr,
+                    error_msg.to_string(),
+                );
+
                 let error = Message::error(protocol::error_codes::INVALID_AUTHORIZATION, error_msg);
                 self.send_message(stream, &error).await?;
                 Ok(false)
@@ -503,6 +537,22 @@ impl Session {
         // Check rate limiting for this query
         if !self.rate_limit_manager.allow_query(self.addr, sql) {
             warn!("Query rate limit exceeded for {}: {}", self.addr, sql);
+
+            // Log rate limit exceeded audit event
+            use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+            self.audit_logger.log_event(
+                AuditEventType::SuspiciousActivity,
+                self.username.clone(),
+                self.addr,
+                AuditSeverity::Warning,
+                "Query rate limit exceeded".to_string(),
+                serde_json::json!({
+                    "query": sql.chars().take(200).collect::<String>(),
+                }),
+                AuditOutcome::Blocked,
+                Some(format!("session_{}", self.process_id)),
+            );
+
             let error = Message::error(
                 protocol::error_codes::TOO_MANY_CONNECTIONS,
                 "Rate limit exceeded. Please slow down your requests.",
@@ -545,7 +595,8 @@ impl Session {
         );
         match executor.execute(sql).await {
             Ok(result) => {
-                let duration = start_time.elapsed().as_secs_f64();
+                let duration = start_time.elapsed();
+                let duration_secs = duration.as_secs_f64();
 
                 // Update transaction status based on the command
                 let sql_upper = sql.trim().to_uppercase();
@@ -557,21 +608,52 @@ impl Session {
 
                 // Record successful query metrics if registry is available
                 if crate::metrics::REGISTRY.gather().len() > 0 {
-                    crate::metrics::record_query(&query_type, "success", duration);
+                    crate::metrics::record_query(&query_type, "success", duration_secs);
                 }
+
+                // Log slow query if it exceeds threshold
+                let rows_affected = match &result {
+                    crate::executor::QueryResult::Select { rows, .. } => Some(rows.len() as u64),
+                    crate::executor::QueryResult::Insert { count } => Some(*count as u64),
+                    crate::executor::QueryResult::Update { count } => Some(*count as u64),
+                    crate::executor::QueryResult::Delete { count } => Some(*count as u64),
+                    _ => None,
+                };
+
+                self.slow_query_logger.log_query(
+                    sql.to_string(),
+                    duration,
+                    self.addr.to_string(),
+                    self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                    self.database.clone(),
+                    rows_affected,
+                    None,
+                );
 
                 self.send_query_result(stream, result).await?;
             }
             Err(e) => {
-                let duration = start_time.elapsed().as_secs_f64();
+                let duration = start_time.elapsed();
+                let duration_secs = duration.as_secs_f64();
 
                 error!("Query error: {}", e);
 
                 // Record failed query metrics if registry is available
                 if crate::metrics::REGISTRY.gather().len() > 0 {
-                    crate::metrics::record_query(&query_type, "error", duration);
+                    crate::metrics::record_query(&query_type, "error", duration_secs);
                     crate::metrics::record_error("query", &query_type);
                 }
+
+                // Log slow query even if it failed
+                self.slow_query_logger.log_query(
+                    sql.to_string(),
+                    duration,
+                    self.addr.to_string(),
+                    self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                    self.database.clone(),
+                    None,
+                    Some(format!("error: {}", e)),
+                );
 
                 let error = Message::error(
                     protocol::error_codes::SYNTAX_ERROR,
@@ -620,15 +702,16 @@ impl Session {
 
     async fn handle_create_user(&self, sql: &str) -> Result<Option<crate::executor::QueryResult>> {
         // Check if current user is superuser
-        if let Some(username) = &self.username {
+        let current_username = if let Some(username) = &self.username {
             if !self.auth_db.is_superuser(username) {
                 return Err(anyhow!(
                     "Permission denied: only superusers can create users"
                 ));
             }
+            username.clone()
         } else {
             return Err(anyhow!("Permission denied: authentication required"));
-        }
+        };
 
         // Parse CREATE USER statement (simplified)
         // Example: CREATE USER 'testuser' WITH PASSWORD 'testpass' SUPERUSER;
@@ -659,18 +742,36 @@ impl Session {
         self.auth_db
             .create_user(new_username.to_string(), password, is_superuser)?;
 
+        // Log user creation audit event
+        use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+        self.audit_logger.log_event(
+            AuditEventType::UserCreated,
+            Some(current_username.clone()),
+            self.addr,
+            AuditSeverity::Info,
+            format!("User '{}' created with superuser={}", new_username, is_superuser),
+            serde_json::json!({
+                "new_user": new_username,
+                "is_superuser": is_superuser,
+                "created_by": current_username
+            }),
+            AuditOutcome::Success,
+            Some(format!("session_{}", self.process_id)),
+        );
+
         Ok(Some(crate::executor::QueryResult::CreateTable))
     }
 
     async fn handle_drop_user(&self, sql: &str) -> Result<Option<crate::executor::QueryResult>> {
         // Check if current user is superuser
-        if let Some(username) = &self.username {
+        let current_username = if let Some(username) = &self.username {
             if !self.auth_db.is_superuser(username) {
                 return Err(anyhow!("Permission denied: only superusers can drop users"));
             }
+            username.clone()
         } else {
             return Err(anyhow!("Permission denied: authentication required"));
-        }
+        };
 
         // Parse DROP USER statement
         let parts: Vec<&str> = sql.split_whitespace().collect();
@@ -680,6 +781,22 @@ impl Session {
 
         let target_username = parts[2].trim_matches('\'').trim_matches('"');
         self.auth_db.drop_user(target_username)?;
+
+        // Log user deletion audit event
+        use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+        self.audit_logger.log_event(
+            AuditEventType::UserDeleted,
+            Some(current_username.clone()),
+            self.addr,
+            AuditSeverity::Warning,
+            format!("User '{}' deleted", target_username),
+            serde_json::json!({
+                "deleted_user": target_username,
+                "deleted_by": current_username
+            }),
+            AuditOutcome::Success,
+            Some(format!("session_{}", self.process_id)),
+        );
 
         Ok(Some(crate::executor::QueryResult::Delete { count: 1 }))
     }
@@ -719,6 +836,23 @@ impl Session {
 
         self.auth_db
             .change_password(target_username, new_password)?;
+
+        // Log password change audit event
+        use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+        self.audit_logger.log_event(
+            AuditEventType::PasswordChanged,
+            Some(current_user.to_string()),
+            self.addr,
+            AuditSeverity::Warning,
+            format!("Password changed for user '{}'", target_username),
+            serde_json::json!({
+                "target_user": target_username,
+                "changed_by": current_user,
+                "self_change": target_username == current_user
+            }),
+            AuditOutcome::Success,
+            Some(format!("session_{}", self.process_id)),
+        );
 
         Ok(Some(crate::executor::QueryResult::Update { count: 1 }))
     }
@@ -1108,7 +1242,8 @@ impl Session {
                 );
                 match executor.execute(&sql).await {
                     Ok(result) => {
-                        let duration = start_time.elapsed().as_secs_f64();
+                        let duration = start_time.elapsed();
+                        let duration_secs = duration.as_secs_f64();
 
                         // Update transaction status based on the command
                         let sql_upper = sql.trim().to_uppercase();
@@ -1123,21 +1258,52 @@ impl Session {
                         // Record successful query metrics if registry is available
                         if crate::metrics::REGISTRY.gather().len() > 0 {
                             let query_type = determine_query_type(&sql);
-                            crate::metrics::record_query(&query_type, "success", duration);
+                            crate::metrics::record_query(&query_type, "success", duration_secs);
                         }
+
+                        // Log slow query if it exceeds threshold
+                        let rows_affected = match &result {
+                            crate::executor::QueryResult::Select { rows, .. } => Some(rows.len() as u64),
+                            crate::executor::QueryResult::Insert { count } => Some(*count as u64),
+                            crate::executor::QueryResult::Update { count } => Some(*count as u64),
+                            crate::executor::QueryResult::Delete { count } => Some(*count as u64),
+                            _ => None,
+                        };
+
+                        self.slow_query_logger.log_query(
+                            sql.to_string(),
+                            duration,
+                            self.addr.to_string(),
+                            self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                            self.database.clone(),
+                            rows_affected,
+                            Some(format!("prepared_statement={}", portal_name)),
+                        );
 
                         self.send_query_result(stream, result).await?;
                     }
                     Err(e) => {
-                        let duration = start_time.elapsed().as_secs_f64();
+                        let duration = start_time.elapsed();
+                        let duration_secs = duration.as_secs_f64();
                         error!("Execute error: {}", e);
 
                         // Record failed query metrics if registry is available
                         if crate::metrics::REGISTRY.gather().len() > 0 {
                             let query_type = determine_query_type(&sql);
-                            crate::metrics::record_query(&query_type, "error", duration);
+                            crate::metrics::record_query(&query_type, "error", duration_secs);
                             crate::metrics::record_error("query", &query_type);
                         }
+
+                        // Log slow query even if it failed
+                        self.slow_query_logger.log_query(
+                            sql.to_string(),
+                            duration,
+                            self.addr.to_string(),
+                            self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                            self.database.clone(),
+                            None,
+                            Some(format!("prepared_statement={}, error: {}", portal_name, e)),
+                        );
 
                         let error = Message::error(
                             protocol::error_codes::SYNTAX_ERROR,

@@ -112,7 +112,7 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
-            transaction_manager: Arc::new(RwLock::new(TransactionManager::new()?)),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new_with_path(&base_path)?)),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             view_manager: Arc::new(ViewManager::new()),
             search_manager: Arc::new(SearchManager::new()),
@@ -195,11 +195,11 @@ impl Engine {
         ));
 
         Ok(Self {
-            base_path,
+            base_path: base_path.clone(),
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
-            transaction_manager: Arc::new(RwLock::new(TransactionManager::new()?)),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new_with_path(&base_path)?)),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             sequence_manager: Arc::new(SequenceManager::new()),
             view_manager: Arc::new(ViewManager::new()),

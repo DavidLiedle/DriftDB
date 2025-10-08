@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "driftdb-admin"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "anyhow",
  "byte-unit",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "driftdb-cli"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "anyhow",
  "clap",
@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "driftdb-core"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "driftdb-server"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "anyhow",
  "arc-swap",
