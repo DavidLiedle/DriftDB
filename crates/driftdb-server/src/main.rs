@@ -15,6 +15,7 @@ mod ordered_columns;
 mod performance;
 mod performance_routes;
 mod protocol;
+mod replication;
 mod security;
 mod security_audit;
 mod session;

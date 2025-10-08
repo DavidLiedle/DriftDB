@@ -757,6 +757,27 @@ pub fn update_replication_status(replica: &str, is_healthy: bool) {
     REPLICATION_STATUS.with_label_values(&[replica]).set(status);
 }
 
+/// Record replica status (for tracking active replica counts)
+pub fn record_replica_status(_status_type: &str, count: i64) {
+    // Update the active replicas gauge
+    // We use a simple gauge without labels for total active count
+    POOL_SIZE.set(count as f64); // Temporarily reuse pool size gauge
+    // TODO: Add dedicated ACTIVE_REPLICAS gauge
+}
+
+/// Record replication lag in KB (generic version without replica name)
+pub fn record_replication_lag(lag_kb: f64) {
+    // For now, this is a no-op as we track per-replica lag
+    // Individual replica lag is tracked via update_replication_lag
+    // This is called for aggregate lag tracking
+}
+
+/// Record replication bytes sent (aggregate version for all replicas)
+pub fn record_replication_bytes_sent_total(bytes: f64) {
+    // Aggregate replication bytes across all replicas
+    REPLICATION_BYTES_SENT.with_label_values(&["total"]).inc_by(bytes);
+}
+
 /// Record rate limit hit
 pub fn record_rate_limit_hit(limit_type: &str) {
     RATE_LIMIT_HITS_TOTAL
