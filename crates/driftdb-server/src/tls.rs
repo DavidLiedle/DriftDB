@@ -291,16 +291,79 @@ impl TlsManager {
 }
 
 /// Generate a self-signed certificate for development/testing
-/// Note: This is a placeholder - implement with a proper crypto library like rcgen
-#[allow(dead_code)]
+///
+/// This generates a self-signed certificate valid for 365 days with the following attributes:
+/// - Common Name: localhost
+/// - Subject Alternative Names: localhost, 127.0.0.1, ::1
+/// - Key Usage: Digital Signature, Key Encipherment
+/// - Extended Key Usage: Server Authentication
+///
+/// WARNING: Self-signed certificates should only be used for development and testing.
+/// For production use, obtain certificates from a trusted Certificate Authority.
 pub fn generate_self_signed_cert(cert_path: &Path, key_path: &Path) -> Result<()> {
-    // TODO: Implement proper self-signed certificate generation
-    // For now, users need to provide their own certificates
-    Err(anyhow!(
-        "Self-signed certificate generation not implemented. Please provide certificate files at {:?} and {:?}",
-        cert_path,
-        key_path
-    ))
+    use rcgen::{CertificateParams, DnType, KeyPair, SanType, PKCS_ECDSA_P256_SHA256};
+    use std::fs;
+
+    info!("Generating self-signed certificate for development/testing");
+
+    // Create certificate parameters
+    let mut params = CertificateParams::default();
+
+    // Set distinguished name
+    params.distinguished_name.push(DnType::CommonName, "DriftDB Development Certificate");
+    params.distinguished_name.push(DnType::OrganizationName, "DriftDB");
+    params.distinguished_name.push(DnType::CountryName, "US");
+
+    // Set validity period (365 days)
+    params.not_before = time::OffsetDateTime::now_utc();
+    params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(365);
+
+    // Add subject alternative names
+    params.subject_alt_names = vec![
+        SanType::DnsName("localhost".try_into().unwrap()),
+        SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
+        SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+    ];
+
+    // Set key usages
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::DigitalSignature,
+        rcgen::KeyUsagePurpose::KeyEncipherment,
+    ];
+
+    params.extended_key_usages = vec![
+        rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+    ];
+
+    // Use ECDSA P-256 for efficiency
+    params.alg = &PKCS_ECDSA_P256_SHA256;
+
+    // Set the key pair
+    let key_pair = KeyPair::generate(&PKCS_ECDSA_P256_SHA256)?;
+    params.key_pair = Some(key_pair);
+
+    // Generate certificate
+    let cert = rcgen::Certificate::from_params(params)?;
+
+    // Write certificate to file
+    fs::write(cert_path, cert.serialize_pem()?)
+        .map_err(|e| anyhow!("Failed to write certificate to {:?}: {}", cert_path, e))?;
+
+    // Write private key to file
+    fs::write(key_path, cert.serialize_private_key_pem())
+        .map_err(|e| anyhow!("Failed to write private key to {:?}: {}", key_path, e))?;
+
+    info!(
+        "Self-signed certificate generated successfully:\n  Certificate: {:?}\n  Private Key: {:?}\n  Valid for: 365 days",
+        cert_path, key_path
+    );
+
+    warn!(
+        "WARNING: This is a self-signed certificate for development/testing only.\n\
+         For production use, obtain certificates from a trusted Certificate Authority."
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -331,5 +394,52 @@ mod tests {
 
         assert!(!tls_manager.is_tls_available());
         assert!(!tls_manager.is_tls_required());
+    }
+
+    #[test]
+    fn test_generate_self_signed_cert() {
+        let temp_dir = tempdir().unwrap();
+        let cert_path = temp_dir.path().join("test_cert.pem");
+        let key_path = temp_dir.path().join("test_key.pem");
+
+        // Generate self-signed certificate
+        let result = generate_self_signed_cert(&cert_path, &key_path);
+        assert!(result.is_ok(), "Failed to generate self-signed certificate: {:?}", result.err());
+
+        // Verify files were created
+        assert!(cert_path.exists(), "Certificate file was not created");
+        assert!(key_path.exists(), "Key file was not created");
+
+        // Verify certificate content is not empty
+        let cert_content = std::fs::read_to_string(&cert_path).unwrap();
+        assert!(cert_content.contains("BEGIN CERTIFICATE"), "Certificate does not contain BEGIN CERTIFICATE");
+        assert!(cert_content.contains("END CERTIFICATE"), "Certificate does not contain END CERTIFICATE");
+
+        // Verify key content is not empty
+        let key_content = std::fs::read_to_string(&key_path).unwrap();
+        assert!(key_content.contains("BEGIN PRIVATE KEY") || key_content.contains("BEGIN RSA PRIVATE KEY"),
+                "Key does not contain BEGIN PRIVATE KEY");
+        assert!(key_content.contains("END PRIVATE KEY") || key_content.contains("END RSA PRIVATE KEY"),
+                "Key does not contain END PRIVATE KEY");
+    }
+
+    #[tokio::test]
+    async fn test_tls_manager_with_generated_cert() {
+        let temp_dir = tempdir().unwrap();
+        let cert_path = temp_dir.path().join("test_cert.pem");
+        let key_path = temp_dir.path().join("test_key.pem");
+
+        // Generate self-signed certificate
+        generate_self_signed_cert(&cert_path, &key_path).unwrap();
+
+        // Create TLS manager with generated certificates
+        let config = TlsConfig::new(&cert_path, &key_path);
+        let tls_manager = TlsManager::new(config).await;
+
+        assert!(tls_manager.is_ok(), "Failed to create TLS manager: {:?}", tls_manager.err());
+        let tls_manager = tls_manager.unwrap();
+
+        assert!(tls_manager.is_tls_available(), "TLS should be available with generated certificates");
+        assert!(!tls_manager.is_tls_required(), "TLS should not be required by default");
     }
 }

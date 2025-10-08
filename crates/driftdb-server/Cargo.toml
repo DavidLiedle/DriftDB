@@ -49,6 +49,7 @@ sqlparser = "0.51"
 tokio-rustls = "0.25"
 rustls = "0.22"
 rustls-pemfile = "2.0"
+rcgen = "0.12"
 
 [dev-dependencies]
 tempfile = { workspace = true }

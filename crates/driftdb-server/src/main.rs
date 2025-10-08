@@ -145,6 +145,10 @@ struct Args {
     #[arg(long, env = "DRIFTDB_TLS_REQUIRED", default_value = "false")]
     tls_required: bool,
 
+    /// Generate self-signed certificate for development/testing (if cert files don't exist)
+    #[arg(long, env = "DRIFTDB_TLS_GENERATE_SELF_SIGNED", default_value = "false")]
+    tls_generate_self_signed: bool,
+
     /// Enable performance monitoring and optimization
     #[arg(long, env = "DRIFTDB_PERFORMANCE_MONITORING", default_value = "true")]
     enable_performance_monitoring: bool,
@@ -346,24 +350,63 @@ async fn main() -> Result<()> {
     // Initialize TLS if enabled
     let tls_manager = if args.tls_enabled {
         if let (Some(cert_path), Some(key_path)) = (&args.tls_cert_path, &args.tls_key_path) {
-            let tls_config = TlsConfig::new(cert_path, key_path)
-                .require_tls(args.tls_required);
-
-            match TlsManager::new(tls_config).await {
-                Ok(manager) => {
-                    info!(
-                        "TLS initialized: cert={:?}, key={:?}, required={}",
-                        cert_path, key_path, args.tls_required
-                    );
-                    Some(Arc::new(manager))
-                }
-                Err(e) => {
-                    error!("Failed to initialize TLS: {}", e);
+            // Generate self-signed certificate if requested and files don't exist
+            if args.tls_generate_self_signed && (!cert_path.exists() || !key_path.exists()) {
+                info!("Generating self-signed certificate for development/testing");
+                if let Err(e) = tls::generate_self_signed_cert(cert_path, key_path) {
+                    error!("Failed to generate self-signed certificate: {}", e);
                     if args.tls_required {
                         return Err(e);
                     } else {
                         warn!("Continuing without TLS support");
                         None
+                    }
+                } else {
+                    info!("Self-signed certificate generated successfully");
+                    // Continue with TLS initialization
+                    let tls_config = TlsConfig::new(cert_path, key_path)
+                        .require_tls(args.tls_required);
+
+                    match TlsManager::new(tls_config).await {
+                        Ok(manager) => {
+                            info!(
+                                "TLS initialized with generated certificate: cert={:?}, key={:?}, required={}",
+                                cert_path, key_path, args.tls_required
+                            );
+                            Some(Arc::new(manager))
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize TLS: {}", e);
+                            if args.tls_required {
+                                return Err(e);
+                            } else {
+                                warn!("Continuing without TLS support");
+                                None
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Use existing certificates
+                let tls_config = TlsConfig::new(cert_path, key_path)
+                    .require_tls(args.tls_required);
+
+                match TlsManager::new(tls_config).await {
+                    Ok(manager) => {
+                        info!(
+                            "TLS initialized: cert={:?}, key={:?}, required={}",
+                            cert_path, key_path, args.tls_required
+                        );
+                        Some(Arc::new(manager))
+                    }
+                    Err(e) => {
+                        error!("Failed to initialize TLS: {}", e);
+                        if args.tls_required {
+                            return Err(e);
+                        } else {
+                            warn!("Continuing without TLS support");
+                            None
+                        }
                     }
                 }
             }
