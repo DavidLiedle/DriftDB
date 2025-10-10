@@ -93,3 +93,6 @@ pub use schema::Schema;
 pub use security_monitor::{
     AlertType, SecurityConfig, SecurityMonitor, SecurityStats, ThreatEvent, ThreatType,
 };
+pub use snapshot::{
+    AdaptiveSnapshotManager, Snapshot, SnapshotManager, SnapshotPolicy, SnapshotStatistics,
+};
