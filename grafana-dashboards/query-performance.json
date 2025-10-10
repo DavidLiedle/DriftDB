@@ -1,0 +1,213 @@
+{
+  "dashboard": {
+    "title": "DriftDB - Query Performance",
+    "tags": ["driftdb", "performance", "queries"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Query Latency (p50, p95, p99)",
+        "type": "graph",
+        "gridPos": {"h": 9, "w": 24, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(driftdb_query_latency_seconds_bucket[5m]))",
+            "legendFormat": "p50 - {{query_type}}",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(driftdb_query_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95 - {{query_type}}",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(driftdb_query_latency_seconds_bucket[5m]))",
+            "legendFormat": "p99 - {{query_type}}",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Latency"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Query Duration by Type",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9},
+        "targets": [
+          {
+            "expr": "rate(driftdb_query_duration_seconds_sum[5m]) / rate(driftdb_query_duration_seconds_count[5m])",
+            "legendFormat": "{{query_type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Avg Duration"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Queries by Type and Status",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 9},
+        "targets": [
+          {
+            "expr": "rate(driftdb_queries_total[5m])",
+            "legendFormat": "{{query_type}} - {{status}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "ops", "label": "Queries/sec"},
+          {"format": "short"}
+        ],
+        "stack": true
+      },
+      {
+        "id": 4,
+        "title": "Slow Queries",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 17},
+        "targets": [
+          {
+            "expr": "rate(driftdb_slow_queries_total[5m])",
+            "legendFormat": "Slow Queries/sec",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Queries/sec"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {"params": [5], "type": "gt"},
+              "operator": {"type": "and"},
+              "query": {"params": ["A", "5m", "now"]},
+              "reducer": {"params": [], "type": "avg"},
+              "type": "query"
+            }
+          ],
+          "name": "High Slow Query Rate"
+        }
+      },
+      {
+        "id": 5,
+        "title": "Rows Returned",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 17},
+        "targets": [
+          {
+            "expr": "rate(driftdb_rows_returned_total[5m])",
+            "legendFormat": "Rows/sec",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Rows/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Rows Affected (Writes)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25},
+        "targets": [
+          {
+            "expr": "rate(driftdb_rows_affected_total[5m])",
+            "legendFormat": "Rows/sec",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Rows/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Index Scans vs Table Scans",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25},
+        "targets": [
+          {
+            "expr": "rate(driftdb_index_scans_total[5m])",
+            "legendFormat": "Index Scans - {{table}}/{{index}}",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(driftdb_table_scans_total[5m])",
+            "legendFormat": "Table Scans - {{table}}",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "ops", "label": "Scans/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Cache Hit Rate",
+        "type": "gauge",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+        "targets": [
+          {
+            "expr": "rate(driftdb_cache_hits_total[5m]) / (rate(driftdb_cache_hits_total[5m]) + rate(driftdb_cache_misses_total[5m])) * 100",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "max": 100,
+            "min": 0,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "yellow", "value": 50},
+                {"color": "green", "value": 80}
+              ]
+            },
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "Top 10 Slowest Query Types",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+        "targets": [
+          {
+            "expr": "topk(10, rate(driftdb_query_duration_seconds_sum[5m]) / rate(driftdb_query_duration_seconds_count[5m]))",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {"Time": true},
+              "indexByName": {},
+              "renameByName": {
+                "query_type": "Query Type",
+                "Value": "Avg Duration (s)"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

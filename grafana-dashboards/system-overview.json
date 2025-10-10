@@ -1,0 +1,206 @@
+{
+  "dashboard": {
+    "title": "DriftDB - System Overview",
+    "tags": ["driftdb", "overview"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Connections",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "driftdb_active_connections",
+            "legendFormat": "Active Connections",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Connections"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Queries Per Second",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(driftdb_queries_total[1m])",
+            "legendFormat": "{{query_type}} - {{status}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "QPS"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Error Rate",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "rate(driftdb_errors_total[5m])",
+            "legendFormat": "{{error_type}} - {{operation}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Errors/sec"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {"params": [10], "type": "gt"},
+              "operator": {"type": "and"},
+              "query": {"params": ["A", "5m", "now"]},
+              "reducer": {"params": [], "type": "avg"},
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "name": "High Error Rate Alert",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "id": 4,
+        "title": "CPU Usage",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "driftdb_cpu_usage_percent",
+            "legendFormat": "{{type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "percent", "label": "CPU %", "max": 100, "min": 0},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Memory Usage",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "driftdb_memory_usage_bytes",
+            "legendFormat": "{{type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "bytes", "label": "Memory"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Database Size",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "driftdb_database_size_bytes",
+            "legendFormat": "{{table}} - {{component}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "bytes", "label": "Size"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Server Uptime",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 24},
+        "targets": [
+          {
+            "expr": "driftdb_server_uptime_seconds",
+            "refId": "A"
+          }
+        ],
+        "format": "dtdurations",
+        "valueName": "current"
+      },
+      {
+        "id": 8,
+        "title": "Total Connections",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 24},
+        "targets": [
+          {
+            "expr": "driftdb_connections_total",
+            "refId": "A"
+          }
+        ],
+        "format": "short",
+        "valueName": "total"
+      },
+      {
+        "id": 9,
+        "title": "Connection Pool Utilization",
+        "type": "gauge",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 24},
+        "targets": [
+          {
+            "expr": "(driftdb_pool_size_total - driftdb_pool_available_connections) / driftdb_pool_size_total * 100",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "max": 100,
+            "min": 0,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 70},
+                {"color": "red", "value": 90}
+              ]
+            },
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "Active Alerts",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 24},
+        "targets": [
+          {
+            "expr": "count(ALERTS{alertstate=\"firing\"})",
+            "refId": "A"
+          }
+        ],
+        "format": "short",
+        "valueName": "current",
+        "colorBackground": true,
+        "thresholds": "1,5"
+      }
+    ]
+  }
+}

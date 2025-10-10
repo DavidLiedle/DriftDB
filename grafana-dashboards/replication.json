@@ -1,0 +1,244 @@
+{
+  "dashboard": {
+    "title": "DriftDB - Replication",
+    "tags": ["driftdb", "replication", "high-availability"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Replication Lag",
+        "type": "graph",
+        "gridPos": {"h": 9, "w": 24, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "driftdb_replication_lag_seconds",
+            "legendFormat": "{{replica}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Lag (seconds)"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {"params": [300], "type": "gt"},
+              "operator": {"type": "and"},
+              "query": {"params": ["A", "5m", "now"]},
+              "reducer": {"params": [], "type": "avg"},
+              "type": "query"
+            }
+          ],
+          "name": "High Replication Lag",
+          "message": "Replication lag exceeds 5 minutes"
+        }
+      },
+      {
+        "id": 2,
+        "title": "Replication Bytes Sent",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9},
+        "targets": [
+          {
+            "expr": "rate(driftdb_replication_bytes_sent_total[5m])",
+            "legendFormat": "{{replica}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "Bps", "label": "Bytes/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Replica Status",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 9},
+        "targets": [
+          {
+            "expr": "driftdb_replication_status",
+            "legendFormat": "{{replica}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Status (1=healthy, 0=unhealthy)", "max": 1, "min": 0},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Active Replicas",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 17},
+        "targets": [
+          {
+            "expr": "count(driftdb_replication_status == 1)",
+            "refId": "A"
+          }
+        ],
+        "format": "short",
+        "valueName": "current",
+        "colorBackground": true,
+        "thresholds": "1,2",
+        "colors": ["#d44a3a", "#e0b400", "#299c46"]
+      },
+      {
+        "id": 5,
+        "title": "Max Replication Lag",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 17},
+        "targets": [
+          {
+            "expr": "max(driftdb_replication_lag_seconds)",
+            "refId": "A"
+          }
+        ],
+        "format": "s",
+        "valueName": "current",
+        "colorBackground": true,
+        "thresholds": "60,300",
+        "colors": ["#299c46", "#e0b400", "#d44a3a"]
+      },
+      {
+        "id": 6,
+        "title": "Total Bytes Replicated",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 17},
+        "targets": [
+          {
+            "expr": "sum(driftdb_replication_bytes_sent_total)",
+            "refId": "A"
+          }
+        ],
+        "format": "bytes",
+        "valueName": "total"
+      },
+      {
+        "id": 7,
+        "title": "Unhealthy Replicas",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 17},
+        "targets": [
+          {
+            "expr": "count(driftdb_replication_status == 0)",
+            "refId": "A"
+          }
+        ],
+        "format": "short",
+        "valueName": "current",
+        "colorBackground": true,
+        "thresholds": "1,2",
+        "colors": ["#299c46", "#e0b400", "#d44a3a"]
+      },
+      {
+        "id": 8,
+        "title": "Replication Lag Distribution",
+        "type": "heatmap",
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 21},
+        "targets": [
+          {
+            "expr": "driftdb_replication_lag_seconds",
+            "format": "time_series",
+            "refId": "A"
+          }
+        ],
+        "dataFormat": "timeseries",
+        "heatmap": {},
+        "cards": {
+          "cardPadding": null,
+          "cardRound": null
+        },
+        "color": {
+          "mode": "spectrum",
+          "cardColor": "#b4ff00",
+          "colorScale": "sqrt",
+          "exponent": 0.5,
+          "min": null,
+          "max": null
+        },
+        "legend": {
+          "show": true
+        },
+        "tooltip": {
+          "show": true,
+          "showHistogram": false
+        },
+        "xAxis": {
+          "show": true
+        },
+        "yAxis": {
+          "format": "s",
+          "decimals": null,
+          "logBase": 1,
+          "min": null,
+          "max": null,
+          "show": true
+        }
+      },
+      {
+        "id": 9,
+        "title": "Replica Health Timeline",
+        "type": "bargauge",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 29},
+        "targets": [
+          {
+            "expr": "driftdb_replication_status",
+            "legendFormat": "{{replica}}",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "displayMode": "basic",
+          "orientation": "horizontal",
+          "showUnfilled": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "max": 1,
+            "min": 0,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "green", "value": 1}
+              ]
+            },
+            "mappings": [
+              {"type": "value", "value": "0", "text": "Unhealthy"},
+              {"type": "value", "value": "1", "text": "Healthy"}
+            ]
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "Replication Throughput",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 29},
+        "targets": [
+          {
+            "expr": "sum(rate(driftdb_replication_bytes_sent_total[1m]))",
+            "legendFormat": "Total Throughput",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(driftdb_replication_bytes_sent_total[1m])",
+            "legendFormat": "{{replica}}",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "Bps", "label": "Throughput"},
+          {"format": "short"}
+        ]
+      }
+    ]
+  }
+}
