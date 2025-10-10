@@ -371,6 +371,15 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Initialize RBAC (Role-Based Access Control) manager
+    let rbac_manager = Arc::new(security::RbacManager::new());
+    info!("RBAC manager initialized with 4 system roles (superuser, admin, user, readonly)");
+
+    // Grant superuser role to default 'driftdb' user
+    if let Err(e) = rbac_manager.grant_role("driftdb", "superuser") {
+        warn!("Failed to grant superuser role to default user: {}", e);
+    }
+
     // Create session manager with authentication and rate limiting
     let session_manager = Arc::new(SessionManager::new(
         engine_pool.clone(),
@@ -378,6 +387,7 @@ async fn main() -> Result<()> {
         rate_limit_manager.clone(),
         slow_query_logger.clone(),
         audit_logger.clone(),
+        rbac_manager.clone(),
     ));
 
     // Initialize TLS if enabled

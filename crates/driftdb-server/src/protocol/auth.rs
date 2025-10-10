@@ -167,6 +167,7 @@ pub struct User {
     pub username: String,
     pub password_hash: String,
     pub salt: Vec<u8>,
+    #[deprecated(note = "Use roles field instead. Kept for backward compatibility.")]
     pub is_superuser: bool,
     pub created_at: u64,
     pub last_login: Option<u64>,
@@ -174,6 +175,9 @@ pub struct User {
     pub locked_until: Option<u64>,
     pub auth_method: AuthMethod,
     pub scram_sha256: Option<ScramSha256>,
+    /// RBAC roles assigned to this user
+    #[serde(default)]
+    pub roles: Vec<String>,
 }
 
 impl User {
@@ -201,10 +205,18 @@ impl User {
             .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_secs();
 
+        // Auto-assign role based on is_superuser for backward compatibility
+        let roles = if is_superuser {
+            vec!["superuser".to_string()]
+        } else {
+            vec!["user".to_string()]
+        };
+
         Self {
             username,
             password_hash,
             salt,
+            #[allow(deprecated)]
             is_superuser,
             created_at: now,
             last_login: None,
@@ -212,7 +224,13 @@ impl User {
             locked_until: None,
             auth_method,
             scram_sha256,
+            roles,
         }
+    }
+
+    /// Check if user has superuser role (RBAC-aware)
+    pub fn is_superuser_rbac(&self) -> bool {
+        self.roles.contains(&"superuser".to_string())
     }
 
     pub fn is_locked(&self) -> bool {

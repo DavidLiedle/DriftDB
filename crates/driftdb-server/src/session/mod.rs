@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 use self::prepared::PreparedStatementManager;
 use crate::executor::QueryExecutor;
 use crate::protocol::{self, Message, TransactionStatus};
-use crate::security::SqlValidator;
+use crate::security::{SqlValidator, RbacManager};
 use crate::security_audit::SecurityAuditLogger;
 use crate::slow_query_log::SlowQueryLogger;
 use crate::tls::SecureStream;
@@ -30,6 +30,7 @@ pub struct SessionManager {
     rate_limit_manager: Arc<RateLimitManager>,
     slow_query_logger: Arc<SlowQueryLogger>,
     audit_logger: Arc<SecurityAuditLogger>,
+    rbac_manager: Arc<RbacManager>,
 }
 
 impl SessionManager {
@@ -39,6 +40,7 @@ impl SessionManager {
         rate_limit_manager: Arc<RateLimitManager>,
         slow_query_logger: Arc<SlowQueryLogger>,
         audit_logger: Arc<SecurityAuditLogger>,
+        rbac_manager: Arc<RbacManager>,
     ) -> Self {
         Self {
             engine_pool,
@@ -47,7 +49,12 @@ impl SessionManager {
             rate_limit_manager,
             slow_query_logger,
             audit_logger,
+            rbac_manager,
         }
+    }
+
+    pub fn rbac_manager(&self) -> &Arc<RbacManager> {
+        &self.rbac_manager
     }
 
     #[allow(dead_code)]
