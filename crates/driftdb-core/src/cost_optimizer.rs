@@ -9,6 +9,7 @@
 //! - Materialized view matching
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ use crate::index_strategies::IndexType;
 use crate::optimizer::TableStatistics;
 
 /// Query plan node
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlanNode {
     /// Table scan
     TableScan {
@@ -91,7 +92,7 @@ pub enum PlanNode {
 }
 
 /// Cost model
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Cost {
     /// I/O cost (page reads)
     pub io_cost: f64,
@@ -137,7 +138,7 @@ impl Cost {
 }
 
 /// Predicate for filtering
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Predicate {
     pub column: String,
     pub op: ComparisonOp,
@@ -145,7 +146,7 @@ pub struct Predicate {
     pub selectivity: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ComparisonOp {
     Eq,
     Ne,
@@ -157,7 +158,7 @@ pub enum ComparisonOp {
     In,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PredicateValue {
     Constant(serde_json::Value),
     Column(String),
@@ -165,28 +166,28 @@ pub enum PredicateValue {
 }
 
 /// Join condition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinCondition {
     pub left_col: String,
     pub right_col: String,
     pub op: ComparisonOp,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JoinSide {
     Left,
     Right,
 }
 
 /// Sort key
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SortKey {
     pub column: String,
     pub ascending: bool,
 }
 
 /// Aggregate function
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateFunc {
     pub func: String,
     pub column: Option<String>,

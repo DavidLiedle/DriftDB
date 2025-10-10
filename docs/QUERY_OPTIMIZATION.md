@@ -265,11 +265,79 @@ HistogramBucket {
 - Machine learning-based cost estimation
 - Distributed query planning
 
+## EXPLAIN and EXPLAIN ANALYZE
+
+The system provides comprehensive query plan visualization:
+
+### Features
+- **Multiple Output Formats**: Text (tree view), JSON, YAML
+- **Cost Estimates**: I/O cost, CPU cost, memory, network cost per plan node
+- **Execution Metrics**: Actual row counts, execution time, planning time
+- **Accuracy Metrics**: Compare estimated vs. actual rows
+- **Verbose Mode**: Show predicates, join conditions, column projections
+
+### Usage
+
+```rust
+use driftdb_core::{ExplainExecutor, ExplainOptions, ExplainFormat};
+use std::time::Duration;
+
+// EXPLAIN without execution
+let plan = optimizer.optimize(query)?;
+let explain = ExplainExecutor::explain(plan, Duration::from_millis(5));
+
+// Display as text
+println!("{}", explain.format_text(&ExplainOptions::default()));
+
+// EXPLAIN ANALYZE with execution
+let explain = ExplainExecutor::explain_analyze(
+    plan,
+    Duration::from_millis(5),
+    || {
+        // Execute query and return row count
+        let result = engine.execute(query)?;
+        Ok(result.row_count)
+    }
+)?;
+
+// Display as JSON
+println!("{}", explain.format_json()?);
+```
+
+### Output Example
+
+```
+Query Plan
+============================================================
+└─ Table Scan on users (cost=100.10, rows=10000)
+
+============================================================
+Planning Time: 5.000 ms
+Total Cost: 100.10
+Estimated Rows: 10000
+Actual Rows: 9876 (accuracy: 98.76%)
+Execution Time: 23.456 ms
+```
+
+### Options
+
+```rust
+ExplainOptions {
+    format: ExplainFormat::Text,  // Text, Json, Yaml, Tree
+    verbose: false,                // Show detailed info
+    costs: true,                   // Show cost estimates
+    buffers: false,                // Show buffer usage
+    timing: true,                  // Show timing info
+    analyze: false,                // Execute and show actual metrics
+}
+```
+
 ## Files
 
 - `crates/driftdb-core/src/stats.rs` - Statistics collection (788 lines)
 - `crates/driftdb-core/src/optimizer.rs` - Query optimizer (898 lines)
 - `crates/driftdb-core/src/cost_optimizer.rs` - Cost-based optimizer (855 lines)
 - `crates/driftdb-core/src/query_optimizer.rs` - Advanced optimizer (1059 lines)
+- `crates/driftdb-core/src/explain.rs` - EXPLAIN implementation (546 lines)
 
-**Total: 3,600 lines of query optimization code**
+**Total: 4,146 lines of query optimization code**

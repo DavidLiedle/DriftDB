@@ -13,6 +13,7 @@ pub mod cost_optimizer;
 pub mod distributed;
 pub mod distributed_coordinator;
 pub mod encryption;
+pub mod explain;
 pub mod engine;
 pub mod error_recovery;
 pub mod errors;
@@ -73,6 +74,7 @@ pub use connection::{EngineGuard, EnginePool, EnginePoolStats, PoolConfig, PoolS
 pub use engine::Engine;
 pub use errors::{DriftError, Result};
 pub use events::{Event, EventType};
+pub use explain::{ExplainExecutor, ExplainFormat, ExplainOptions, ExplainPlan};
 pub use query::{Query, QueryResult};
 pub use query_performance::{OptimizationConfig, OptimizationStats, QueryPerformanceOptimizer};
 pub use rate_limit::{QueryCost, RateLimitConfig, RateLimitManager, RateLimitStats};
