@@ -42,6 +42,7 @@ pub mod query_plan;
 pub mod raft;
 pub mod rate_limit;
 pub mod replication;
+pub mod row_level_security;
 pub mod schema;
 pub mod security_cli;
 pub mod security_monitor;
@@ -83,6 +84,9 @@ pub use failover::{
 pub use query::{Query, QueryResult};
 pub use query_performance::{OptimizationConfig, OptimizationStats, QueryPerformanceOptimizer};
 pub use rate_limit::{QueryCost, RateLimitConfig, RateLimitManager, RateLimitStats};
+pub use row_level_security::{
+    Policy, PolicyAction, PolicyCheck, PolicyResult, RlsManager, RlsStatistics, SecurityContext,
+};
 pub use schema::Schema;
 pub use security_monitor::{
     AlertType, SecurityConfig, SecurityMonitor, SecurityStats, ThreatEvent, ThreatType,
