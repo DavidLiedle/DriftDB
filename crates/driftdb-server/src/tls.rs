@@ -1,5 +1,7 @@
 //! TLS/SSL support for secure connections
 
+#![allow(dead_code)]
+
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

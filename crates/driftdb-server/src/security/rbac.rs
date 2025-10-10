@@ -8,6 +8,8 @@
 //! - Permission enforcement at query execution time
 //! - Security audit integration
 
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

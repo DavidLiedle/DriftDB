@@ -663,7 +663,7 @@ pub struct EnginePoolStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wal::{WalManager, WalOperation};
+    use crate::wal::WalManager;
     use tempfile::TempDir;
 
     #[tokio::test]

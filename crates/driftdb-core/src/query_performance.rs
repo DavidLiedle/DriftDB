@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 /// Simplified Query Performance Optimizer
 pub struct QueryPerformanceOptimizer {
+    #[allow(dead_code)]
     config: OptimizationConfig,
     stats: Arc<RwLock<OptimizationStats>>,
 }
@@ -96,6 +97,7 @@ pub struct OptimizedQuery {
 }
 
 // Extension trait for Query - stub implementation
+#[allow(dead_code)]
 trait QueryExt {
     fn get_subqueries(&self) -> Vec<&Query>;
 }

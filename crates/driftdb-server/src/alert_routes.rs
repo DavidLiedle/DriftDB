@@ -7,14 +7,14 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Json, Response},
+    response::Json,
     routing::{delete, get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::alerting::{Alert, AlertManager, AlertRule, AlertSeverity, AlertState};
+use crate::alerting::{Alert, AlertManager, AlertState};
 
 /// State shared across alert route handlers
 #[derive(Clone)]
@@ -110,7 +110,7 @@ async fn get_alert_history(
 }
 
 /// GET /api/alerts/rules - List all alert rules
-async fn list_rules(State(state): State<AlertRouteState>) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn list_rules(State(_state): State<AlertRouteState>) -> Result<Json<serde_json::Value>, StatusCode> {
     // Note: This would require adding a method to AlertManager to get rules
     // For now, return a placeholder
     Ok(Json(json!({
@@ -121,6 +121,7 @@ async fn list_rules(State(state): State<AlertRouteState>) -> Result<Json<serde_j
 
 /// Request body for adding a new alert rule
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct AddRuleRequest {
     name: String,
     severity: String,
@@ -132,8 +133,8 @@ struct AddRuleRequest {
 
 /// POST /api/alerts/rules - Add a new alert rule
 async fn add_rule(
-    State(state): State<AlertRouteState>,
-    Json(req): Json<AddRuleRequest>,
+    State(_state): State<AlertRouteState>,
+    Json(_req): Json<AddRuleRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // TODO: Parse severity and operator, create AlertRule, add to manager
     Ok(Json(json!({
@@ -167,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn test_alert_routes_creation() {
         let manager = Arc::new(AlertManager::new(AlertManagerConfig::default()));
-        let router = create_router(manager);
+        let _router = create_router(manager);
         // Router should be created successfully
         assert!(true);
     }

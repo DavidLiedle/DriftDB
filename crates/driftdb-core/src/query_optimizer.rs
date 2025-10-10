@@ -890,11 +890,15 @@ mod tests {
                 table_name: "test".to_string(),
                 row_count: 1000,
                 column_count: 5,
+                avg_row_size: 100,
+                total_size_bytes: 100000,
+                data_size_bytes: 100000,
+                column_stats: HashMap::new(),
                 column_statistics: HashMap::new(),
-                last_updated: SystemTime::now(),
+                index_stats: HashMap::new(),
+                last_updated: 0,
                 collection_method: "TEST".to_string(),
                 collection_duration_ms: 0,
-                data_size_bytes: 100000,
             })
         }
 

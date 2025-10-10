@@ -12,7 +12,6 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-use crate::metrics;
 
 /// Alert severity levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -184,8 +183,10 @@ pub struct AlertManagerConfig {
     /// Enable/disable alerting
     pub enabled: bool,
     /// Evaluation interval
+    #[allow(dead_code)]
     pub evaluation_interval: Duration,
     /// Alert resolution timeout (auto-resolve if not re-triggered)
+    #[allow(dead_code)]
     pub resolution_timeout: Duration,
 }
 
@@ -373,6 +374,7 @@ impl AlertManager {
     }
 
     /// Add a custom alert rule
+    #[allow(dead_code)]
     pub fn add_rule(&self, rule: AlertRule) {
         let mut rules = self.rules.write();
         info!("Adding alert rule: {}", rule.name);

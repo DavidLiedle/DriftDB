@@ -24,6 +24,7 @@ pub struct LockFreeTable {
 
 struct TableData {
     map: HashMap<String, Value>,
+    #[allow(dead_code)]
     version: u64,
 }
 

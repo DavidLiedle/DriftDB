@@ -5500,6 +5500,7 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::RwLock;
 
     #[tokio::test]
     async fn test_select_one() {

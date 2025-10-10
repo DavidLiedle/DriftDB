@@ -190,16 +190,39 @@ async fn check_disk_space() -> anyhow::Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
+    
     use driftdb_core::Engine;
     use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_liveness_check() {
+        use driftdb_core::{EnginePool, RateLimitManager, observability::Metrics, connection::PoolConfig};
+        use crate::slow_query_log::{SlowQueryLogger, SlowQueryConfig};
+        use crate::security_audit::{SecurityAuditLogger, AuditConfig};
+        use crate::security::rbac::RbacManager;
+        use crate::protocol::auth::AuthConfig;
+
         let temp_dir = TempDir::new().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
         let engine = Arc::new(RwLock::new(engine));
-        let session_manager = Arc::new(SessionManager::new(engine.clone(), 10));
+
+        // Create all required dependencies
+        let metrics = Arc::new(Metrics::new());
+        let engine_pool = EnginePool::new(engine.clone(), PoolConfig::default(), metrics.clone()).unwrap();
+        let auth_config = AuthConfig::default();
+        let rate_limit_manager = Arc::new(RateLimitManager::new(Default::default(), metrics));
+        let slow_query_logger = Arc::new(SlowQueryLogger::new(SlowQueryConfig::default()));
+        let audit_logger = Arc::new(SecurityAuditLogger::new(AuditConfig::default()));
+        let rbac_manager = Arc::new(RbacManager::new());
+
+        let session_manager = Arc::new(SessionManager::new(
+            engine_pool,
+            auth_config,
+            rate_limit_manager,
+            slow_query_logger,
+            audit_logger,
+            rbac_manager,
+        ));
         let state = HealthState::new(engine, session_manager);
 
         let result = liveness_check(State(state)).await;
@@ -208,10 +231,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_readiness_check() {
+        use driftdb_core::{EnginePool, RateLimitManager, observability::Metrics, connection::PoolConfig};
+        use crate::slow_query_log::{SlowQueryLogger, SlowQueryConfig};
+        use crate::security_audit::{SecurityAuditLogger, AuditConfig};
+        use crate::security::rbac::RbacManager;
+        use crate::protocol::auth::AuthConfig;
+
         let temp_dir = TempDir::new().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
         let engine = Arc::new(RwLock::new(engine));
-        let session_manager = Arc::new(SessionManager::new(engine.clone(), 10));
+
+        // Create all required dependencies
+        let metrics = Arc::new(Metrics::new());
+        let engine_pool = EnginePool::new(engine.clone(), PoolConfig::default(), metrics.clone()).unwrap();
+        let auth_config = AuthConfig::default();
+        let rate_limit_manager = Arc::new(RateLimitManager::new(Default::default(), metrics));
+        let slow_query_logger = Arc::new(SlowQueryLogger::new(SlowQueryConfig::default()));
+        let audit_logger = Arc::new(SecurityAuditLogger::new(AuditConfig::default()));
+        let rbac_manager = Arc::new(RbacManager::new());
+
+        let session_manager = Arc::new(SessionManager::new(
+            engine_pool,
+            auth_config,
+            rate_limit_manager,
+            slow_query_logger,
+            audit_logger,
+            rbac_manager,
+        ));
         let state = HealthState::new(engine, session_manager);
 
         let result = readiness_check(State(state)).await;

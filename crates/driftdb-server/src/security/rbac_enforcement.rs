@@ -3,6 +3,8 @@
 //! This module provides permission checking functions that integrate
 //! RBAC with query execution
 
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use std::net::SocketAddr;

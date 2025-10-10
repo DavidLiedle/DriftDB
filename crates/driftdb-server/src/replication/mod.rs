@@ -6,23 +6,23 @@
 //! - Health monitoring and automatic failover detection
 //! - PostgreSQL-compatible replication protocol
 
+#![allow(dead_code)]
+
 pub mod replica;
 pub mod stream;
 
 use std::sync::Arc;
 
 pub use replica::{
-    ReplicaId, ReplicaInfo, ReplicaManager, ReplicaManagerConfig, ReplicaState, ReplicationMode,
+    ReplicaManager, ReplicaManagerConfig,
 };
 pub use stream::{
-    deserialize_message, serialize_message, ReplicationMessage, StreamingConfig,
-    StreamingWalEntry, WalStreamer,
+    ReplicationMessage, StreamingConfig, WalStreamer,
 };
 
 use tokio::sync::RwLock;
 use tracing::info;
 
-use anyhow::Result;
 
 /// Main replication coordinator
 pub struct ReplicationCoordinator {

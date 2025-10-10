@@ -42,6 +42,7 @@ impl TestDataGenerator {
         (key, value)
     }
 
+    #[allow(dead_code)]
     fn generate_batch(&self, size: usize) -> Vec<(String, serde_json::Value)> {
         (0..size).map(|_| self.generate_order()).collect()
     }
@@ -202,7 +203,8 @@ async fn test_backup_and_restore() {
     let metrics = Arc::new(Metrics::new());
     let backup_mgr = BackupManager::new(data_dir.path(), metrics);
     let metadata = backup_mgr.create_full_backup(backup_dir.path()).unwrap();
-    assert!(metadata.tables.contains(&"users".to_string()));
+    let table_names: Vec<String> = metadata.tables.iter().map(|t| t.name.clone()).collect();
+    assert!(table_names.contains(&"users".to_string()));
 
     // Restore to new location
     backup_mgr
@@ -245,12 +247,7 @@ async fn test_crash_recovery_via_wal() {
         let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
 
         // Replay WAL
-        let mut events = Vec::new();
-        wal.replay_from(None, |op| {
-            events.push(op);
-            Ok(())
-        })
-        .unwrap();
+        let events = wal.replay_from_sequence(0).unwrap();
 
         // Should have begin, 5 writes, and commit
         assert!(events.len() >= 7);

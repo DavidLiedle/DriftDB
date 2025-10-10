@@ -1,5 +1,7 @@
 //! HTTP routes for advanced connection pool analytics and management
 
+#![allow(dead_code, unused_variables, unused_imports)]
+
 use std::sync::Arc;
 
 use axum::{extract::State, response::Json, routing::get, Router};

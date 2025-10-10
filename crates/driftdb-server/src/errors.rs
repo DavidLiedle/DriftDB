@@ -3,6 +3,8 @@
 //! This module provides structured error types, logging, and recovery mechanisms
 //! for production-grade error handling.
 
+#![allow(dead_code)]
+
 use std::fmt;
 use anyhow::Result;
 use thiserror::Error;

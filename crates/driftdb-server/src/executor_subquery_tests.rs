@@ -1,13 +1,17 @@
 #[cfg(test)]
 mod subquery_tests {
-    use super::*;
+    
+    use crate::executor::{QueryExecutor, SubqueryExpression, SubqueryQuantifier, WhereCondition};
     use driftdb_core::Engine;
     use parking_lot::RwLock;
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     fn create_test_executor() -> QueryExecutor<'static> {
         // Create a simple in-memory engine for testing
-        let engine = Arc::new(RwLock::new(Engine::with_data_dir(None).unwrap()));
+        // Note: This leaks the TempDir but that's acceptable for tests
+        let temp_dir = Box::leak(Box::new(TempDir::new().unwrap()));
+        let engine = Arc::new(RwLock::new(Engine::init(temp_dir.path()).unwrap()));
         QueryExecutor::new(engine)
     }
 

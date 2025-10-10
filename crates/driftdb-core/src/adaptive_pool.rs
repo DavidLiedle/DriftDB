@@ -103,6 +103,18 @@ pub struct CircuitBreakerConfig {
     pub recovery_timeout: Duration,
 }
 
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            error_threshold: 0.5,
+            min_requests: 10,
+            window_duration: Duration::from_secs(60),
+            recovery_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
 /// Connection lifetime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifetimeConfig {
@@ -256,6 +268,7 @@ pub struct AdaptiveConnectionPool {
     /// Circuit breaker
     circuit_breaker: Arc<CircuitBreaker>,
     /// Load balancer state
+    #[allow(dead_code)]
     load_balancer_state: Arc<RwLock<LoadBalancerState>>,
     /// Health monitor handle
     health_monitor_handle: Option<tokio::task::JoinHandle<()>>,
@@ -690,6 +703,7 @@ impl AdaptiveConnectionPool {
 pub struct AdaptiveConnection {
     connection_id: String,
     engine_guard: EngineGuard,
+    #[allow(dead_code)]
     stats: Arc<RwLock<AdaptivePoolStats>>,
     circuit_breaker: Arc<CircuitBreaker>,
     start_time: Instant,

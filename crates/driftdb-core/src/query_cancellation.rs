@@ -628,7 +628,7 @@ mod tests {
     async fn test_query_cancellation() {
         let manager = QueryCancellationManager::new(CancellationConfig::default());
 
-        let mut token = manager
+        let token = manager
             .register_query(
                 "SELECT * FROM large_table".to_string(),
                 Some(Duration::from_secs(10)),
@@ -652,7 +652,7 @@ mod tests {
 
         let manager = QueryCancellationManager::new(config);
 
-        let mut token = manager
+        let token = manager
             .register_query(
                 "SELECT * FROM large_table".to_string(),
                 None,

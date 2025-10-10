@@ -212,7 +212,7 @@ pub struct CostOptimizer {
 /// Index information
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct IndexInfo {
+pub struct IndexInfo {
     name: String,
     table: String,
     columns: Vec<String>,
@@ -832,7 +832,7 @@ mod tests {
             name: "idx_users_email".to_string(),
             table: "users".to_string(),
             columns: vec!["email".to_string()],
-            index_type: IndexType::BTree,
+            index_type: IndexType::BPlusTree,
             unique: true,
             size_pages: 10,
         };

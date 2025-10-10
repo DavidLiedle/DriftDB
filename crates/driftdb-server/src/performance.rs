@@ -1,5 +1,7 @@
 //! Performance monitoring and optimization for DriftDB Server
 
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -185,7 +187,7 @@ impl PerformanceMonitor {
         let mut stats = self.memory_stats.write();
 
         // Update system memory usage using sysinfo
-        use sysinfo::{System, Process};
+        use sysinfo::System;
         let mut sys = System::new_all();
         sys.refresh_all();
 

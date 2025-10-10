@@ -2,6 +2,8 @@
 //!
 //! Tracks connected replicas, their replication status, lag, and health.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -967,7 +967,7 @@ mod tests {
         create_test_data(data_dir.path());
 
         // Create backup
-        let metadata = manager.create_full_backup(backup_dir.path()).unwrap();
+        let _metadata = manager.create_full_backup(backup_dir.path()).unwrap();
 
         // Backup should be valid
         assert!(manager.verify_backup(backup_dir.path()).unwrap());
@@ -1085,7 +1085,7 @@ mod tests {
         create_test_data(data_dir.path());
 
         // Create backup
-        let metadata = manager.create_full_backup(backup_dir.path()).unwrap();
+        let _metadata = manager.create_full_backup(backup_dir.path()).unwrap();
 
         // Read metadata file and verify JSON format
         let metadata_file = backup_dir.path().join("metadata.json");

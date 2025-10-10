@@ -1,5 +1,7 @@
 //! Transaction buffering system for ROLLBACK support
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -331,9 +333,9 @@ mod tests {
         let manager = TransactionBufferManager::new();
 
         // Create multiple transactions
-        let txn1 = manager.begin_transaction();
+        let _txn1 = manager.begin_transaction();
         let txn2 = manager.begin_transaction();
-        let txn3 = manager.begin_transaction();
+        let _txn3 = manager.begin_transaction();
 
         // Rollback one
         manager.rollback_transaction(txn2).unwrap();

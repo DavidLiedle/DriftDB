@@ -7,20 +7,20 @@
 //! - Connection health prediction and proactive replacement
 //! - Resource usage optimization and memory management
 
+#![allow(dead_code, unused_variables, unused_imports)]
+
 use std::collections::{HashMap, BTreeMap};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use serde_json::{json, Value};
-use tokio::sync::{Semaphore, RwLock as TokioRwLock};
-use tokio::time::{interval, timeout};
-use tracing::{debug, info, warn, error, instrument};
+use tokio::time::interval;
+use tracing::{debug, info};
 
-use driftdb_core::{EngineGuard, EnginePool, PoolStats};
+use driftdb_core::EnginePool;
 use crate::performance::PerformanceMonitor;
 
 /// Advanced connection pool manager with intelligent optimizations

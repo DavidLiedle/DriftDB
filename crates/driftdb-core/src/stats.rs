@@ -850,11 +850,10 @@ mod tests {
         let stats = manager.collect_column_statistics("score", &data).unwrap();
 
         assert_eq!(stats.column_name, "score");
-        assert_eq!(stats.distinct_count, 5);
+        assert_eq!(stats.distinct_values, 5);
         assert_eq!(stats.null_count, 0);
         assert!(stats.min_value.is_some());
         assert!(stats.max_value.is_some());
-        assert!(stats.avg_value.is_some());
     }
 
     #[test]
@@ -892,7 +891,7 @@ mod tests {
         assert!(histogram.bucket_count > 0);
         assert_eq!(histogram.buckets.len(), histogram.bucket_count);
 
-        let total_frequency: u64 = histogram.buckets.iter().map(|b| b.frequency).sum();
-        assert_eq!(total_frequency, values.len() as u64);
+        let total_frequency: usize = histogram.buckets.iter().map(|b| b.frequency).sum();
+        assert_eq!(total_frequency, values.len());
     }
 }

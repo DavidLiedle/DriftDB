@@ -1,5 +1,7 @@
 //! PostgreSQL Session Management
 
+#![allow(dead_code)]
+
 mod prepared;
 
 use std::net::SocketAddr;
@@ -68,7 +70,7 @@ impl SessionManager {
 
     pub async fn handle_secure_connection(
         self: Arc<Self>,
-        mut stream: SecureStream,
+        stream: SecureStream,
         addr: SocketAddr,
     ) -> Result<()> {
         // Get peer address
@@ -125,7 +127,7 @@ impl SessionManager {
 
     pub async fn handle_connection(
         self: Arc<Self>,
-        mut stream: TcpStream,
+        stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<()> {
         // Wrap TcpStream in SecureStream::Plain for unified handling
@@ -924,9 +926,10 @@ impl Session {
 
         for username in usernames {
             if let Some(user) = self.auth_db.get_user_info(&username) {
+                let is_superuser = user.roles.contains(&"superuser".to_string());
                 let row = vec![
                     Value::String(user.username),
-                    Value::Bool(user.is_superuser),
+                    Value::Bool(is_superuser),
                     Value::String(user.auth_method.to_string()),
                     Value::Number(serde_json::Number::from(user.created_at)),
                     match user.last_login {

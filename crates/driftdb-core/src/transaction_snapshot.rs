@@ -179,7 +179,7 @@ mod tests {
             }],
         );
 
-        let storage = TableStorage::create(temp_dir.path(), schema).unwrap();
+        let storage = TableStorage::create(temp_dir.path(), schema, None).unwrap();
 
         // Add some events
         let event1 = Event::new_insert(

@@ -2,6 +2,51 @@
 
 All notable changes to DriftDB will be documented in this file.
 
+## [0.9.0-alpha] - 2025-10-10 - SQL Injection Prevention & Client Library Enhancements
+
+### 🔒 Security Fixes
+- **Fixed critical SQL injection vulnerability in client library**
+  - Added `execute_escaped()` and `query_escaped()` methods with proper parameter escaping
+  - Implemented SQL standard quote escaping (single quotes doubled)
+  - Added comprehensive parameterized query example demonstrating SQL injection prevention
+  - Successfully handles special characters: quotes, unicode, emoji, and SQL keywords in data
+
+### ✨ New Features
+- **Parameterized query support** (client library)
+  - Added `execute_params()` and `query_params()` methods (ready for future server support)
+  - Added `execute_escaped()` and `query_escaped()` methods (working now with client-side escaping)
+  - Helper function `escape_params()` for safe SQL parameter substitution
+  - Supports all Value types: Text, Int, Float, Bool, Null, Json, Bytes
+
+### 📚 Examples & Documentation
+- **New example**: `parameterized_queries.rs` - Comprehensive SQL injection prevention demo
+  - Basic parameterized inserts
+  - Special character handling (O'Reilly, quotes, semicolons)
+  - Unicode and emoji support (世界, 🎉🚀✨)
+  - Multiple parameter usage in WHERE clauses
+- **Comprehensive edge case testing** via `edge_cases.rs` example
+  - Error handling tests (5 scenarios)
+  - Data type tests (7 scenarios including NULL, unicode, large integers)
+  - Complex query tests (10 scenarios including aggregations, JOINs, ORDER BY)
+
+### 🔧 Technical Changes
+- Enhanced Row type conversion with `pg_row_to_row()` for extended query protocol
+- Added proper type detection for bool, i64, f64, String, Vec<u8>, and Null
+- Updated all examples to use explicit column names in INSERT statements
+- Fixed transactional INSERT compatibility issues
+
+### 📊 Test Results
+- ✅ SQL injection prevented: Special characters properly escaped
+- ✅ Unicode support: Chinese characters and emoji work perfectly
+- ✅ Error handling: 4/5 tests passing (1 server limitation noted)
+- ✅ Data types: 5/7 tests passing (2 server limitations noted)
+- ⚠️ Complex queries: 3/10 fully working (server-side limitations with aggregations, JOINs)
+
+### 🎯 Security Impact
+- **Before**: Direct string interpolation allowed SQL injection attacks
+- **After**: Proper escaping prevents SQL injection while maintaining functionality
+- **Migration**: Backward compatible - new methods are additive
+
 ## [0.8.0-alpha] - 2025-10-05 - Column Ordering Fix
 
 ### 🐛 Bug Fixes

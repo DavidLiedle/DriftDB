@@ -1,8 +1,6 @@
 //! Comprehensive integration tests for DriftDB Server production readiness
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -13,7 +11,7 @@ use tokio::time::timeout;
 // Helper function to start a test server
 async fn start_test_server() -> Result<(SocketAddr, TempDir)> {
     let temp_dir = TempDir::new()?;
-    let data_path = temp_dir.path().to_path_buf();
+    let _data_path = temp_dir.path().to_path_buf();
 
     // Start server on random port
     let server_addr: SocketAddr = "127.0.0.1:0".parse()?;
@@ -41,7 +39,7 @@ async fn test_server_startup_and_shutdown() {
 #[tokio::test]
 async fn test_tls_connection_negotiation() {
     // Test TLS handshake and PostgreSQL SSL negotiation
-    let (addr, _temp_dir) = start_test_server().await.unwrap();
+    let (_addr, _temp_dir) = start_test_server().await.unwrap();
 
     // Would test SSL negotiation protocol here
     assert!(true); // Placeholder for actual SSL tests
@@ -62,7 +60,7 @@ async fn test_error_handling_and_recovery() {
 #[tokio::test]
 async fn test_performance_monitoring() {
     // Test performance monitoring endpoints
-    let base_url = "http://127.0.0.1:8080";
+    let _base_url = "http://127.0.0.1:8080";
 
     // Test endpoints we created:
     // - /performance
@@ -123,7 +121,7 @@ async fn test_transaction_handling() {
 #[tokio::test]
 async fn test_monitoring_endpoints() {
     // Test HTTP monitoring endpoints
-    let base_url = "http://127.0.0.1:8080";
+    let _base_url = "http://127.0.0.1:8080";
 
     // Test health checks:
     // - /health/live
@@ -205,7 +203,7 @@ mod performance_benchmarks {
 
 #[cfg(test)]
 mod production_scenarios {
-    use super::*;
+    
 
     #[tokio::test]
     async fn test_high_load_scenario() {

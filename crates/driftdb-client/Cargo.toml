@@ -1,0 +1,58 @@
+[package]
+name = "driftdb-client"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "Native Rust client library for DriftDB with time-travel query support"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["net", "io-util", "rt", "sync", "time"] }
+
+# PostgreSQL wire protocol
+tokio-postgres = "0.7"
+postgres-types = "0.2"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+tracing = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full", "test-util"] }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "time_travel"
+path = "examples/time_travel.rs"
+
+[[example]]
+name = "transactions"
+path = "examples/transactions.rs"
+
+[[example]]
+name = "typed_queries"
+path = "examples/typed_queries.rs"
+
+[[example]]
+name = "edge_cases"
+path = "examples/edge_cases.rs"
+
+[[example]]
+name = "parameterized_queries"
+path = "examples/parameterized_queries.rs"

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use parking_lot::RwLock;
 use serde_json::Value;

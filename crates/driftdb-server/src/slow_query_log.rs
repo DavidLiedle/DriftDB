@@ -3,6 +3,8 @@
 //! Tracks and logs queries that exceed configured thresholds
 //! Helps identify performance bottlenecks in production
 
+#![allow(dead_code)]
+
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;

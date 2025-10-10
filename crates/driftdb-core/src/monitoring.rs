@@ -122,7 +122,7 @@ pub struct DatabaseMetrics {
     pub buffer_pool_usage_percent: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QueryMetrics {
     pub queries_per_second: f64,
     pub avg_query_time_ms: f64,
@@ -134,7 +134,7 @@ pub struct QueryMetrics {
     pub query_queue_length: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StorageMetrics {
     pub segments_count: usize,
     pub segment_avg_size_bytes: u64,
@@ -145,7 +145,7 @@ pub struct StorageMetrics {
     pub index_size_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NetworkMetrics {
     pub active_connections: usize,
     pub bytes_received: u64,

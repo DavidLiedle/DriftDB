@@ -654,7 +654,7 @@ mod tests {
     fn test_consistency_level_calculation() {
         let coordinator = QueryCoordinator::new(
             ClusterConfig::default(),
-            Arc::new(Engine::new("/tmp/test").unwrap()),
+            Arc::new(Engine::open("/tmp/test").unwrap()),
         );
 
         assert_eq!(

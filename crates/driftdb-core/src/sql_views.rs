@@ -480,10 +480,16 @@ mod tests {
 
         // Create a base table first
         engine
-            .create_table(
+            .create_table_with_columns(
                 "users",
                 "id",
-                vec![("name".to_string(), "string".to_string())],
+                vec![
+                    crate::schema::ColumnDef {
+                        name: "name".to_string(),
+                        col_type: "string".to_string(),
+                        index: false,
+                    }
+                ],
             )
             .unwrap();
 
@@ -506,10 +512,16 @@ mod tests {
 
         // Create base table
         engine
-            .create_table(
+            .create_table_with_columns(
                 "orders",
                 "id",
-                vec![("total".to_string(), "number".to_string())],
+                vec![
+                    crate::schema::ColumnDef {
+                        name: "total".to_string(),
+                        col_type: "number".to_string(),
+                        index: false,
+                    }
+                ],
             )
             .unwrap();
 

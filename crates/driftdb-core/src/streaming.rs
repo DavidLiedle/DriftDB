@@ -182,15 +182,18 @@ struct StreamProcessor {
 }
 
 /// Processor state
+#[allow(dead_code)]
 enum ProcessorState {
     Active,
+    #[allow(dead_code)]
     Paused,
+    #[allow(dead_code)]
     Error(String),
 }
 
 /// Stream statistics
 #[derive(Debug, Default, Clone)]
-struct StreamStatistics {
+pub struct StreamStatistics {
     total_subscriptions: u64,
     active_subscriptions: u64,
     #[allow(dead_code)]

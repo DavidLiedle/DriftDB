@@ -464,8 +464,8 @@ impl VectorIndex for HNSWIndex {
                         let neighbor_entry = self.entries[neighbor_id].clone();
                         let neighbor_ids: Vec<_> = neighbors.iter().cloned().collect();
 
-                        // Drop the mutable borrow by using scope
-                        drop(neighbors);
+                        // Drop the mutable borrow by ending the scope
+                        let _ = neighbors;
 
                         // Calculate distances without holding any borrow
                         let mut neighbor_distances: Vec<_> = neighbor_ids

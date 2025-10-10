@@ -560,7 +560,7 @@ impl SearchManager {
 
         let mut document_scores: HashMap<String, f64> = HashMap::new();
         let mut matched_terms: HashMap<String, Vec<String>> = HashMap::new();
-        let mut terms_processed = 0;
+        let terms_processed;
 
         match query {
             SearchQuery::Text(text) => {

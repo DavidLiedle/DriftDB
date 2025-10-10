@@ -20,7 +20,7 @@ fn test_add_column_migration() {
         .unwrap();
 
     // Insert initial data
-    let insert_result = engine
+    let _insert_result = engine
         .execute_query(Query::Insert {
             table: "users".to_string(),
             data: json!({

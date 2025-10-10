@@ -319,6 +319,7 @@ impl ConsensusEngine {
         */
     }
 
+    #[allow(dead_code)]
     async fn start_election_static(
         config: &Arc<ConsensusConfig>,
         state: &Arc<RwLock<ConsensusState>>,
@@ -384,6 +385,7 @@ impl ConsensusEngine {
         }
     }
 
+    #[allow(dead_code)]
     async fn conduct_pre_vote(
         config: &Arc<ConsensusConfig>,
         log: &Arc<RwLock<Vec<LogEntry>>>,
@@ -422,6 +424,7 @@ impl ConsensusEngine {
         false
     }
 
+    #[allow(dead_code)]
     async fn initialize_leader_state(
         config: &Arc<ConsensusConfig>,
         log: &Arc<RwLock<Vec<LogEntry>>>,

@@ -6,7 +6,6 @@ use driftdb_core::mvcc::{IsolationLevel, MVCCConfig, MVCCManager, RecordId};
 use serde_json::json;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 #[test]
 fn test_snapshot_isolation_basic() {

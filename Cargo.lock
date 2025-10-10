@@ -894,6 +894,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "driftdb-client"
+version = "0.8.0-alpha"
+dependencies = [
+ "anyhow",
+ "postgres-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "driftdb-core"
 version = "0.8.0-alpha"
 dependencies = [

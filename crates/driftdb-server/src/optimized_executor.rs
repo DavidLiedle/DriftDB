@@ -1,5 +1,7 @@
 //! Optimized query executor with performance monitoring and caching
 
+#![allow(dead_code)]
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -59,14 +61,14 @@ impl OptimizedQueryExecutor {
         };
 
         // Apply query optimizations if available
-        let (optimized_sql, optimizations) = if let Some(optimizer) = &self.query_optimizer {
+        let optimized_sql = if let Some(optimizer) = &self.query_optimizer {
             let (opt_sql, opts) = optimizer.optimize_query(sql);
             if !opts.is_empty() {
                 info!("Applied query optimizations: {:?}", opts);
             }
-            (opt_sql, opts)
+            opt_sql
         } else {
-            (sql.to_string(), vec![])
+            sql.to_string()
         };
 
         // Check for cached execution plan
@@ -82,7 +84,7 @@ impl OptimizedQueryExecutor {
 
         // Execute the query using a temporary executor
         let engine_ref = self.engine_guard.get_engine_ref();
-        let mut executor = QueryExecutor::new(engine_ref);
+        let executor = QueryExecutor::new(engine_ref);
         let result = executor.execute(&optimized_sql).await;
 
         // Record execution time
@@ -325,9 +327,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_optimized_executor() {
+        use driftdb_core::{EnginePool, connection::PoolConfig, observability::Metrics};
+        use std::net::SocketAddr;
+
         let temp_dir = tempdir().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
-        let engine_guard = EngineGuard::new(Arc::new(parking_lot::RwLock::new(engine)));
+        let engine = Arc::new(parking_lot::RwLock::new(engine));
+
+        // Create EnginePool to get EngineGuard
+        let metrics = Arc::new(Metrics::new());
+        let pool_config = PoolConfig::default();
+        let engine_pool = EnginePool::new(engine, pool_config, metrics).unwrap();
+
+        // Acquire EngineGuard from pool
+        let client_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let engine_guard = engine_pool.acquire(client_addr).await.unwrap();
 
         let monitor = Arc::new(PerformanceMonitor::new(100));
         let optimizer = Arc::new(QueryOptimizer::new());

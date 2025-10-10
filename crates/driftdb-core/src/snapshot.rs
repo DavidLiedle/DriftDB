@@ -219,7 +219,7 @@ impl AdaptiveSnapshotManager {
     }
 
     /// Check if a snapshot should be created based on adaptive policy
-    pub fn should_create_snapshot(&self, current_sequence: u64) -> bool {
+    pub fn should_create_snapshot(&self, _current_sequence: u64) -> bool {
         if !self.policy.enable_adaptive {
             // Fixed threshold mode
             return self.writes_since_last_snapshot >= self.policy.max_writes_threshold;
@@ -533,7 +533,7 @@ mod tests {
             ..Default::default()
         };
         let mut manager_adaptive =
-            AdaptiveSnapshotManager::new(temp_dir.path().join("adaptive"), policy_adaptive);
+            AdaptiveSnapshotManager::new(&temp_dir.path().join("adaptive"), policy_adaptive);
 
         for _ in 0..50 {
             manager_adaptive.record_write();

@@ -11,13 +11,13 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot};
+use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::raft::{Command, RaftNode};
+use crate::raft::RaftNode;
 
 /// Fencing token to prevent split-brain scenarios
 /// Each leadership epoch has a unique, monotonically increasing token
@@ -168,7 +168,7 @@ struct FailoverState {
 }
 
 impl FailoverState {
-    fn new(node_id: String) -> Self {
+    fn new(_node_id: String) -> Self {
         Self {
             role: NodeRole::Follower,
             leader_id: None,

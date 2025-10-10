@@ -2,10 +2,11 @@
 //!
 //! Handles continuous streaming of WAL entries from primary to replicas.
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::{BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{interval, timeout};

@@ -229,6 +229,7 @@ impl User {
     }
 
     /// Check if user has superuser role (RBAC-aware)
+    #[allow(dead_code)]
     pub fn is_superuser_rbac(&self) -> bool {
         self.roles.contains(&"superuser".to_string())
     }
@@ -459,7 +460,7 @@ impl UserDb {
         self.users
             .read()
             .get(username)
-            .map(|user| user.is_superuser)
+            .map(|user| user.roles.contains(&"superuser".to_string()))
             .unwrap_or(false)
     }
 

@@ -2,6 +2,8 @@
 //!
 //! Provides Prometheus-compatible metrics for DriftDB server monitoring
 
+#![allow(dead_code, unused_variables, unused_imports)]
+
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::Response, routing::get, Router};
@@ -859,6 +861,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_endpoint() {
+        use driftdb_core::RateLimitManager;
+        use crate::slow_query_log::{SlowQueryLogger, SlowQueryConfig};
+        use crate::security_audit::{SecurityAuditLogger, AuditConfig};
+        use crate::security::rbac::RbacManager;
+        use crate::protocol::auth::AuthConfig;
+
         let _ = init_metrics();
         let temp_dir = TempDir::new().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
@@ -867,8 +875,23 @@ mod tests {
         // Create metrics and engine pool
         let pool_metrics = Arc::new(driftdb_core::observability::Metrics::new());
         let pool_config = PoolConfig::default();
-        let engine_pool = EnginePool::new(engine.clone(), pool_config, pool_metrics).unwrap();
-        let session_manager = Arc::new(SessionManager::new(engine_pool));
+        let engine_pool = EnginePool::new(engine.clone(), pool_config, pool_metrics.clone()).unwrap();
+
+        // Create all SessionManager dependencies
+        let auth_config = AuthConfig::default();
+        let rate_limit_manager = Arc::new(RateLimitManager::new(Default::default(), pool_metrics));
+        let slow_query_logger = Arc::new(SlowQueryLogger::new(SlowQueryConfig::default()));
+        let audit_logger = Arc::new(SecurityAuditLogger::new(AuditConfig::default()));
+        let rbac_manager = Arc::new(RbacManager::new());
+
+        let session_manager = Arc::new(SessionManager::new(
+            engine_pool,
+            auth_config,
+            rate_limit_manager,
+            slow_query_logger,
+            audit_logger,
+            rbac_manager,
+        ));
         let state = MetricsState::new(engine, session_manager);
 
         let result = metrics_handler(axum::extract::State(state)).await;

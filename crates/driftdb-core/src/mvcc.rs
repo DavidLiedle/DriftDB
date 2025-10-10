@@ -183,6 +183,7 @@ pub struct MVCCManager {
     /// Lock manager
     lock_manager: Arc<LockManager>,
     /// Deadlock detector
+    #[allow(dead_code)]
     deadlock_detector: Arc<DeadlockDetector>,
     /// Garbage collector
     gc_queue: Arc<Mutex<VecDeque<(RecordId, VersionTimestamp)>>>,
@@ -629,6 +630,7 @@ impl LockManager {
 
 /// Deadlock detector
 struct DeadlockDetector {
+    #[allow(dead_code)]
     enabled: bool,
 }
 
@@ -637,6 +639,7 @@ impl DeadlockDetector {
         Self { enabled }
     }
 
+    #[allow(dead_code)]
     fn detect_deadlocks(&self, wait_graph: &HashMap<TxnId, HashSet<TxnId>>) -> Vec<Vec<TxnId>> {
         if !self.enabled {
             return Vec::new();
@@ -658,6 +661,7 @@ impl DeadlockDetector {
         cycles
     }
 
+    #[allow(dead_code)]
     fn dfs_find_cycle(
         &self,
         node: TxnId,

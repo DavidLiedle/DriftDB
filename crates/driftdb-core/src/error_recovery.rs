@@ -30,6 +30,7 @@ pub struct RecoveryManager {
     /// Backup manager for disaster recovery
     backup_manager: Option<Arc<BackupManager>>,
     /// Monitoring system for metrics
+    #[allow(dead_code)]
     monitoring: Arc<MonitoringSystem>,
     /// Health status of various components
     pub health_status: Arc<RwLock<HashMap<String, ComponentHealth>>>,
@@ -532,6 +533,7 @@ impl RecoveryManager {
     }
 
     /// Estimate data loss since a backup timestamp
+    #[allow(dead_code)]
     fn estimate_data_loss_since_backup(&self, backup_time: &SystemTime) -> Result<u64> {
         let backup_millis = backup_time
             .duration_since(UNIX_EPOCH)
@@ -771,13 +773,16 @@ mod tests {
         let wal_manager =
             Arc::new(WalManager::new(data_path.join("test.wal"), WalConfig::default()).unwrap());
 
-        let observability = Arc::new(ObservabilitySystem::new());
+        let monitoring = Arc::new(MonitoringSystem::new(
+            Arc::new(crate::observability::Metrics::new()),
+            crate::monitoring::MonitoringConfig::default(),
+        ));
 
         let recovery_manager = RecoveryManager::new(
             data_path.clone(),
             wal_manager,
             None,
-            observability,
+            monitoring,
             RecoveryConfig::default(),
         );
 
@@ -812,13 +817,16 @@ mod tests {
             .log_operation(WalOperation::TransactionCommit { transaction_id: 1 })
             .unwrap();
 
-        let observability = Arc::new(ObservabilitySystem::new());
+        let monitoring = Arc::new(MonitoringSystem::new(
+            Arc::new(crate::observability::Metrics::new()),
+            crate::monitoring::MonitoringConfig::default(),
+        ));
 
         let recovery_manager = RecoveryManager::new(
             data_path,
             wal_manager,
             None,
-            observability,
+            monitoring,
             RecoveryConfig::default(),
         );
 

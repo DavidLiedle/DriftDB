@@ -175,7 +175,7 @@ mod tests {
             ],
         );
 
-        let storage = crate::storage::TableStorage::create(temp_dir.path(), schema)?;
+        let storage = crate::storage::TableStorage::create(temp_dir.path(), schema, None)?;
 
         let event1 = Event::new_insert(
             "products".to_string(),

@@ -3,6 +3,8 @@
 //! Tracks security-relevant events for compliance and incident response
 //! Provides tamper-evident logging with cryptographic checksums
 
+#![allow(dead_code)]
+
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;

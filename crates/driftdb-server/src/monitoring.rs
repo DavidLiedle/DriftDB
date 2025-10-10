@@ -1,5 +1,7 @@
 //! Production monitoring and observability features
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::collections::VecDeque;
 use parking_lot::RwLock;

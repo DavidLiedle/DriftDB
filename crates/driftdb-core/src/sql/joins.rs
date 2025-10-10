@@ -440,8 +440,8 @@ impl JoinExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Engine;
-    use tempfile::TempDir;
+    
+    
 
     #[test]
     fn test_join_query_parsing() {

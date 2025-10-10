@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use parking_lot::RwLock;
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::info;
 
 use driftdb_core::engine::Engine;
 

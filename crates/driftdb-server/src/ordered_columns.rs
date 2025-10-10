@@ -1,5 +1,7 @@
 //! Ordered column system to fix HashMap ordering issues
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

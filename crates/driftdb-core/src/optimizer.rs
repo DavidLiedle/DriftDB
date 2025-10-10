@@ -826,16 +826,22 @@ mod tests {
         let mut stats = TableStatistics {
             table_name: "users".to_string(),
             row_count: 10000,
+            column_count: 5,
             avg_row_size: 100,
             total_size_bytes: 1_000_000,
+            data_size_bytes: 900_000,
             column_stats: HashMap::new(),
+            column_statistics: HashMap::new(),
             index_stats: HashMap::new(),
             last_updated: 0,
+            collection_method: "analyze".to_string(),
+            collection_duration_ms: 100,
         };
 
         stats.column_stats.insert(
             "status".to_string(),
             ColumnStatistics {
+                column_name: "status".to_string(),
                 distinct_values: 3,
                 null_count: 0,
                 min_value: None,
