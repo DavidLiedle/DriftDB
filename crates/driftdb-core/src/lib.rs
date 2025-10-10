@@ -16,6 +16,7 @@ pub mod encryption;
 pub mod explain;
 pub mod engine;
 pub mod error_recovery;
+pub mod failover;
 pub mod errors;
 pub mod events;
 pub mod foreign_keys;
@@ -75,6 +76,10 @@ pub use engine::Engine;
 pub use errors::{DriftError, Result};
 pub use events::{Event, EventType};
 pub use explain::{ExplainExecutor, ExplainFormat, ExplainOptions, ExplainPlan};
+pub use failover::{
+    FailoverConfig, FailoverEvent, FailoverManager, FencingToken, HealthStatus, NodeHealth,
+    NodeRole,
+};
 pub use query::{Query, QueryResult};
 pub use query_performance::{OptimizationConfig, OptimizationStats, QueryPerformanceOptimizer};
 pub use rate_limit::{QueryCost, RateLimitConfig, RateLimitManager, RateLimitStats};
