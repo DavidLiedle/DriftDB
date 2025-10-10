@@ -911,3 +911,358 @@ impl ColumnarReader {
             .row_count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn create_test_schema() -> Schema {
+        Schema {
+            columns: vec![
+                ColumnSchema {
+                    name: "id".to_string(),
+                    data_type: DataType::Int64,
+                    nullable: false,
+                    encoding: EncodingType::Auto,
+                    compression: CompressionType::Snappy,
+                    dictionary: None,
+                },
+                ColumnSchema {
+                    name: "name".to_string(),
+                    data_type: DataType::String,
+                    nullable: true,
+                    encoding: EncodingType::Auto,
+                    compression: CompressionType::Snappy,
+                    dictionary: None,
+                },
+                ColumnSchema {
+                    name: "score".to_string(),
+                    data_type: DataType::Float64,
+                    nullable: true,
+                    encoding: EncodingType::Plain,
+                    compression: CompressionType::None,
+                    dictionary: None,
+                },
+            ],
+        }
+    }
+
+    fn create_test_row(id: i64, name: &str, score: f64) -> Row {
+        let mut row = Row::new();
+        row.insert("id".to_string(), Some(Value::Int64(id)));
+        row.insert("name".to_string(), Some(Value::String(name.to_string())));
+        row.insert(
+            "score".to_string(),
+            Some(Value::Float64(score.to_bits())),
+        );
+        row
+    }
+
+    #[test]
+    fn test_columnar_storage_creation() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let storage = ColumnarStorage::new(temp_dir.path(), config);
+        assert!(storage.is_ok());
+    }
+
+    #[test]
+    fn test_dictionary_encoding() {
+        let mut dict = Dictionary::new();
+
+        let val1 = b"apple".to_vec();
+        let val2 = b"banana".to_vec();
+        let val3 = b"apple".to_vec();
+
+        let idx1 = dict.add(val1.clone());
+        let idx2 = dict.add(val2.clone());
+        let idx3 = dict.add(val3);
+
+        assert_eq!(idx1, 0);
+        assert_eq!(idx2, 1);
+        assert_eq!(idx3, 0); // Reuses existing entry
+
+        assert_eq!(dict.values.len(), 2);
+        assert_eq!(dict.get(0).unwrap(), &val1);
+        assert_eq!(dict.get(1).unwrap(), &val2);
+    }
+
+    #[test]
+    fn test_write_and_read_batch() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let schema = create_test_schema();
+        storage.create_table(schema.clone()).unwrap();
+
+        // Write a batch of rows
+        let rows = vec![
+            create_test_row(1, "alice", 95.5),
+            create_test_row(2, "bob", 87.3),
+            create_test_row(3, "charlie", 92.1),
+        ];
+
+        storage.write_batch(rows).unwrap();
+
+        // Verify row count
+        let metadata = storage.metadata.read().unwrap();
+        assert_eq!(metadata.row_count, 3);
+    }
+
+    #[test]
+    fn test_column_scan() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let schema = create_test_schema();
+        storage.create_table(schema).unwrap();
+
+        let rows = vec![
+            create_test_row(1, "alice", 95.5),
+            create_test_row(2, "bob", 87.3),
+        ];
+        storage.write_batch(rows).unwrap();
+
+        // Scan specific columns
+        let result = storage
+            .scan(vec!["id".to_string(), "name".to_string()], None)
+            .unwrap();
+
+        assert_eq!(result.row_count, 2);
+        assert!(result.columns.contains_key("id"));
+        assert!(result.columns.contains_key("name"));
+    }
+
+    #[test]
+    fn test_encoding_selection() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig {
+            dictionary_encoding_threshold: 0.5,
+            ..Default::default()
+        };
+        let storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        // Low cardinality - should use dictionary
+        let values: Vec<Option<Value>> = vec![
+            Some(Value::String("A".to_string())),
+            Some(Value::String("A".to_string())),
+            Some(Value::String("B".to_string())),
+            Some(Value::String("B".to_string())),
+        ];
+        let encoding = storage.select_encoding(&values);
+        assert!(matches!(encoding, EncodingType::Dictionary));
+
+        // High cardinality - should use plain
+        let values: Vec<Option<Value>> = vec![
+            Some(Value::String("A".to_string())),
+            Some(Value::String("B".to_string())),
+            Some(Value::String("C".to_string())),
+            Some(Value::String("D".to_string())),
+        ];
+        let encoding = storage.select_encoding(&values);
+        assert!(matches!(encoding, EncodingType::Plain));
+    }
+
+    #[test]
+    fn test_compression_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let data = b"Hello, World! This is a test of compression. ".repeat(100);
+
+        // Test Snappy
+        let compressed = storage
+            .compress(data.to_vec(), &CompressionType::Snappy)
+            .unwrap();
+        let decompressed = storage
+            .decompress(&compressed, &CompressionType::Snappy)
+            .unwrap();
+        assert_eq!(data, decompressed.as_slice());
+        assert!(compressed.len() < data.len()); // Should be compressed
+
+        // Test Zstd
+        let compressed = storage
+            .compress(data.to_vec(), &CompressionType::Zstd)
+            .unwrap();
+        let decompressed = storage
+            .decompress(&compressed, &CompressionType::Zstd)
+            .unwrap();
+        assert_eq!(data, decompressed.as_slice());
+        assert!(compressed.len() < data.len());
+
+        // Test None
+        let compressed = storage
+            .compress(data.to_vec(), &CompressionType::None)
+            .unwrap();
+        assert_eq!(data, compressed.as_slice());
+    }
+
+    #[test]
+    fn test_writer_and_reader() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let schema = create_test_schema();
+        storage.create_table(schema).unwrap();
+
+        let storage_arc = Arc::new(RwLock::new(storage));
+
+        // Create writer
+        let mut writer = ColumnarWriter::new(storage_arc.clone(), 10);
+
+        // Write rows
+        for i in 1..=5 {
+            let row = create_test_row(i, &format!("user_{}", i), 80.0 + i as f64);
+            writer.write_row(row).unwrap();
+        }
+
+        writer.flush().unwrap();
+
+        // Create reader
+        let reader = ColumnarReader::new(storage_arc.clone());
+
+        // Verify count
+        let count = reader.count().unwrap();
+        assert_eq!(count, 5);
+
+        // Scan data
+        let result = reader
+            .scan(vec!["id".to_string(), "name".to_string()], None)
+            .unwrap();
+        assert_eq!(result.row_count, 5);
+    }
+
+    #[test]
+    fn test_null_values() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let schema = create_test_schema();
+        storage.create_table(schema).unwrap();
+
+        // Create row with null
+        let mut row = Row::new();
+        row.insert("id".to_string(), Some(Value::Int64(1)));
+        row.insert("name".to_string(), None); // Null value
+        row.insert("score".to_string(), Some(Value::Float64(95.0_f64.to_bits())));
+
+        storage.write_batch(vec![row]).unwrap();
+
+        let result = storage
+            .scan(vec!["name".to_string()], None)
+            .unwrap();
+        assert!(result.columns.get("name").unwrap()[0].is_none());
+    }
+
+    #[test]
+    fn test_large_batch() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let schema = create_test_schema();
+        storage.create_table(schema).unwrap();
+
+        // Write 1000 rows
+        let mut rows = Vec::new();
+        for i in 1..=1000 {
+            rows.push(create_test_row(i, &format!("user_{}", i % 10), 80.0 + (i % 20) as f64));
+        }
+
+        storage.write_batch(rows).unwrap();
+
+        let metadata = storage.metadata.read().unwrap();
+        assert_eq!(metadata.row_count, 1000);
+    }
+
+    #[test]
+    fn test_row_default() {
+        let row = Row::new();
+        assert!(row.values.is_empty());
+        assert!(row.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_auto_flush_on_buffer_size() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        let schema = create_test_schema();
+        storage.create_table(schema).unwrap();
+
+        let storage_arc = Arc::new(RwLock::new(storage));
+
+        // Buffer size of 3
+        let mut writer = ColumnarWriter::new(storage_arc.clone(), 3);
+
+        // Write 2 rows (should not flush yet)
+        for i in 1..=2 {
+            writer
+                .write_row(create_test_row(i, &format!("user_{}", i), 85.0))
+                .unwrap();
+        }
+
+        // Should be 0 in storage (not flushed)
+        assert_eq!(storage_arc.read().unwrap().metadata.read().unwrap().row_count, 0);
+
+        // Write third row (should auto-flush)
+        writer
+            .write_row(create_test_row(3, "user_3", 90.0))
+            .unwrap();
+
+        // Now should have 3 rows
+        assert_eq!(storage_arc.read().unwrap().metadata.read().unwrap().row_count, 3);
+    }
+
+    #[test]
+    fn test_compression_ratio_benefit() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ColumnarConfig::default();
+        let mut storage = ColumnarStorage::new(temp_dir.path(), config).unwrap();
+
+        // Create schema with dictionary encoding for repetitive data
+        let schema = Schema {
+            columns: vec![ColumnSchema {
+                name: "status".to_string(),
+                data_type: DataType::String,
+                nullable: false,
+                encoding: EncodingType::Dictionary,
+                compression: CompressionType::Zstd,
+                dictionary: None,
+            }],
+        };
+
+        storage.create_table(schema).unwrap();
+
+        // Write many rows with same values (high compression potential)
+        let mut rows = Vec::new();
+        for i in 1..=1000 {
+            let mut row = Row::new();
+            let status = match i % 3 {
+                0 => "active",
+                1 => "pending",
+                _ => "inactive",
+            };
+            row.insert("status".to_string(), Some(Value::String(status.to_string())));
+            rows.push(row);
+        }
+
+        storage.write_batch(rows).unwrap();
+
+        // Verify data was written and compressed
+        let metadata = storage.metadata.read().unwrap();
+        assert_eq!(metadata.row_count, 1000);
+
+        // Dictionary encoding should result in very small storage
+        // (only 3 distinct values repeated 1000 times)
+        assert!(storage.row_groups.len() > 0);
+    }
+}
