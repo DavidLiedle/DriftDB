@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod backup;
 pub mod backup_enhanced;
+pub mod bloom_filter;
 pub mod cache;
 pub mod columnar;
 pub mod compression;
@@ -72,6 +73,7 @@ mod storage_test;
 
 pub use audit::{AuditAction, AuditConfig, AuditEvent, AuditEventType, AuditSystem};
 pub use auth::{AuthConfig, AuthContext, AuthManager, Permission, Role, Session, User};
+pub use bloom_filter::{BloomConfig, BloomFilter, BloomStatistics, ScalableBloomFilter};
 pub use connection::{EngineGuard, EnginePool, EnginePoolStats, PoolConfig, PoolStats};
 pub use engine::Engine;
 pub use errors::{DriftError, Result};
