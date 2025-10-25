@@ -39,6 +39,9 @@ impl Frame {
     }
 
     pub fn read_from<R: Read>(reader: &mut R) -> Result<Option<Self>> {
+        // Maximum frame size: 64MB (prevents DoS via untrusted length field)
+        const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
+
         let mut length_buf = [0u8; 4];
         match reader.read_exact(&mut length_buf) {
             Ok(_) => {}
@@ -46,6 +49,21 @@ impl Frame {
             Err(e) => return Err(e.into()),
         }
         let length = u32::from_le_bytes(length_buf);
+
+        // Validate frame size to prevent unbounded allocations
+        if length > MAX_FRAME_SIZE {
+            return Err(DriftError::CorruptSegment(format!(
+                "Frame size {} exceeds maximum allowed size of {} bytes",
+                length, MAX_FRAME_SIZE
+            )));
+        }
+
+        // Additional sanity check: reject zero-length frames
+        if length == 0 {
+            return Err(DriftError::CorruptSegment(
+                "Invalid zero-length frame".into()
+            ));
+        }
 
         let mut crc32_buf = [0u8; 4];
         reader.read_exact(&mut crc32_buf)?;

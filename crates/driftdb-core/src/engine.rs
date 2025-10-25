@@ -26,6 +26,7 @@ use crate::mvcc::IsolationLevel as MVCCIsolationLevel;
 use crate::observability::Metrics;
 use crate::procedures::{ProcedureDefinition, ProcedureManager, ProcedureResult};
 use crate::query::{Query, QueryResult};
+use crate::query_cancellation::{CancellationConfig, QueryCancellationManager, QueryExecutionGuard};
 use crate::query_performance::{OptimizationConfig, QueryPerformanceOptimizer};
 use crate::raft::RaftNode;
 use crate::replication::{NodeRole, ReplicationConfig, ReplicationCoordinator};
@@ -74,6 +75,7 @@ pub struct Engine {
     audit_system: Option<Arc<AuditSystem>>,
     security_monitor: Option<Arc<SecurityMonitor>>,
     query_performance: Option<Arc<QueryPerformanceOptimizer>>,
+    query_cancellation: Arc<QueryCancellationManager>,
 }
 
 impl Engine {
@@ -107,6 +109,9 @@ impl Engine {
             RecoveryConfig::default(),
         ));
 
+        // Create query cancellation manager with default config
+        let query_cancellation = Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
+
         let mut engine = Self {
             base_path: base_path.clone(),
             tables: HashMap::new(),
@@ -133,6 +138,7 @@ impl Engine {
             audit_system: None,
             security_monitor: None,
             query_performance: None,
+            query_cancellation,
         };
 
         let tables_dir = base_path.join("tables");
@@ -194,6 +200,9 @@ impl Engine {
             RecoveryConfig::default(),
         ));
 
+        // Create query cancellation manager with default config
+        let query_cancellation = Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
+
         Ok(Self {
             base_path: base_path.clone(),
             tables: HashMap::new(),
@@ -220,6 +229,7 @@ impl Engine {
             audit_system: None,
             security_monitor: None,
             query_performance: None,
+            query_cancellation,
         })
     }
 
@@ -832,6 +842,23 @@ impl Engine {
     }
 
     pub fn query(&self, query: &Query) -> Result<QueryResult> {
+        // Register query for cancellation tracking
+        let query_str = format!("{:?}", query);
+        let mut metadata = HashMap::new();
+        metadata.insert("query_type".to_string(), "select".to_string());
+
+        let cancellation_token = self.query_cancellation.register_query(
+            query_str,
+            None, // Use default timeout
+            metadata,
+        )?;
+
+        // Ensure query is unregistered when done (success or failure)
+        let _guard = QueryExecutionGuard::new(
+            self.query_cancellation.clone(),
+            cancellation_token.query_id(),
+        );
+
         match query {
             Query::Select {
                 table,
@@ -839,6 +866,11 @@ impl Engine {
                 as_of,
                 ..
             } => {
+                // Check for cancellation before expensive operations
+                if cancellation_token.is_cancelled() {
+                    return Err(DriftError::Other("Query cancelled".to_string()));
+                }
+
                 let storage = self
                     .tables
                     .get(table)
@@ -854,12 +886,23 @@ impl Engine {
                     Some(crate::query::AsOf::Now) | None => None,
                 };
 
+                // Check for cancellation before reconstruction
+                if cancellation_token.is_cancelled() {
+                    return Err(DriftError::Other("Query cancelled".to_string()));
+                }
+
                 // Reconstruct state at the target point in time
                 let state = storage.reconstruct_state_at(target_sequence)?;
 
                 // Apply WHERE conditions if any
                 let mut results = Vec::new();
+                let mut processed_rows = 0;
                 for (_key, value) in state {
+                    // Periodically check for cancellation (every 1000 rows)
+                    if processed_rows % 1000 == 0 && cancellation_token.is_cancelled() {
+                        return Err(DriftError::Other("Query cancelled".to_string()));
+                    }
+
                     // Check if row matches conditions
                     let matches = if !conditions.is_empty() {
                         conditions.iter().all(|cond| {
@@ -877,6 +920,9 @@ impl Engine {
                     if matches {
                         results.push(value);
                     }
+
+                    processed_rows += 1;
+                    cancellation_token.update_progress(processed_rows);
                 }
 
                 Ok(QueryResult::Rows { data: results })

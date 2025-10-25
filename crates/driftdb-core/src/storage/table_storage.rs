@@ -181,6 +181,15 @@ impl TableStorage {
     }
 
     pub fn read_all_events(&self) -> Result<Vec<Event>> {
+        self.read_events_with_limit(None)
+    }
+
+    /// Read events with an optional limit to prevent unbounded memory usage
+    /// This is the safe version that should be used in production
+    pub fn read_events_with_limit(&self, max_events: Option<usize>) -> Result<Vec<Event>> {
+        const DEFAULT_MAX_EVENTS: usize = 1_000_000; // 1M events max by default
+        let limit = max_events.unwrap_or(DEFAULT_MAX_EVENTS);
+
         let mut all_events = Vec::new();
         let segments_dir = self.path.join("segments");
 
@@ -199,13 +208,40 @@ impl TableStorage {
         segment_files.sort_by_key(|entry| entry.path());
 
         for entry in segment_files {
+            if all_events.len() >= limit {
+                tracing::warn!(
+                    "Event limit reached ({} events). Consider using snapshots or pagination.",
+                    limit
+                );
+                return Err(DriftError::Other(format!(
+                    "Event limit exceeded: {} events. Use snapshots or reduce query scope.",
+                    limit
+                )));
+            }
+
             let segment = if let Some(ref encryption_service) = self.encryption_service {
                 Segment::new_with_encryption(entry.path(), 0, encryption_service.clone())
             } else {
                 Segment::new(entry.path(), 0)
             };
             let mut reader = segment.open_reader()?;
-            all_events.extend(reader.read_all_events()?);
+            let segment_events = reader.read_all_events()?;
+
+            // Check if adding these events would exceed the limit
+            if all_events.len() + segment_events.len() > limit {
+                let remaining = limit - all_events.len();
+                all_events.extend(segment_events.into_iter().take(remaining));
+                tracing::warn!(
+                    "Event limit reached ({} events). Truncating results.",
+                    limit
+                );
+                return Err(DriftError::Other(format!(
+                    "Event limit exceeded: {} events. Use snapshots or reduce query scope.",
+                    limit
+                )));
+            }
+
+            all_events.extend(segment_events);
         }
 
         Ok(all_events)

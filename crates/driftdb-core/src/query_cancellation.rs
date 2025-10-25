@@ -524,6 +524,11 @@ impl QueryCancellationManager {
 }
 
 impl CancellationToken {
+    /// Get the query ID
+    pub fn query_id(&self) -> Uuid {
+        self.query_id
+    }
+
     /// Check if query has been cancelled
     pub fn is_cancelled(&self) -> bool {
         self.cancel_flag.load(Ordering::Relaxed)
@@ -617,6 +622,26 @@ impl Clone for CancellationStats {
             max_query_time_ms: self.max_query_time_ms,
             active_query_count: self.active_query_count,
         }
+    }
+}
+
+/// RAII guard to ensure query is unregistered on drop
+pub struct QueryExecutionGuard {
+    manager: Arc<QueryCancellationManager>,
+    query_id: Uuid,
+}
+
+impl QueryExecutionGuard {
+    pub fn new(manager: Arc<QueryCancellationManager>, query_id: Uuid) -> Self {
+        Self { manager, query_id }
+    }
+}
+
+impl Drop for QueryExecutionGuard {
+    fn drop(&mut self) {
+        // Unregister query when guard is dropped
+        // Note: We assume success=true here; the query itself should handle errors
+        let _ = self.manager.complete_query(self.query_id, true);
     }
 }
 
