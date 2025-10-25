@@ -68,3 +68,8 @@ harness = false
 name = "time_travel_bench"
 harness = false
 path = "../../benches/time_travel_bench.rs"
+
+[[bench]]
+name = "core_operations"
+harness = false
+path = "../../benches/core_operations.rs"

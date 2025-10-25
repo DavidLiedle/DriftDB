@@ -1,0 +1,33 @@
+[book]
+authors = ["David Liedle"]
+language = "en"
+multilingual = false
+src = "src"
+title = "DriftDB Documentation"
+description = "DriftDB - An append-only database with time-travel queries"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/davidliedle/DriftDB"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/davidliedle/DriftDB/edit/main/docs/book/{path}"
+site-url = "/DriftDB/"
+cname = ""
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = true
+copy-able = true
