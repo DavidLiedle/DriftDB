@@ -1,0 +1,49 @@
+{
+  "name": "driftdb",
+  "version": "0.9.0",
+  "description": "JavaScript/TypeScript client for DriftDB - An append-only database with time-travel queries",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "database",
+    "time-travel",
+    "append-only",
+    "audit-log",
+    "event-sourcing",
+    "typescript"
+  ],
+  "author": "DriftDB Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidliedle/DriftDB.git"
+  },
+  "bugs": {
+    "url": "https://github.com/davidliedle/DriftDB/issues"
+  },
+  "homepage": "https://github.com/davidliedle/DriftDB#readme",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
