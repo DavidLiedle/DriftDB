@@ -60,7 +60,7 @@ DriftDB is an append-only database with time-travel capabilities, structured as 
   - Query engine with time-travel support
 - `crates/driftdb-cli/`: Command-line interface
   - Binary name: `driftdb`
-  - DriftQL parser and executor
+  - SQL parser and executor
   - Table management commands
 
 ### Core Components
@@ -94,9 +94,11 @@ Queries can specify `AS OF` clauses to query historical states:
 - Crash recovery via tail truncation of corrupt segments
 - Process-level file locking prevents concurrent writes
 
-## DriftQL Language
+## SQL Query Language
 
-The CLI implements a SQL-like query language for interacting with DriftDB. The parser is in `crates/driftdb-cli/src/main.rs` and uses pattern matching to execute queries against the core engine.
+The CLI implements a SQL-like query language with custom extensions for interacting with DriftDB. The parser is in `crates/driftdb-core/src/query/parser.rs` and uses nom parser combinators to execute queries against the core engine.
+
+**Note**: DriftDB uses custom temporal syntax (`AS OF @seq:N`, `AS OF "timestamp"`) rather than SQL:2011's standard `FOR SYSTEM_TIME` syntax. The query language is SQL-inspired but not fully SQL:2011 compliant.
 
 Supported operations:
 - `CREATE TABLE` with primary key and indexes
@@ -121,4 +123,4 @@ Tests are co-located with source files using `#[cfg(test)]` modules. The project
 - `crc32fast`: Data integrity checking
 - `parking_lot`: Faster synchronization primitives
 - `fs2`: Cross-platform file locking
-- `nom`: Parser combinators (used for DriftQL parsing)
+- `nom`: Parser combinators (used for SQL parsing)

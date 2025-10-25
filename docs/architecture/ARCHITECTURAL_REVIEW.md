@@ -48,7 +48,7 @@ DriftDB shows promise as an append-only database with time-travel capabilities, 
 
 ### Query Engine
 **Current State:**
-- Basic DriftQL parser using string manipulation
+- SQL parser using nom combinators with custom extensions
 - Time-travel via snapshot + replay
 - Simple WHERE clause evaluation
 

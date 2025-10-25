@@ -116,6 +116,9 @@ impl BackupManager {
             global_start_seq = 0;
         }
 
+        // Backup WAL files
+        self.backup_wal(backup_path)?;
+
         // Create metadata
         let metadata = BackupMetadata {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -199,6 +202,9 @@ impl BackupManager {
         if table_infos.is_empty() {
             info!("No new data since sequence {}", since_sequence);
         }
+
+        // Backup WAL files
+        self.backup_wal(backup_path)?;
 
         // Create metadata
         let parent_backup_id = parent_backup_path.map(|p| {
@@ -523,26 +529,26 @@ impl BackupManager {
 
     /// Backup table metadata files (schema, indexes, etc)
     fn backup_table_metadata(&self, src_dir: &Path, dst_dir: &Path) -> Result<()> {
-        // Backup schema file
-        let schema_src = src_dir.join("schema.yaml");
-        if schema_src.exists() {
-            let schema_dst = dst_dir.join("schema.yaml");
-            fs::copy(&schema_src, &schema_dst)?;
-        }
+        // Backup all files in the table directory using compression
+        // This includes schema.yaml, meta.json, and any other files like segment_*.dat
+        if src_dir.exists() {
+            for entry in fs::read_dir(src_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                let file_name = entry.file_name();
 
-        // Backup meta.json
-        let meta_src = src_dir.join("meta.json");
-        if meta_src.exists() {
-            let meta_dst = dst_dir.join("meta.json");
-            fs::copy(&meta_src, &meta_dst)?;
-        }
-
-        // Backup indexes directory
-        let indexes_src = src_dir.join("indexes");
-        if indexes_src.exists() {
-            let indexes_dst = dst_dir.join("indexes");
-            fs::create_dir_all(&indexes_dst)?;
-            self.copy_directory_recursive(&indexes_src, &indexes_dst, CompressionType::None)?;
+                if path.is_file() {
+                    // Copy files with compression
+                    let src_file = path;
+                    let dst_file = dst_dir.join(&file_name);
+                    self.copy_with_compression(&src_file, &dst_file, CompressionType::Zstd)?;
+                } else if path.is_dir() {
+                    // Recursively copy directories (like indexes, segments if they exist here)
+                    let dst_subdir = dst_dir.join(&file_name);
+                    fs::create_dir_all(&dst_subdir)?;
+                    self.copy_directory_recursive(&path, &dst_subdir, CompressionType::Zstd)?;
+                }
+            }
         }
 
         Ok(())
@@ -563,15 +569,15 @@ impl BackupManager {
         let src_table_dir = backup_path.join("tables").join(&table_info.name);
         let dst_table_dir = target_dir.join("tables").join(&table_info.name);
 
-        // Skip if no segments were backed up (e.g., empty incremental)
-        if table_info.segments_backed_up.is_empty() {
-            debug!("No segments to restore for table {}", table_info.name);
+        // Skip only if the source table directory doesn't exist at all
+        if !src_table_dir.exists() {
+            debug!("Source table directory does not exist for table {}", table_info.name);
             return Ok(());
         }
 
         fs::create_dir_all(&dst_table_dir)?;
 
-        // Restore metadata files
+        // Restore metadata files and segments
         self.copy_directory_recursive(&src_table_dir, &dst_table_dir, CompressionType::None)?;
 
         // Log sequence range restored

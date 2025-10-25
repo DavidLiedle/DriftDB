@@ -12,7 +12,7 @@ DriftDB is a lightweight, embeddable database that treats data as an immutable s
 - **🔍 Secondary indexes** - Fast lookups on indexed columns with B-tree indexes
 - **📸 Snapshots & compaction** - Periodic materialized views for query performance
 - **🛡️ Crash-safe** - Automatic recovery with segment verification and repair
-- **📝 Simple query language** - DriftQL provides an intuitive SQL-like interface
+- **📝 SQL-like query language** - Familiar SQL syntax with custom time-travel extensions
 
 ## 🚀 Use Cases
 
@@ -60,7 +60,7 @@ This is an experimental MVP demonstrating append-only database concepts. While f
 ## 📚 Learn More
 
 - [Architecture Guide](docs/DESIGN.md)
-- [DriftQL Reference](docs/DriftQL.md)
+- [SQL Reference](docs/SQL.md)
 - [Storage Format](docs/STORAGE.md)
 
 ## 📄 License

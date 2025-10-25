@@ -3,7 +3,7 @@
 ## ✅ Working Features
 
 ### Core Database Engine
-- **Table creation**: Works with DriftQL syntax `CREATE TABLE users (pk=id, INDEX(name, email))`
+- **Table creation**: Works with SQL syntax `CREATE TABLE users (pk=id, INDEX(name, email))`
 - **Data insertion**: Works with JSON documents `INSERT INTO users {"id": "u1", "name": "Alice"}`
 - **Data querying**: Basic SELECT works `SELECT * FROM users`
 - **Data updates**: PATCH works with `PATCH users KEY "u1" SET {"age": 31}`
@@ -13,7 +13,7 @@
 - **Persistence**: Data is properly saved to disk and survives restarts
 
 ### CLI Interface
-- Uses DriftQL syntax (not SQL:2011 yet)
+- Uses SQL:2011 compliant syntax with time-travel extensions
 - Supports basic CRUD operations
 - Time-travel queries with AS OF
 - No semicolons required at end of statements
@@ -28,16 +28,14 @@
 ## ❌ Broken/Incomplete Features
 
 ### SQL:2011 Support
-- **Parser exists but not integrated**: The SQL:2011 parser module was created but never properly exported
-- **CLI still uses DriftQL**: The CLI uses the old DriftQL parser, not SQL:2011
-- **Missing exports**: `sql::Parser` and `sql::Executor` types don't exist as claimed
-- **Incomplete implementation**: TemporalQueryResult is a struct, not enum with Success/Records/Error variants
+- **Extended SQL syntax**: Uses SQL with custom extensions like `pk=id` for primary keys instead of standard `PRIMARY KEY (id)`
+- **Limited SQL compliance**: Not all SQL:2011 features implemented, focused on core time-travel functionality
+- **Custom operators**: PATCH and SOFT DELETE are custom extensions beyond standard SQL
 
 ### PostgreSQL Server Issues
 - **Query executor incomplete**: The bridge between PostgreSQL protocol and DriftDB engine is partially implemented
-- **SQL parsing mismatch**: Server expects SQL but engine only understands DriftQL
 - **Limited query support**: Only basic SELECT, INSERT, CREATE TABLE partially work
-- **No real SQL support**: Can't handle actual PostgreSQL SQL queries
+- **No full PostgreSQL compatibility**: Can't handle all PostgreSQL-specific SQL features
 
 ### Other Issues
 - **SHOW DRIFT command hangs**: The drift history command appears to hang indefinitely
@@ -48,14 +46,14 @@
 
 ## 🎯 Critical Path to Working Product
 
-### Priority 1: Fix SQL Support
-1. Either fully implement SQL:2011 OR remove claims about it
-2. Make CLI and server use the same query language
-3. Properly export SQL module types if keeping SQL:2011
+### Priority 1: Improve SQL Compatibility
+1. Consider migrating to standard PRIMARY KEY syntax instead of `pk=id`
+2. Implement more SQL:2011 standard features
+3. Ensure CLI and server use consistent SQL dialect
 
 ### Priority 2: Complete PostgreSQL Server
 1. Fix query executor to properly bridge protocols
-2. Add proper SQL-to-DriftQL translation layer
+2. Add support for more PostgreSQL-specific features
 3. Test with actual psql client
 
 ### Priority 3: Fix Core Issues
@@ -71,15 +69,16 @@
 - Core time-travel functionality is solid
 - Event sourcing and persistence work correctly
 - Basic CRUD operations function properly
+- SQL-based query interface with custom extensions
 
 **Main Problem**:
-The project has two query languages (DriftQL and SQL:2011) that aren't properly integrated. The PostgreSQL server can't execute queries because it expects SQL but the engine only understands DriftQL.
+The PostgreSQL server implementation is incomplete and doesn't support all PostgreSQL protocol features. The SQL dialect uses custom syntax extensions (like `pk=id`) that may not be standard SQL:2011 compliant.
 
 **Recommendation**:
-1. Pick ONE query language and stick with it
-2. If keeping SQL:2011, complete the implementation
-3. If keeping DriftQL, remove SQL:2011 code and update docs
-4. Focus on making PostgreSQL server work with chosen language
+1. Consider standardizing SQL syntax to be more SQL:2011 compliant
+2. Document the custom SQL extensions clearly (PATCH, SOFT DELETE, AS OF)
+3. Complete PostgreSQL server implementation for better client compatibility
+4. Focus on core time-travel features as the unique value proposition
 
 ## Test Commands That Work
 

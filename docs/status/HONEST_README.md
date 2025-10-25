@@ -125,7 +125,7 @@ SELECT * FROM users JOIN orders ON ...;   -- Complex joins fail
 ### Compatibility
 - Many PostgreSQL clients will encounter issues
 - SQL:2011 temporal syntax not supported despite documentation
-- DriftQL vs SQL confusion in various components
+- Custom SQL syntax extensions (pk=id, PATCH, SOFT DELETE) differ from standard SQL
 
 ### Performance
 - No actual query optimization

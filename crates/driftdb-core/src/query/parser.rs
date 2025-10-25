@@ -471,7 +471,7 @@ fn verify_backup(input: &str) -> IResult<&str, Query> {
     Ok((input, Query::VerifyBackup { backup_path }))
 }
 
-fn driftql_query(input: &str) -> IResult<&str, Query> {
+fn sql_query(input: &str) -> IResult<&str, Query> {
     alt((
         backup_database,
         backup_table,
@@ -490,8 +490,8 @@ fn driftql_query(input: &str) -> IResult<&str, Query> {
     ))(input)
 }
 
-pub fn parse_driftql(input: &str) -> Result<Query> {
-    match driftql_query(input.trim()) {
+pub fn parse_sql(input: &str) -> Result<Query> {
+    match sql_query(input.trim()) {
         Ok((remaining, query)) => {
             if remaining.trim().is_empty() {
                 Ok(query)

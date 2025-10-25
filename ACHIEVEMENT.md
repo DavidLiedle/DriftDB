@@ -42,7 +42,7 @@ Make DriftDB "all it can be" - connect the massive amount of sophisticated but u
 Before:
 - Basic CRUD operations
 - Simple SELECT queries
-- Time travel with DriftQL
+- Time travel with custom SQL syntax
 
 After:
 - CREATE/DROP VIEW operations
@@ -56,7 +56,7 @@ After:
 ### 🔧 Technical Achievements
 
 1. **SQL Parser Integration**: Extended SQL detection in CLI to recognize VIEW operations
-2. **Bridge Pattern Success**: SQL to DriftQL bridge now handles DDL operations
+2. **Bridge Pattern Success**: SQL parser now handles DDL operations seamlessly
 3. **Bug Fixes**: Resolved 5+ critical bugs in JOIN and aggregation logic
 4. **Type System**: Connected constraint types to SQL parser types
 

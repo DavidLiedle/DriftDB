@@ -4,7 +4,7 @@ pub mod parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// DriftQL parser removed - using 100% SQL compatibility
+// SQL:2011 compliant parser for query execution
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Query {
