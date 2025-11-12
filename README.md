@@ -551,6 +551,44 @@ make ci
 
 ## Performance
 
+### Benchmark Results
+
+Measured on **MacBook Air M3 (2024)** - 8-core (4P+4E), 16GB unified memory, NVMe SSD:
+
+**Insert Operations:**
+```
+Single insert:     4.3 ms
+10 inserts:       35.5 ms  (~3.5 ms each)
+100 inserts:     300 ms    (~3.0 ms each)
+```
+
+**Query Operations:**
+```
+SELECT 100 rows:    101 µs
+SELECT 1000 rows:   644 µs
+Full table scan:    719 µs  (1000 rows)
+```
+
+**Update/Delete Operations:**
+```
+Single update:      6.7 ms
+Single delete:      6.5 ms
+```
+
+**Time Travel Queries:**
+```
+Historical query:  131 µs  (AS OF @seq:N)
+```
+
+**Throughput:**
+- **Inserts**: ~230 inserts/sec (single-threaded)
+- **Queries**: ~9,800 queries/sec (100-row selects)
+- **Time Travel**: ~7,600 historical queries/sec
+
+> Run benchmarks yourself: `cargo bench --bench simple_benchmarks`
+>
+> See [benchmarks/HARDWARE.md](benchmarks/HARDWARE.md) for hardware specs and [benchmarks/baselines/](benchmarks/baselines/) for detailed results.
+
 ### Optimization Features
 - **Query optimizer**: Cost-based planning with statistics
 - **Index selection**: Automatic index usage for queries

@@ -1,0 +1,83 @@
+   Compiling driftdb-core v0.9.0-alpha (/Users/david/vcs/git/github/davidliedle/DriftDB/crates/driftdb-core)
+    Finished `bench` profile [optimized] target(s) in 1.13s
+     Running benches/simple_benchmarks.rs (/Users/david/vcs/git/github/davidliedle/DriftDB/target/release/deps/simple_benchmarks-da687e99c98ee39d)
+Gnuplot not found, using plotters backend
+Benchmarking insert/1
+Benchmarking insert/1: Warming up for 3.0000 s
+Benchmarking insert/1: Collecting 100 samples in estimated 5.1790 s (1000 iterations)
+Benchmarking insert/1: Analyzing
+insert/1                time:   [4.1941 ms 4.2653 ms 4.3378 ms]
+Benchmarking insert/10
+Benchmarking insert/10: Warming up for 3.0000 s
+Benchmarking insert/10: Collecting 100 samples in estimated 6.9067 s (200 iterations)
+Benchmarking insert/10: Analyzing
+insert/10               time:   [34.748 ms 35.470 ms 36.172 ms]
+Benchmarking insert/100
+Benchmarking insert/100: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 46.7s, or reduce sample count to 10.
+Benchmarking insert/100: Collecting 100 samples in estimated 46.734 s (100 iterations)
+Benchmarking insert/100: Analyzing
+insert/100              time:   [295.27 ms 299.41 ms 303.53 ms]
+
+Benchmarking select/by_pk/100
+Benchmarking select/by_pk/100: Warming up for 3.0000 s
+Benchmarking select/by_pk/100: Collecting 100 samples in estimated 5.0984 s (61k iterations)
+Benchmarking select/by_pk/100: Analyzing
+select/by_pk/100        time:   [99.420 µs 101.58 µs 103.93 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  6 (6.00%) high mild
+  2 (2.00%) high severe
+Benchmarking select/full_scan/100
+Benchmarking select/full_scan/100: Warming up for 3.0000 s
+Benchmarking select/full_scan/100: Collecting 100 samples in estimated 5.2305 s (61k iterations)
+Benchmarking select/full_scan/100: Analyzing
+select/full_scan/100    time:   [98.202 µs 100.32 µs 102.69 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  7 (7.00%) high mild
+Benchmarking select/by_pk/1000
+Benchmarking select/by_pk/1000: Warming up for 3.0000 s
+Benchmarking select/by_pk/1000: Collecting 100 samples in estimated 5.3595 s (10k iterations)
+Benchmarking select/by_pk/1000: Analyzing
+select/by_pk/1000       time:   [629.44 µs 644.37 µs 660.72 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+Benchmarking select/full_scan/1000
+Benchmarking select/full_scan/1000: Warming up for 3.0000 s
+Benchmarking select/full_scan/1000: Collecting 100 samples in estimated 5.3478 s (10k iterations)
+Benchmarking select/full_scan/1000: Analyzing
+select/full_scan/1000   time:   [709.79 µs 719.04 µs 729.02 µs]
+Found 10 outliers among 100 measurements (10.00%)
+  1 (1.00%) low mild
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking update/single
+Benchmarking update/single: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 38.2s, or reduce sample count to 10.
+Benchmarking update/single: Collecting 100 samples in estimated 38.208 s (100 iterations)
+Benchmarking update/single: Analyzing
+update/single           time:   [6.5467 ms 6.7374 ms 6.9232 ms]
+
+Benchmarking delete/single
+Benchmarking delete/single: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 39.8s, or reduce sample count to 10.
+Benchmarking delete/single: Collecting 100 samples in estimated 39.846 s (100 iterations)
+Benchmarking delete/single: Analyzing
+delete/single           time:   [6.3498 ms 6.5385 ms 6.7271 ms]
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) low mild
+  1 (1.00%) high mild
+
+Benchmarking time_travel/as_of_seq
+Benchmarking time_travel/as_of_seq: Warming up for 3.0000 s
+Benchmarking time_travel/as_of_seq: Collecting 100 samples in estimated 5.4873 s (56k iterations)
+Benchmarking time_travel/as_of_seq: Analyzing
+time_travel/as_of_seq   time:   [128.50 µs 131.38 µs 134.94 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+
