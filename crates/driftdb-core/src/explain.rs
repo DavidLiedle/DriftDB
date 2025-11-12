@@ -126,7 +126,7 @@ impl ExplainPlan {
     pub fn format_text(&self, options: &ExplainOptions) -> String {
         let mut output = String::new();
 
-        output.push_str(&"Query Plan\n".to_string());
+        output.push_str("Query Plan\n");
         output.push_str(&format!("{}\n", "=".repeat(60)));
 
         self.format_node_text(&self.plan, 0, &mut output, options);
@@ -158,6 +158,7 @@ impl ExplainPlan {
     }
 
     /// Format a plan node as text
+    #[allow(clippy::only_used_in_recursion)]
     fn format_node_text(
         &self,
         node: &PlanNode,

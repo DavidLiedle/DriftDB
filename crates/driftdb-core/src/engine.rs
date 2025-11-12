@@ -2009,6 +2009,7 @@ impl Engine {
     }
 
     /// Apply retention policy to clean up old backups
+    #[allow(clippy::await_holding_lock)]
     pub async fn apply_backup_retention(&self) -> Result<Vec<String>> {
         let backup_manager = self
             .backup_manager
@@ -2019,6 +2020,7 @@ impl Engine {
     }
 
     /// Verify backup integrity
+    #[allow(clippy::await_holding_lock)]
     pub async fn verify_backup(&self, backup_id: &str) -> Result<bool> {
         let backup_manager = self
             .backup_manager
@@ -2146,6 +2148,7 @@ impl Engine {
     }
 
     /// Log a database operation for audit purposes
+    #[allow(clippy::too_many_arguments)]
     pub fn audit_log_operation(
         &self,
         event_type: AuditEventType,
@@ -2421,6 +2424,7 @@ impl Engine {
     }
 
     /// Enhanced audit logging that integrates with security monitoring
+    #[allow(clippy::too_many_arguments)]
     pub fn audit_log_with_security_analysis(
         &self,
         event_type: AuditEventType,

@@ -509,21 +509,19 @@ impl<'a> QueryExecutor<'a> {
         let dialect = GenericDialect {};
         let ast = Parser::parse_sql(&dialect, sql).map_err(|e| anyhow!("Parse error: {}", e))?;
 
-        if let Some(statement) = ast.first() {
-            if let sqlparser::ast::Statement::Query(query) = statement {
-                if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-                    if let Some(table_with_joins) = select.from.first() {
-                        if let sqlparser::ast::TableFactor::Table { name, .. } =
-                            &table_with_joins.relation
-                        {
-                            return Ok(name.to_string());
-                        }
+        if let Some(sqlparser::ast::Statement::Query(query)) = ast.first() {
+            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                if let Some(table_with_joins) = select.from.first() {
+                    if let sqlparser::ast::TableFactor::Table { name, .. } =
+                        &table_with_joins.relation
+                    {
+                        return Ok(name.to_string());
                     }
                 }
             }
         }
 
-        Err(anyhow!("Could not extract table name"))
+        Err(anyhow!("Could not extract table name from query"))
     }
 
     pub fn new(engine: Arc<SyncRwLock<Engine>>) -> QueryExecutor<'static> {
@@ -1203,7 +1201,7 @@ impl<'a> QueryExecutor<'a> {
     /// Sort rows based on ORDER BY specification
     fn sort_rows(
         &self,
-        rows: &mut Vec<Vec<Value>>,
+        rows: &mut [Vec<Value>],
         columns: &[String],
         order_by: &OrderBy,
     ) -> Result<()> {
@@ -2055,10 +2053,11 @@ impl<'a> QueryExecutor<'a> {
                         current.clear();
                     }
                 }
+                #[allow(clippy::if_same_then_else)]
                 _ => {
                     if in_quotes || ch != ' ' {
                         current.push(ch);
-                    } else if !current.is_empty() && ch == ' ' {
+                    } else if !current.is_empty() {
                         current.push(ch);
                     }
                 }
@@ -2991,6 +2990,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Format a plan node recursively
+    #[allow(clippy::only_used_in_recursion)]
     fn format_plan_node(
         &self,
         node: &PlanNode,
@@ -3828,8 +3828,8 @@ impl<'a> QueryExecutor<'a> {
         outer_row: Option<&Value>,
     ) -> Result<QueryResult> {
         // If this is a correlated subquery, we need to pass the outer row context
-        if subquery.is_correlated && outer_row.is_some() {
-            self.execute_correlated_subquery(subquery, outer_row.unwrap())
+        if let (true, Some(row)) = (subquery.is_correlated, outer_row) {
+            self.execute_correlated_subquery(subquery, row)
                 .await
         } else {
             // Non-correlated subquery - check cache first
@@ -4295,6 +4295,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute JOIN with temporal support
+    #[allow(clippy::await_holding_lock)]
     async fn execute_temporal_join(
         &self,
         from_clause: &FromClause,
@@ -4371,6 +4372,7 @@ impl<'a> QueryExecutor<'a> {
         }
     }
 
+    #[allow(clippy::await_holding_lock)]
     async fn execute_join(&self, from_clause: &FromClause) -> Result<(Vec<Value>, Vec<String>)> {
         let engine = self.engine_read()?;
 
@@ -4429,6 +4431,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute implicit JOIN (cross product of multiple tables)
+    #[allow(clippy::await_holding_lock)]
     async fn execute_implicit_join(
         &self,
         tables: &[TableRef],
@@ -4466,6 +4469,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute explicit JOINs
+    #[allow(clippy::await_holding_lock)]
     async fn execute_explicit_joins(
         &self,
         base_table: &TableRef,
@@ -4499,6 +4503,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute a single JOIN operation
+    #[allow(clippy::await_holding_lock)]
     async fn execute_single_join(
         &self,
         left_data: &[Value],

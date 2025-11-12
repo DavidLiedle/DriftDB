@@ -194,6 +194,7 @@ impl LockFreeIndex {
         }
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn lookup_in_node(&self, node: &IndexNode, key: &str) -> Vec<String> {
         match node.keys.binary_search_by(|k| k.as_str().cmp(key)) {
             Ok(idx) => node.values[idx].clone(),

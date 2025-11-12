@@ -160,8 +160,10 @@ pub struct RaftNode {
 
     // Communication channels
     command_tx: mpsc::Sender<(Command, oneshot::Sender<Result<()>>)>,
+    #[allow(clippy::type_complexity)]
     command_rx: Arc<RwLock<Option<mpsc::Receiver<(Command, oneshot::Sender<Result<()>>)>>>>,
     rpc_tx: mpsc::Sender<(String, RaftMessage)>,
+    #[allow(clippy::type_complexity)]
     rpc_rx: Arc<RwLock<Option<mpsc::Receiver<(String, RaftMessage)>>>>,
 
     // Applied commands output
@@ -682,6 +684,7 @@ impl RaftNodeInner {
     }
 
     /// Handle AppendEntries RPC
+    #[allow(clippy::too_many_arguments)]
     async fn handle_append_entries(
         &self,
         from: String,

@@ -603,7 +603,7 @@ impl QueryOptimizer {
                 (v.as_f64(), min_n.as_f64(), max_n.as_f64())
             {
                 if max_f > min_f {
-                    ((v_f - min_f) / (max_f - min_f)).max(0.0).min(1.0)
+                    ((v_f - min_f) / (max_f - min_f)).clamp(0.0, 1.0)
                 } else {
                     0.5
                 }

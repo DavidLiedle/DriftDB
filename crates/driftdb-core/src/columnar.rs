@@ -259,6 +259,7 @@ impl ColumnarStorage {
             let column_path = self.path.join(format!("{}.col", column.name));
             let file = OpenOptions::new()
                 .create(true)
+                .truncate(true)
                 .write(true)
                 .read(true)
                 .open(&column_path)?;

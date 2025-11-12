@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 /// PostgreSQL protocol messages
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::enum_variant_names)]
 pub enum Message {
     // Startup phase
     StartupMessage {

@@ -488,23 +488,16 @@ impl MVCCManager {
         let current = version;
 
         // Traverse to find the cutoff point
-        loop {
-            depth += 1;
+        depth += 1;
 
-            // Check if we should keep this version
-            if let Some(ref mut prev) = current.prev_version {
-                if depth > self.config.min_versions_to_keep && prev.timestamp < min_timestamp {
-                    // Remove this and all older versions
-                    current.prev_version = None;
-                    break;
-                }
-
-                // Can't continue traversing due to borrow checker,
-                // so we'll just keep all versions for now
-                break;
-            } else {
-                break;
+        // Check if we should keep this version
+        if let Some(ref mut prev) = current.prev_version {
+            if depth > self.config.min_versions_to_keep && prev.timestamp < min_timestamp {
+                // Remove this and all older versions
+                current.prev_version = None;
             }
+            // Can't continue traversing due to borrow checker,
+            // so we'll just keep all versions for now
         }
     }
 
@@ -660,7 +653,7 @@ impl DeadlockDetector {
         cycles
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::only_used_in_recursion)]
     fn dfs_find_cycle(
         &self,
         node: TxnId,

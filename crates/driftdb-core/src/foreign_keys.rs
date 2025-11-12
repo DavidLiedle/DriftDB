@@ -76,7 +76,7 @@ struct ReferenceIndex {
     // child_table -> parent_tables it references
     child_to_parents: HashMap<String, HashSet<String>>,
     // (parent_table, parent_key) -> list of (child_table, child_keys)
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::type_complexity)]
     reference_map: HashMap<(String, Vec<serde_json::Value>), Vec<(String, Vec<serde_json::Value>)>>,
 }
 
@@ -857,6 +857,7 @@ impl ForeignKeyManager {
         Ok(sorted)
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn topological_sort_dfs(
         &self,
         table: &str,

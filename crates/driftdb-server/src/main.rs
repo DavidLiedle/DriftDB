@@ -671,6 +671,7 @@ async fn main() -> Result<()> {
 }
 
 /// Start the HTTP server for health checks and metrics
+#[allow(clippy::too_many_arguments)]
 async fn start_http_server(
     addr: SocketAddr,
     engine: Arc<SyncRwLock<Engine>>,

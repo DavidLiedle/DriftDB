@@ -592,8 +592,8 @@ impl ReplicationCoordinator {
             let stream_arcs: Vec<_> = {
                 let replicas = self.replicas.read();
                 replicas
-                    .iter()
-                    .map(|(_, replica)| replica.stream.clone())
+                    .values()
+                    .map(|replica| replica.stream.clone())
                     .collect()
             };
 

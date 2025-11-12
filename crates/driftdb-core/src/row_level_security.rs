@@ -177,6 +177,7 @@ pub struct RlsManager {
     /// Tables with RLS enabled
     enabled_tables: Arc<RwLock<HashMap<String, bool>>>,
     /// Policy evaluation cache: (table, user, action) -> result
+    #[allow(clippy::type_complexity)]
     cache: Arc<RwLock<HashMap<(String, String, PolicyAction), PolicyResult>>>,
 }
 

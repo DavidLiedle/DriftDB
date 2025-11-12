@@ -23,6 +23,7 @@ pub enum TransactionStatus {
 }
 
 impl TransactionStatus {
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_byte(&self) -> u8 {
         match self {
             TransactionStatus::Idle => b'I',

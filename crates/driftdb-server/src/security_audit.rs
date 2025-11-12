@@ -177,6 +177,7 @@ impl SecurityAuditLogger {
     }
 
     /// Log a security audit event
+    #[allow(clippy::too_many_arguments)]
     pub fn log_event(
         &self,
         event_type: AuditEventType,

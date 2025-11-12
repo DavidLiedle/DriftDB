@@ -399,12 +399,10 @@ impl StatisticsManager {
 
         // Collect column statistics
         let mut column_stats = HashMap::new();
-        if let Some(first_row) = sample_data.first() {
-            if let Value::Object(obj) = first_row {
-                for column_name in obj.keys() {
-                    let stats = self.collect_column_statistics(column_name, &sample_data)?;
-                    column_stats.insert(column_name.clone(), stats);
-                }
+        if let Some(Value::Object(obj)) = sample_data.first() {
+            for column_name in obj.keys() {
+                let stats = self.collect_column_statistics(column_name, &sample_data)?;
+                column_stats.insert(column_name.clone(), stats);
             }
         }
 

@@ -127,7 +127,7 @@ impl<'a> SqlExecutor<'a> {
     /// Execute a SELECT query with temporal support
     fn execute_query(
         &mut self,
-        query: &Box<Query>,
+        query: &Query,
         system_time: &Option<SystemTimeClause>,
     ) -> Result<TemporalQueryResult> {
         // Extract query components
@@ -358,7 +358,7 @@ impl<'a> SqlExecutor<'a> {
     /// Execute DELETE statement
     fn execute_delete(
         &mut self,
-        tables: &Vec<sqlparser::ast::ObjectName>,
+        tables: &[sqlparser::ast::ObjectName],
         _selection: &Option<sqlparser::ast::Expr>,
     ) -> Result<TemporalQueryResult> {
         if tables.is_empty() {
@@ -411,7 +411,7 @@ impl<'a> SqlExecutor<'a> {
 
     // Helper methods
 
-    fn extract_query_components(&self, query: &Box<Query>) -> Result<(String, Option<String>)> {
+    fn extract_query_components(&self, query: &Query) -> Result<(String, Option<String>)> {
         // Extract table name and WHERE clause from query
         // This is simplified - production would handle all query types
 

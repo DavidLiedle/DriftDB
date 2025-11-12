@@ -626,6 +626,7 @@ pub struct LSMTree {
     #[allow(dead_code)]
     config: IndexConfig,
     memtable: Arc<RwLock<BTreeMap<OrderedValue, Vec<u64>>>>,
+    #[allow(clippy::type_complexity)]
     immutable_memtables: Arc<RwLock<Vec<BTreeMap<OrderedValue, Vec<u64>>>>>,
     #[allow(dead_code)]
     sstables: Arc<RwLock<Vec<SSTable>>>,

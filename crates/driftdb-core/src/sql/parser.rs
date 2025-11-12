@@ -198,8 +198,8 @@ impl TemporalSqlParser {
 
         if trimmed.to_uppercase() == "CURRENT_TIMESTAMP" {
             Ok(TemporalPoint::CurrentTimestamp)
-        } else if trimmed.starts_with("@SEQ:") {
-            let seq = trimmed[5..]
+        } else if let Some(stripped) = trimmed.strip_prefix("@SEQ:") {
+            let seq = stripped
                 .parse::<u64>()
                 .map_err(|_| DriftError::InvalidQuery("Invalid sequence number".to_string()))?;
             Ok(TemporalPoint::Sequence(seq))

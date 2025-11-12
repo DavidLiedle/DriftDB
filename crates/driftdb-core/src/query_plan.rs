@@ -760,6 +760,7 @@ impl PlanAnalyzer {
         }
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn estimate_memory_usage(&self, node: &PlanNode) -> usize {
         let mut total = node.properties.memory_usage;
         for child in &node.children {
@@ -768,6 +769,7 @@ impl PlanAnalyzer {
         total
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn find_parallelism_opportunities(&self, node: &PlanNode) -> Vec<String> {
         let mut opportunities = vec![];
 
@@ -788,18 +790,17 @@ impl PlanAnalyzer {
         opportunities
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn recommend_indexes(&self, node: &PlanNode) -> Vec<IndexRecommendation> {
         let mut recommendations = vec![];
 
-        if let PlanOperation::TableScan { table, filter, .. } = &node.operation {
-            if let Some(filter_str) = filter {
-                recommendations.push(IndexRecommendation {
-                    table: table.clone(),
-                    columns: vec![filter_str.clone()],
-                    index_type: "btree".to_string(),
-                    estimated_benefit: node.estimated_cost * 0.8,
-                });
-            }
+        if let PlanOperation::TableScan { table, filter: Some(filter_str), .. } = &node.operation {
+            recommendations.push(IndexRecommendation {
+                table: table.clone(),
+                columns: vec![filter_str.clone()],
+                index_type: "btree".to_string(),
+                estimated_benefit: node.estimated_cost * 0.8,
+            });
         }
 
         for child in &node.children {

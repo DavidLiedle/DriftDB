@@ -912,6 +912,7 @@ impl SessionTracker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_session(
         &mut self,
         session_id: &str,

@@ -761,7 +761,7 @@ impl CostOptimizer {
             }
         }
 
-        selectivity.max(0.001).min(1.0)
+        selectivity.clamp(0.001, 1.0)
     }
 
     /// Greedy join ordering for large queries

@@ -477,6 +477,7 @@ impl QueryOptimizer {
     }
 
     /// Add parallelism to a plan node
+    #[allow(clippy::only_used_in_recursion)]
     fn add_parallelism(&self, mut node: PlanNode) -> Result<PlanNode> {
         match &node.operation {
             PlanOperation::TableScan { .. } if node.cardinality > 1000 => {
@@ -645,6 +646,7 @@ impl QueryOptimizer {
     }
 
     /// Calculate total cost for a plan
+    #[allow(clippy::only_used_in_recursion)]
     fn calculate_plan_cost(&self, node: &PlanNode, query: &OptimizableQuery) -> Result<f64> {
         let mut total_cost = 0.0;
 

@@ -54,6 +54,7 @@ impl TlsConfig {
 }
 
 /// Stream wrapper that can handle both plain TCP and TLS connections
+#[allow(clippy::large_enum_variant)]
 pub enum SecureStream {
     Plain(TcpStream),
     Tls(TlsStream<TcpStream>),

@@ -334,7 +334,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
     }
 }
 
-fn execute_sql_query(engine: &mut Engine, query: &Box<SqlQuery>) -> Result<QueryResult> {
+fn execute_sql_query(engine: &mut Engine, query: &SqlQuery) -> Result<QueryResult> {
     // Handle CTEs (WITH clause)
     let mut cte_results = HashMap::new();
     if let Some(with) = &query.with {
@@ -483,7 +483,7 @@ fn execute_recursive_cte(
 
 fn execute_query_with_ctes(
     engine: &mut Engine,
-    query: &Box<SqlQuery>,
+    query: &SqlQuery,
     cte_results: &HashMap<String, Vec<Value>>,
 ) -> Result<QueryResult> {
     match query.body.as_ref() {
@@ -1503,7 +1503,7 @@ fn execute_sql_insert(
     engine: &mut Engine,
     table_name: &sqlparser::ast::ObjectName,
     columns: &[sqlparser::ast::Ident],
-    source: &Box<SqlQuery>,
+    source: &SqlQuery,
 ) -> Result<QueryResult> {
     let table = table_name.to_string();
 
@@ -2336,13 +2336,13 @@ fn json_value_to_sql_expr(val: &Value) -> Result<Expr> {
     })
 }
 
-fn execute_subquery(engine: &mut Engine, subquery: &Box<SqlQuery>) -> Result<Vec<Value>> {
+fn execute_subquery(engine: &mut Engine, subquery: &SqlQuery) -> Result<Vec<Value>> {
     execute_subquery_with_context(engine, subquery, None)
 }
 
 fn execute_subquery_with_context(
     engine: &mut Engine,
-    subquery: &Box<SqlQuery>,
+    subquery: &SqlQuery,
     outer_row: Option<&Value>,
 ) -> Result<Vec<Value>> {
     // Set outer row context if provided
@@ -3465,7 +3465,7 @@ fn execute_sql_update(
 fn execute_create_view(
     engine: &Engine,
     name: &sqlparser::ast::ObjectName,
-    query: &Box<SqlQuery>,
+    query: &SqlQuery,
     _or_replace: bool,
     materialized: bool,
 ) -> Result<QueryResult> {
@@ -3720,7 +3720,7 @@ fn execute_create_index(
 
 fn execute_sql_delete(
     engine: &mut Engine,
-    tables: &Vec<sqlparser::ast::ObjectName>,
+    tables: &[sqlparser::ast::ObjectName],
     selection: &Option<Expr>,
 ) -> Result<QueryResult> {
     if tables.is_empty() {

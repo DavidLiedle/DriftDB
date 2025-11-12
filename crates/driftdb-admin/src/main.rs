@@ -8,7 +8,7 @@
 //! - Schema migrations
 //! - Health checks
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -1004,7 +1004,7 @@ async fn verify_integrity(
     Ok(())
 }
 
-async fn show_config(data_dir: &PathBuf, section: Option<String>) -> Result<()> {
+async fn show_config(data_dir: &Path, section: Option<String>) -> Result<()> {
     println!("{}", "Configuration".bold());
 
     if let Some(section) = section {

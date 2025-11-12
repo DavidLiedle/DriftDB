@@ -79,6 +79,7 @@ impl SlowQueryLogger {
     }
 
     /// Log a query execution
+    #[allow(clippy::too_many_arguments)]
     pub fn log_query(
         &self,
         query: String,

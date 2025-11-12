@@ -553,6 +553,7 @@ impl ProcedureManager {
     }
 
     /// Validate statements
+    #[allow(clippy::only_used_in_recursion)]
     fn validate_statements(&self, statements: &[ProcedureStatement]) -> Result<()> {
         for statement in statements {
             match statement {

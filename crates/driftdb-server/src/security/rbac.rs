@@ -53,7 +53,9 @@ pub enum Permission {
     ViewRoles,
 
     // Permission management
+    #[allow(clippy::enum_variant_names)]
     GrantPermission,
+    #[allow(clippy::enum_variant_names)]
     RevokePermission,
 
     // Database management

@@ -575,7 +575,6 @@ fn update_system_metrics() {
 }
 
 /// Metrics helper functions for use throughout the application
-
 /// Record a query execution
 pub fn record_query(query_type: &str, status: &str, duration_seconds: f64) {
     QUERY_TOTAL.with_label_values(&[query_type, status]).inc();
