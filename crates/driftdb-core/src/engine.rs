@@ -1931,6 +1931,7 @@ impl Engine {
     }
 
     /// Create a full backup
+    #[allow(clippy::await_holding_lock)] // Lock must be held for exclusive backup access
     pub async fn create_full_backup(
         &self,
         tags: Option<std::collections::HashMap<String, String>>,
@@ -1947,6 +1948,7 @@ impl Engine {
     }
 
     /// Create an incremental backup
+    #[allow(clippy::await_holding_lock)] // Lock must be held for exclusive backup access
     pub async fn create_incremental_backup(
         &self,
         tags: Option<std::collections::HashMap<String, String>>,
@@ -1963,6 +1965,7 @@ impl Engine {
     }
 
     /// Restore from backup
+    #[allow(clippy::await_holding_lock)] // Lock must be held for exclusive restore access
     pub async fn restore_from_backup(
         &self,
         backup_id: &str,
@@ -1992,6 +1995,7 @@ impl Engine {
     }
 
     /// Delete a backup
+    #[allow(clippy::await_holding_lock)] // Lock must be held for exclusive delete access
     pub async fn delete_backup(&self, backup_id: &str) -> Result<()> {
         let backup_manager = self
             .backup_manager
