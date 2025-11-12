@@ -458,8 +458,8 @@ impl AuditSystem {
         let level = match score {
             0..=20 => RiskLevel::None,
             21..=40 => RiskLevel::Low,
-            41..=60 => RiskLevel::Medium,
-            61..=80 => RiskLevel::High,
+            41..=59 => RiskLevel::Medium,
+            60..=80 => RiskLevel::High,
             _ => RiskLevel::Critical,
         };
 
@@ -469,7 +469,7 @@ impl AuditSystem {
     fn is_suspicious_query(query: &str) -> bool {
         let query_lower = query.to_lowercase();
         let suspicious_patterns = [
-            "' or '1'='1",
+            " or '1'='1",
             "'; drop table",
             "'; delete from",
             "union select",

@@ -388,7 +388,7 @@ impl ColumnarStorage {
         let total_count = values.len();
 
         if (distinct_count as f64) / (total_count as f64)
-            < self.config.dictionary_encoding_threshold
+            <= self.config.dictionary_encoding_threshold
         {
             EncodingType::Dictionary
         } else {
