@@ -1940,7 +1940,10 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
-        backup_manager.write().create_full_backup(tags).await
+        {
+            let mut guard = backup_manager.write();
+            guard.create_full_backup(tags).await
+        }
     }
 
     /// Create an incremental backup
@@ -1953,7 +1956,10 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
-        backup_manager.write().create_incremental_backup(tags).await
+        {
+            let mut guard = backup_manager.write();
+            guard.create_incremental_backup(tags).await
+        }
     }
 
     /// Restore from backup
@@ -1967,10 +1973,10 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
-        backup_manager
-            .write()
-            .restore_backup(backup_id, options)
-            .await
+        {
+            let mut guard = backup_manager.write();
+            guard.restore_backup(backup_id, options).await
+        }
     }
 
     /// List all available backups
@@ -1992,7 +1998,10 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
-        backup_manager.write().delete_backup(backup_id).await
+        {
+            let mut guard = backup_manager.write();
+            guard.delete_backup(backup_id).await
+        }
     }
 
     /// Apply retention policy to clean up old backups

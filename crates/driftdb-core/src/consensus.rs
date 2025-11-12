@@ -335,10 +335,11 @@ impl ConsensusEngine {
 
         *state.write().unwrap() = ConsensusState::Candidate;
 
-        let mut term = current_term.write().unwrap();
-        *term += 1;
-        let election_term = *term;
-        drop(term);
+        let election_term = {
+            let mut term = current_term.write().unwrap();
+            *term += 1;
+            *term
+        }; // Lock dropped here
 
         *voted_for.write().unwrap() = Some(config.node_id.clone());
 

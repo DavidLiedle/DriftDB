@@ -573,20 +573,33 @@ impl ReplicationCoordinator {
     async fn promote_to_master(&self) -> Result<()> {
         info!("Promoting node {} to master", self.node_id);
 
-        let mut state = self.state.write();
-        state.role = NodeRole::Master;
-        state.master_id = Some(self.node_id.clone());
-        state.failover_in_progress = false;
+        let msg = {
+            let mut state = self.state.write();
+            state.role = NodeRole::Master;
+            state.master_id = Some(self.node_id.clone());
+            state.failover_in_progress = false;
+
+            // Prepare announcement message
+            ReplicationMessage::NewMaster {
+                node_id: self.node_id.clone(),
+                sequence: state.last_applied_seq,
+            }
+        }; // Drop lock before async operations
 
         // Announce new master
-        let msg = ReplicationMessage::NewMaster {
-            node_id: self.node_id.clone(),
-            sequence: state.last_applied_seq,
-        };
-
         if let Ok(data) = bincode::serialize(&msg) {
-            for (_, replica) in self.replicas.read().iter() {
-                if let Ok(mut stream) = replica.stream.try_lock() {
+            // Collect replica stream handles (Arc clones)
+            let stream_arcs: Vec<_> = {
+                let replicas = self.replicas.read();
+                replicas
+                    .iter()
+                    .map(|(_, replica)| replica.stream.clone())
+                    .collect()
+            };
+
+            // Send to all streams without holding replicas lock
+            for stream_arc in stream_arcs {
+                if let Ok(mut stream) = stream_arc.try_lock() {
                     let _ = stream.write_all(&data).await;
                 }
             }

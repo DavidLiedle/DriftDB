@@ -252,38 +252,42 @@ impl StreamManager {
             .insert(subscription_id.clone(), subscription.clone());
 
         // Create or update client connection
-        let mut clients = self.clients.write();
-        if let Some(client) = clients.get_mut(&client_id) {
-            client.subscriptions.insert(subscription_id.clone());
-        } else {
-            let mut subscriptions = HashSet::new();
-            subscriptions.insert(subscription_id.clone());
+        {
+            let mut clients = self.clients.write();
+            if let Some(client) = clients.get_mut(&client_id) {
+                client.subscriptions.insert(subscription_id.clone());
+            } else {
+                let mut subscriptions = HashSet::new();
+                subscriptions.insert(subscription_id.clone());
 
-            clients.insert(
-                client_id.clone(),
-                ClientConnection {
-                    id: client_id,
-                    sender: tx.clone(),
-                    subscriptions,
-                    connected_at: std::time::SystemTime::now(),
-                    last_activity: std::time::SystemTime::now(),
-                    bytes_sent: 0,
-                    events_sent: 0,
-                },
-            );
-        }
+                clients.insert(
+                    client_id.clone(),
+                    ClientConnection {
+                        id: client_id,
+                        sender: tx.clone(),
+                        subscriptions,
+                        connected_at: std::time::SystemTime::now(),
+                        last_activity: std::time::SystemTime::now(),
+                        bytes_sent: 0,
+                        events_sent: 0,
+                    },
+                );
+            }
+        } // Drop clients lock
 
         // Create stream processor
-        let processor = StreamProcessor {
-            subscription,
-            state: ProcessorState::Active,
-            buffer: VecDeque::new(),
-            last_sequence: 0,
-        };
+        {
+            let processor = StreamProcessor {
+                subscription,
+                state: ProcessorState::Active,
+                buffer: VecDeque::new(),
+                last_sequence: 0,
+            };
 
-        self.processors
-            .write()
-            .insert(subscription_id.clone(), processor);
+            self.processors
+                .write()
+                .insert(subscription_id.clone(), processor);
+        } // Drop processors lock
 
         // Start processing based on stream type
         self.start_stream_processor(subscription_id.clone(), stream_type)

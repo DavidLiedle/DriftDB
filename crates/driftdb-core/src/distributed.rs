@@ -539,15 +539,17 @@ impl QueryCoordinator {
     pub async fn remove_node(&self, node_id: &str) -> Result<()> {
         info!("Removing node {} from cluster", node_id);
 
-        let mut state = self.cluster_state.write();
+        {
+            let mut state = self.cluster_state.write();
 
-        if let Some(_node) = state.nodes.remove(node_id) {
-            // Update topology
-            self.update_topology(&mut state)?;
+            if let Some(_node) = state.nodes.remove(node_id) {
+                // Update topology
+                self.update_topology(&mut state)?;
+            }
+        } // Drop lock before migrate
 
-            // Migrate data from removed node
-            self.migrate_partitions(node_id).await?;
-        }
+        // Migrate data from removed node (done outside lock)
+        self.migrate_partitions(node_id).await?;
 
         Ok(())
     }
