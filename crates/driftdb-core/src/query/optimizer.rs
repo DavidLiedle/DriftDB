@@ -1,13 +1,11 @@
-/**
- * Query Optimizer for DriftDB
- *
- * Implements cost-based query optimization including:
- * - Index selection
- * - Query plan generation
- * - Statistics-based cost estimation
- * - Query rewriting
- * - Plan caching
- */
+//! Query Optimizer for DriftDB
+//!
+//! Implements cost-based query optimization including:
+//! - Index selection
+//! - Query plan generation
+//! - Statistics-based cost estimation
+//! - Query rewriting
+//! - Plan caching
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -122,7 +120,6 @@ impl QueryOptimizer {
     ) -> Result<QueryPlan> {
         let mut steps = Vec::new();
         let mut total_cost = 0.0;
-        let mut estimated_rows = 0;
 
         // Get table statistics
         let stats = self.get_table_stats(table);
@@ -140,7 +137,7 @@ impl QueryOptimizer {
         let (uses_index, index_name, index_cost, rows_after_index) =
             self.select_index(table, conditions, &stats);
 
-        if uses_index {
+        let mut estimated_rows = if uses_index {
             steps.push(PlanStep {
                 operation: "IndexScan".to_string(),
                 description: format!(
@@ -150,15 +147,15 @@ impl QueryOptimizer {
                 ),
                 estimated_cost: index_cost,
             });
-            estimated_rows = rows_after_index;
+            rows_after_index
         } else {
             steps.push(PlanStep {
                 operation: "TableScan".to_string(),
                 description: format!("Full table scan of '{}'", table),
                 estimated_cost: self.estimate_scan_cost(&stats),
             });
-            estimated_rows = stats.row_count;
-        }
+            stats.row_count
+        };
         total_cost += index_cost;
 
         // Step 3: Filter conditions (those not covered by index)
@@ -223,7 +220,7 @@ impl QueryOptimizer {
         &self,
         table: &str,
         as_of: &Option<AsOf>,
-        stats: &TableStats,
+        _stats: &TableStats,
     ) -> (String, f64) {
         match as_of {
             None => {

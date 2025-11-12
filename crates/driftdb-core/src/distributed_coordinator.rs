@@ -87,7 +87,7 @@ impl DistributedCoordinator {
         let mut cluster_state = self.cluster_state.write();
         cluster_state.total_nodes = config.peers.len() + 1; // Include self
         cluster_state.has_quorum =
-            cluster_state.active_nodes >= (cluster_state.total_nodes / 2) + 1;
+            cluster_state.active_nodes > (cluster_state.total_nodes / 2);
 
         // Initialize peer status
         let mut peer_status = self.peer_status.write();
@@ -196,7 +196,7 @@ impl DistributedCoordinator {
         let healthy_count = peer_status.values().filter(|p| p.is_healthy).count() + 1; // +1 for self
         let mut cluster_state = self.cluster_state.write();
         cluster_state.active_nodes = healthy_count;
-        cluster_state.has_quorum = healthy_count >= (cluster_state.total_nodes / 2) + 1;
+        cluster_state.has_quorum = healthy_count > (cluster_state.total_nodes / 2);
     }
 }
 

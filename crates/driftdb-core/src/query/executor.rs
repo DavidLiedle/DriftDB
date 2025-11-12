@@ -141,24 +141,31 @@ impl Engine {
                 })
             }
             Query::RestoreDatabase {
-                source: _,
-                target: _,
-                verify: _,
-            } => {
-                // TODO: Fix type issues with generic path handling
-                Ok(QueryResult::Success {
-                    message: format!("Restore functionality pending type fixes"),
-                })
-            }
-            Query::RestoreTable {
-                table,
                 source,
                 target: _,
                 verify: _,
             } => {
-                // Table-specific restore would be implemented similarly
-                Ok(QueryResult::Success {
-                    message: format!("Table '{}' restored from '{}'", table, source),
+                // Restore database functionality requires stopping the current engine
+                // and creating a new one from the backup, which is a complex operation.
+                // For now, return an error with instructions.
+                Ok(QueryResult::Error {
+                    message: format!(
+                        "Database restore must be performed when the database is stopped. \
+                         Use the backup module's restore_from_backup() function directly, \
+                         or restore manually by copying files from the backup directory '{}' to your data directory.",
+                        source
+                    ),
+                })
+            }
+            Query::RestoreTable {
+                table: _,
+                source: _,
+                target: _,
+                verify: _,
+            } => {
+                // For now, return error indicating feature not fully implemented
+                Ok(QueryResult::Error {
+                    message: "Table-level restore not yet implemented. Use full database restore instead.".to_string(),
                 })
             }
             Query::ShowBackups { directory } => {

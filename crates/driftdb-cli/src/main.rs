@@ -185,6 +185,9 @@ fn main() -> Result<()> {
                             println!("{}", serde_json::to_string_pretty(&event)?);
                         }
                     }
+                    QueryResult::Plan { plan } => {
+                        println!("{}", serde_json::to_string_pretty(&plan)?);
+                    }
                     QueryResult::Error { message } => eprintln!("Error: {}", message),
                 }
             }

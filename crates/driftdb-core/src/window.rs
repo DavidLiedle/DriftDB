@@ -8,6 +8,10 @@
 //! - PERCENT_RANK(), CUME_DIST(), NTILE()
 //! - Custom window frame specifications (ROWS/RANGE)
 
+// Allow needless_range_loop for window functions - these loops genuinely need
+// the index for complex operations like LAG/LEAD that reference rows at offsets
+#![allow(clippy::needless_range_loop)]
+
 use std::cmp::Ordering;
 use std::collections::HashMap;
 

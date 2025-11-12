@@ -569,8 +569,10 @@ impl AuditSystem {
                 wtr.flush()?;
             }
             ExportFormat::Syslog => {
-                // Would implement syslog format export
-                todo!("Syslog export not yet implemented")
+                // Syslog format export not yet implemented
+                return Err(DriftError::InvalidQuery(
+                    "Syslog export format is not yet implemented. Use JSON or CSV format instead.".to_string()
+                ));
             }
         }
 

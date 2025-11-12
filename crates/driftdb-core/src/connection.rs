@@ -624,12 +624,12 @@ pub struct EngineGuard {
 
 impl EngineGuard {
     /// Get read access to the engine
-    pub fn read(&self) -> parking_lot::RwLockReadGuard<Engine> {
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, Engine> {
         self.engine.read()
     }
 
     /// Get write access to the engine
-    pub fn write(&self) -> parking_lot::RwLockWriteGuard<Engine> {
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, Engine> {
         self.engine.write()
     }
 

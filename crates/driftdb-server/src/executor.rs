@@ -490,6 +490,14 @@ impl<'a> QueryExecutor<'a> {
                     rows: events.into_iter().map(|e| vec![e]).collect(),
                 })
             }
+            CoreResult::Plan { plan } => {
+                // Convert query plan to JSON representation for display
+                let plan_json = serde_json::to_value(&plan)?;
+                Ok(QueryResult::Select {
+                    columns: vec!["query_plan".to_string()],
+                    rows: vec![vec![plan_json]],
+                })
+            }
             CoreResult::Error { message } => Err(anyhow!("SQL execution error: {}", message)),
         }
     }
@@ -571,7 +579,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Get read access to the engine
-    fn engine_read(&self) -> Result<parking_lot::RwLockReadGuard<Engine>> {
+    fn engine_read(&self) -> Result<parking_lot::RwLockReadGuard<'_, Engine>> {
         if let Some(guard) = &self.engine_guard {
             // EngineGuard provides a read() method that returns RwLockReadGuard
             Ok(guard.read())
@@ -583,7 +591,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Get write access to the engine
-    fn engine_write(&self) -> Result<parking_lot::RwLockWriteGuard<Engine>> {
+    fn engine_write(&self) -> Result<parking_lot::RwLockWriteGuard<'_, Engine>> {
         if let Some(guard) = &self.engine_guard {
             // EngineGuard provides a write() method that returns RwLockWriteGuard
             Ok(guard.write())
