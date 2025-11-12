@@ -268,7 +268,7 @@ impl Engine {
                     let schema_file = src_table_dir.join("schema.json");
                     if !schema_file.exists() {
                         return Ok(QueryResult::Error {
-                            message: format!("Backup verification failed: schema.json not found"),
+                            message: "Backup verification failed: schema.json not found".to_string(),
                         });
                     }
                 }

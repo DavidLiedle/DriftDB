@@ -236,7 +236,7 @@ impl WindowExecutor {
             let key = PartitionKey::from_values(&key_values);
             partitions
                 .entry(key)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((idx, row.clone()));
         }
 

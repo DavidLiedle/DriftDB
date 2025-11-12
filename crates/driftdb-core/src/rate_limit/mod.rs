@@ -296,6 +296,12 @@ pub struct LoadMonitor {
     last_update: Mutex<Instant>,
 }
 
+impl Default for LoadMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoadMonitor {
     pub fn new() -> Self {
         Self {

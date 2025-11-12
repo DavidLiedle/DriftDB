@@ -322,6 +322,12 @@ impl Tokenizer {
     }
 }
 
+impl Default for SearchManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchManager {
     /// Create a new search manager
     pub fn new() -> Self {
@@ -375,7 +381,7 @@ impl SearchManager {
             let mut table_indexes = self.table_indexes.write();
             table_indexes
                 .entry(table)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(name.clone());
         }
 
@@ -453,7 +459,7 @@ impl SearchManager {
         for (pos, term) in terms.iter().enumerate() {
             term_counts
                 .entry(term.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(pos);
         }
 
@@ -574,7 +580,7 @@ impl SearchManager {
                                 term_freq.tf_idf;
                             matched_terms
                                 .entry(doc_id.clone())
-                                .or_insert_with(Vec::new)
+                                .or_default()
                                 .push(term.clone());
                         }
                     }
@@ -670,7 +676,7 @@ impl SearchManager {
 
         // Get documents containing the first term
         if let Some(first_term_info) = index.inverted_index.get(&terms[0]) {
-            for (doc_id, _) in &first_term_info.documents {
+            for doc_id in first_term_info.documents.keys() {
                 if self.document_contains_phrase(index, doc_id, terms) {
                     // Calculate phrase score (sum of individual term TF-IDF scores)
                     let mut score = 0.0;

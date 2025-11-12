@@ -317,9 +317,7 @@ impl JoinExecutor {
         let state = storage.reconstruct_state_at(sequence)?;
 
         // Convert to Value and apply alias if needed
-        let mut rows: Vec<Value> = state
-            .into_iter()
-            .map(|(_, row)| {
+        let mut rows: Vec<Value> = state.into_values().map(|row| {
                 // Add table prefix to columns if alias provided
                 if let Some(alias) = alias {
                     if let Value::Object(map) = row {
@@ -339,10 +337,7 @@ impl JoinExecutor {
 
         // Apply WHERE conditions if any
         if !conditions.is_empty() {
-            rows = rows
-                .into_iter()
-                .filter(|row| self.matches_conditions(row, conditions))
-                .collect();
+            rows.retain(|row| self.matches_conditions(row, conditions));
         }
 
         Ok(rows)
@@ -396,7 +391,7 @@ impl JoinExecutor {
                         };
 
                         if let Some(value) = row.get(&col_name) {
-                            let output_name = alias.as_ref().unwrap_or(&column);
+                            let output_name = alias.as_ref().unwrap_or(column);
                             projected_row[output_name] = value.clone();
                         }
                     }

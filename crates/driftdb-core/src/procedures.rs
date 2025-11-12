@@ -430,6 +430,12 @@ pub struct CompiledProcedure {
     pub compiled_at: SystemTime,
 }
 
+impl Default for ProcedureManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcedureManager {
     /// Create a new procedure manager
     pub fn new() -> Self {
@@ -741,16 +747,14 @@ impl ProcedureManager {
         arguments: &HashMap<String, Value>,
     ) -> Result<()> {
         for param in &definition.parameters {
-            if param.direction == ParameterDirection::In
-                || param.direction == ParameterDirection::InOut
-            {
-                if param.is_required && !arguments.contains_key(&param.name) {
+            if (param.direction == ParameterDirection::In
+                || param.direction == ParameterDirection::InOut)
+                && param.is_required && !arguments.contains_key(&param.name) {
                     return Err(DriftError::InvalidQuery(format!(
                         "Required parameter '{}' not provided",
                         param.name
                     )));
                 }
-            }
         }
 
         Ok(())

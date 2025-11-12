@@ -320,8 +320,8 @@ impl ReplicaManager {
             replica.calculate_lag(current_lsn);
 
             // Check heartbeat timeout
-            if !replica.is_healthy(self.config.heartbeat_timeout) {
-                if replica.state != ReplicaState::Disconnected
+            if !replica.is_healthy(self.config.heartbeat_timeout)
+                && replica.state != ReplicaState::Disconnected
                     && replica.state != ReplicaState::Failed
                 {
                     warn!(
@@ -330,7 +330,6 @@ impl ReplicaManager {
                     );
                     replica.state = ReplicaState::Disconnected;
                 }
-            }
 
             // Check lag threshold
             if replica.lag_bytes > self.config.max_lag_bytes {

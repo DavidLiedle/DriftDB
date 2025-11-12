@@ -236,11 +236,10 @@ impl QueryCancellationManager {
         let mut cancelled = Vec::new();
 
         for (id, handle) in queries.iter() {
-            if predicate(handle) {
-                if self.cancel_query(*id).is_ok() {
+            if predicate(handle)
+                && self.cancel_query(*id).is_ok() {
                     cancelled.push(*id);
                 }
-            }
         }
 
         cancelled
@@ -452,11 +451,10 @@ impl QueryCancellationManager {
 
                 for (id, handle) in queries_read.iter() {
                     let state = *handle.state.read();
-                    if state == QueryState::Cancelling {
-                        if handle.started_at.elapsed() > Duration::from_secs(60) {
+                    if state == QueryState::Cancelling
+                        && handle.started_at.elapsed() > Duration::from_secs(60) {
                             stuck_queries.push(*id);
                         }
-                    }
                 }
 
                 drop(queries_read);

@@ -686,14 +686,14 @@ impl AuditStorage {
         if let Some(user) = &event.user {
             self.user_index
                 .entry(user.username.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(event.id);
         }
 
         if let Some(table) = &event.table {
             self.table_index
                 .entry(table.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(event.id);
         }
 

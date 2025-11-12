@@ -273,6 +273,12 @@ struct OptimizerStats {
     indexes_used: u64,
 }
 
+impl Default for CostOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CostOptimizer {
     pub fn new() -> Self {
         Self {
@@ -295,7 +301,7 @@ impl CostOptimizer {
         self.indexes
             .write()
             .entry(info.table.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(info);
     }
 
@@ -460,8 +466,8 @@ impl CostOptimizer {
                         let join_cost = self.estimate_join_cost(
                             left_cost,
                             right_cost,
-                            &left_order,
-                            &right_order,
+                            left_order,
+                            right_order,
                             joins,
                         );
 

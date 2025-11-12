@@ -248,7 +248,7 @@ impl ConnectionHealthPredictor {
 
     /// Record health data for a connection
     pub fn record_health_data(&mut self, connection_id: u64, data: HealthDataPoint) {
-        let history = self.health_history.entry(connection_id).or_insert_with(VecDeque::new);
+        let history = self.health_history.entry(connection_id).or_default();
         history.push_back(data);
 
         // Keep only recent data (last 24 hours worth)

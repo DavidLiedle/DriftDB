@@ -19,10 +19,10 @@ use crate::window::{
 };
 
 thread_local! {
-    static IN_VIEW_EXECUTION: RefCell<bool> = RefCell::new(false);
-    static CURRENT_TRANSACTION: RefCell<Option<u64>> = RefCell::new(None);
-    static OUTER_ROW_CONTEXT: RefCell<Option<Value>> = RefCell::new(None);
-    static IN_RECURSIVE_CTE: RefCell<bool> = RefCell::new(false);
+    static IN_VIEW_EXECUTION: RefCell<bool> = const { RefCell::new(false) };
+    static CURRENT_TRANSACTION: RefCell<Option<u64>> = const { RefCell::new(None) };
+    static OUTER_ROW_CONTEXT: RefCell<Option<Value>> = const { RefCell::new(None) };
+    static IN_RECURSIVE_CTE: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Execute SQL query with parameters (prevents SQL injection)
@@ -41,7 +41,7 @@ pub fn execute_sql_with_params(
 
     // Store parameters in thread-local for safe access during execution
     thread_local! {
-        static QUERY_PARAMS: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+        static QUERY_PARAMS: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
     }
 
     QUERY_PARAMS.with(|p| {
@@ -187,7 +187,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
         }
         Statement::StartTransaction { .. } => {
             // Check if already in a transaction - if so, just return success (idempotent)
-            let existing_txn = CURRENT_TRANSACTION.with(|txn| txn.borrow().clone());
+            let existing_txn = CURRENT_TRANSACTION.with(|txn| *txn.borrow());
             if existing_txn.is_some() {
                 // Already in a transaction, make BEGIN idempotent
                 return Ok(crate::query::QueryResult::Success {
@@ -210,7 +210,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
         }
         Statement::Commit { .. } => {
             // Get current transaction ID from session
-            let txn_id = CURRENT_TRANSACTION.with(|txn| txn.borrow().clone());
+            let txn_id = CURRENT_TRANSACTION.with(|txn| *txn.borrow());
 
             if let Some(transaction_id) = txn_id {
                 engine.commit_transaction(transaction_id)?;
@@ -232,7 +232,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
         }
         Statement::Rollback { .. } => {
             // Get current transaction ID from session
-            let txn_id = CURRENT_TRANSACTION.with(|txn| txn.borrow().clone());
+            let txn_id = CURRENT_TRANSACTION.with(|txn| *txn.borrow());
 
             if let Some(transaction_id) = txn_id {
                 engine.rollback_transaction(transaction_id)?;
@@ -870,7 +870,7 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     let has_subqueries = select
         .selection
         .as_ref()
-        .map_or(false, |expr| contains_subquery(expr));
+        .is_some_and(contains_subquery);
 
     // Check if this might be a correlated subquery
     let is_correlated = OUTER_ROW_CONTEXT.with(|context| context.borrow().is_some());
@@ -1341,10 +1341,10 @@ fn perform_left_join(
             // Handle both unprefixed and prefixed column names in join condition
             let left_val = left_row
                 .get(&left_col)
-                .or_else(|| left_row.get(&format!("right_{}", left_col)));
+                .or_else(|| left_row.get(format!("right_{}", left_col)));
             let right_val = right_row
                 .get(&right_col)
-                .or_else(|| right_row.get(&format!("right_{}", right_col)));
+                .or_else(|| right_row.get(format!("right_{}", right_col)));
 
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
@@ -1627,7 +1627,7 @@ fn execute_insert_values(
     if columns.is_empty() {
         // No explicit columns provided - get schema from table
         let table_columns = engine
-            .get_table_columns(&table)
+            .get_table_columns(table)
             .map_err(|_| DriftError::InvalidQuery(format!("Table '{}' not found", table)))?;
 
         if values.len() != table_columns.len() {
@@ -1668,7 +1668,7 @@ fn execute_insert_values(
         }
 
         // Verify primary key is included
-        let primary_key = engine.get_table_primary_key(&table)?;
+        let primary_key = engine.get_table_primary_key(table)?;
         if !data.contains_key(&primary_key) {
             return Err(DriftError::InvalidQuery(format!(
                 "Primary key '{}' must be specified in INSERT",
@@ -1680,7 +1680,7 @@ fn execute_insert_values(
     // Execute BEFORE INSERT triggers
     let new_row = json!(data);
     let trigger_result = engine.execute_triggers(
-        &table,
+        table,
         crate::triggers::TriggerEvent::Insert,
         crate::triggers::TriggerTiming::Before,
         None,
@@ -1713,7 +1713,7 @@ fn execute_insert_values(
 
     // Execute AFTER INSERT triggers
     engine.execute_triggers(
-        &table,
+        table,
         crate::triggers::TriggerEvent::Insert,
         crate::triggers::TriggerTiming::After,
         None,
@@ -1844,15 +1844,15 @@ fn execute_group_by_aggregation(
                 Expr::Identifier(ident) => {
                     // Check both unprefixed and prefixed column names
                     row.get(&ident.value)
-                        .or_else(|| row.get(&format!("right_{}", ident.value)))
-                        .or_else(|| row.get(&format!("left_{}", ident.value)))
+                        .or_else(|| row.get(format!("right_{}", ident.value)))
+                        .or_else(|| row.get(format!("left_{}", ident.value)))
                 }
                 Expr::CompoundIdentifier(idents) => {
                     // For table.column, just use the column part
                     if let Some(column) = idents.last() {
                         row.get(&column.value)
-                            .or_else(|| row.get(&format!("right_{}", column.value)))
-                            .or_else(|| row.get(&format!("left_{}", column.value)))
+                            .or_else(|| row.get(format!("right_{}", column.value)))
+                            .or_else(|| row.get(format!("left_{}", column.value)))
                     } else {
                         None
                     }
@@ -1881,8 +1881,8 @@ fn execute_group_by_aggregation(
                     Expr::Identifier(ident) => {
                         let value = first_row
                             .get(&ident.value)
-                            .or_else(|| first_row.get(&format!("right_{}", ident.value)))
-                            .or_else(|| first_row.get(&format!("left_{}", ident.value)));
+                            .or_else(|| first_row.get(format!("right_{}", ident.value)))
+                            .or_else(|| first_row.get(format!("left_{}", ident.value)));
 
                         if let Some(val) = value {
                             result_row.insert(ident.value.clone(), val.clone());
@@ -1892,8 +1892,8 @@ fn execute_group_by_aggregation(
                         if let Some(column) = idents.last() {
                             let value = first_row
                                 .get(&column.value)
-                                .or_else(|| first_row.get(&format!("right_{}", column.value)))
-                                .or_else(|| first_row.get(&format!("left_{}", column.value)));
+                                .or_else(|| first_row.get(format!("right_{}", column.value)))
+                                .or_else(|| first_row.get(format!("left_{}", column.value)));
 
                             if let Some(val) = value {
                                 result_row.insert(column.value.clone(), val.clone());
@@ -1924,7 +1924,7 @@ fn execute_group_by_aggregation(
                     if let Some(first_row) = group_rows.first() {
                         if let Some(val) = first_row.get(&ident.value) {
                             result_row.insert(ident.value.clone(), val.clone());
-                        } else if let Some(val) = first_row.get(&format!("right_{}", ident.value)) {
+                        } else if let Some(val) = first_row.get(format!("right_{}", ident.value)) {
                             result_row.insert(ident.value.clone(), val.clone());
                         }
                     }
@@ -1936,7 +1936,7 @@ fn execute_group_by_aggregation(
                             if let Some(val) = first_row.get(&column.value) {
                                 result_row.insert(column.value.clone(), val.clone());
                             } else if let Some(val) =
-                                first_row.get(&format!("right_{}", column.value))
+                                first_row.get(format!("right_{}", column.value))
                             {
                                 result_row.insert(column.value.clone(), val.clone());
                             }
@@ -1950,7 +1950,7 @@ fn execute_group_by_aggregation(
                     if let Some(first_row) = group_rows.first() {
                         if let Some(val) = first_row.get(&ident.value) {
                             result_row.insert(alias.value.clone(), val.clone());
-                        } else if let Some(val) = first_row.get(&format!("right_{}", ident.value)) {
+                        } else if let Some(val) = first_row.get(format!("right_{}", ident.value)) {
                             result_row.insert(alias.value.clone(), val.clone());
                         }
                     }
@@ -2017,8 +2017,8 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
     // Helper to get column value, checking both original and prefixed names
     let get_column_value = |row: &Value, col: &str| -> Option<Value> {
         row.get(col)
-            .or_else(|| row.get(&format!("right_{}", col)))
-            .or_else(|| row.get(&format!("left_{}", col)))
+            .or_else(|| row.get(format!("right_{}", col)))
+            .or_else(|| row.get(format!("left_{}", col)))
             .cloned()
     };
 
@@ -2906,7 +2906,7 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                     // Look for the column in the row (with prefix handling)
                     if let Some(val) = row.get(&ident.value) {
                         projected_row.insert(ident.value.clone(), val.clone());
-                    } else if let Some(val) = row.get(&format!("right_{}", ident.value)) {
+                    } else if let Some(val) = row.get(format!("right_{}", ident.value)) {
                         projected_row.insert(ident.value.clone(), val.clone());
                     }
                 }
@@ -2932,7 +2932,7 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                 } => {
                     if let Some(val) = row.get(&ident.value) {
                         projected_row.insert(alias.value.clone(), val.clone());
-                    } else if let Some(val) = row.get(&format!("right_{}", ident.value)) {
+                    } else if let Some(val) = row.get(format!("right_{}", ident.value)) {
                         projected_row.insert(alias.value.clone(), val.clone());
                     }
                 }
@@ -2955,7 +2955,7 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                     if let Some(column) = idents.last() {
                         if let Some(val) = row.get(&column.value) {
                             projected_row.insert(column.value.clone(), val.clone());
-                        } else if let Some(val) = row.get(&format!("right_{}", column.value)) {
+                        } else if let Some(val) = row.get(format!("right_{}", column.value)) {
                             projected_row.insert(column.value.clone(), val.clone());
                         }
                     }
@@ -2986,11 +2986,11 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                         let val = if table_alias == "c" {
                             // customers table - look for name (might be unprefixed if it came first)
                             row.get(column)
-                                .or_else(|| row.get(&format!("t1_{}", column)))
+                                .or_else(|| row.get(format!("t1_{}", column)))
                         } else if table_alias == "p" {
                             // products table - likely prefixed due to conflict
-                            row.get(&format!("t1_{}", column))
-                                .or_else(|| row.get(&format!("t2_{}", column)))
+                            row.get(format!("t1_{}", column))
+                                .or_else(|| row.get(format!("t2_{}", column)))
                                 .or_else(|| row.get(column))
                         } else if table_alias == "o" {
                             // orders table - original left table
@@ -3075,7 +3075,7 @@ fn process_scalar_subqueries(
                     } => (Some(subquery), alias.value.clone()),
                     SelectItem::UnnamedExpr(Expr::Subquery(subquery)) => {
                         // Generate a column name for unnamed subquery
-                        (Some(subquery), format!("(subquery)"))
+                        (Some(subquery), "(subquery)".to_string())
                     }
                     _ => (None, String::new()),
                 };
@@ -3277,13 +3277,13 @@ fn compare_rows_by_expr(
     // Get values from both rows - check for prefixed columns too
     let a_val = a
         .get(&column)
-        .or_else(|| a.get(&format!("right_{}", column)))
-        .or_else(|| a.get(&format!("left_{}", column)));
+        .or_else(|| a.get(format!("right_{}", column)))
+        .or_else(|| a.get(format!("left_{}", column)));
 
     let b_val = b
         .get(&column)
-        .or_else(|| b.get(&format!("right_{}", column)))
-        .or_else(|| b.get(&format!("left_{}", column)));
+        .or_else(|| b.get(format!("right_{}", column)))
+        .or_else(|| b.get(format!("left_{}", column)));
 
     match (a_val, b_val) {
         (Some(a_val), Some(b_val)) => {
@@ -3605,7 +3605,7 @@ fn execute_create_table(
                         "fk_{}_{}_{}",
                         table_name,
                         fk_columns.first().unwrap_or(&"unknown".to_string()),
-                        foreign_table.to_string()
+                        foreign_table
                     ),
                     constraint_type: crate::constraints::ConstraintType::ForeignKey {
                         columns: fk_columns,

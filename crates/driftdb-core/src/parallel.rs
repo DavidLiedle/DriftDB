@@ -282,7 +282,7 @@ impl ParallelExecutor {
         for row in data {
             if let Some(key_value) = row.get(group_key) {
                 let key = key_value.to_string();
-                groups.entry(key).or_insert_with(Vec::new).push(row);
+                groups.entry(key).or_default().push(row);
             }
         }
 

@@ -328,11 +328,10 @@ impl ConsensusEngine {
         log: &Arc<RwLock<Vec<LogEntry>>>,
         transport: &Arc<dyn Transport>,
     ) {
-        if config.pre_vote_enabled {
-            if !Self::conduct_pre_vote(config, log, transport).await {
+        if config.pre_vote_enabled
+            && !Self::conduct_pre_vote(config, log, transport).await {
                 return;
             }
-        }
 
         *state.write().unwrap() = ConsensusState::Candidate;
 
@@ -347,7 +346,7 @@ impl ConsensusEngine {
         let last_log_term = log.read().unwrap().last().map(|e| e.term).unwrap_or(0);
 
         let mut votes = 1;
-        let majority = (config.peers.len() + 1) / 2 + 1;
+        let majority = config.peers.len().div_ceil(2) + 1;
 
         for peer in &config.peers {
             let req = RequestVoteRequest {
@@ -395,7 +394,7 @@ impl ConsensusEngine {
         let last_log_term = log.read().unwrap().last().map(|e| e.term).unwrap_or(0);
 
         let mut votes = 1;
-        let majority = (config.peers.len() + 1) / 2 + 1;
+        let majority = config.peers.len().div_ceil(2) + 1;
 
         for peer in &config.peers {
             let req = PreVoteRequest {
@@ -753,6 +752,12 @@ struct SnapshotMetadata {
     path: String,
 }
 
+impl Default for SnapshotManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SnapshotManager {
     pub fn new() -> Self {
         Self {
@@ -789,6 +794,12 @@ pub struct ConsensusMetrics {
     pub entries_replicated: u64,
     pub snapshots_created: u64,
     pub snapshots_installed: u64,
+}
+
+impl Default for ConsensusMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConsensusMetrics {

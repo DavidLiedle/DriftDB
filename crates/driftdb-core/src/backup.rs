@@ -99,7 +99,7 @@ impl BackupManager {
                     let table_info = self.backup_table_full(&table_name, backup_path)?;
 
                     // Track sequence ranges
-                    if table_info.segments_backed_up.len() > 0 {
+                    if !table_info.segments_backed_up.is_empty() {
                         let first_seg = &table_info.segments_backed_up[0];
                         let last_seg = table_info.segments_backed_up.last().unwrap();
                         global_start_seq = global_start_seq.min(first_seg.start_sequence);
@@ -186,12 +186,12 @@ impl BackupManager {
                         self.backup_table_incremental(&table_name, backup_path, since_sequence)?;
 
                     // Track sequence ranges
-                    if table_info.segments_backed_up.len() > 0 {
+                    if !table_info.segments_backed_up.is_empty() {
                         let last_seg = table_info.segments_backed_up.last().unwrap();
                         global_end_seq = global_end_seq.max(last_seg.end_sequence);
                     }
 
-                    if table_info.segments_backed_up.len() > 0 {
+                    if !table_info.segments_backed_up.is_empty() {
                         table_infos.push(table_info);
                     }
                 }
@@ -315,7 +315,7 @@ impl BackupManager {
             let table_backup = backup_path.join("tables").join(&table_info.name);
 
             // For incremental backups, table dir might not exist if no changes
-            if table_info.segments_backed_up.len() > 0 && !table_backup.exists() {
+            if !table_info.segments_backed_up.is_empty() && !table_backup.exists() {
                 error!("Table backup missing: {}", table_info.name);
                 return Ok(false);
             }

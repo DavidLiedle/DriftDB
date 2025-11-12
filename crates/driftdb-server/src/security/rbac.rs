@@ -388,7 +388,7 @@ impl RbacManager {
         let mut user_roles = self.user_roles.write();
         user_roles
             .entry(username.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(role_name.to_string());
 
         info!("Granted role '{}' to user '{}'", role_name, username);

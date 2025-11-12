@@ -421,8 +421,10 @@ impl AdaptiveConnectionPool {
             );
 
             // Move to active connections
-            let mut active = self.active_connections.write();
-            active.insert(conn_info.id.clone(), conn_info);
+            {
+                let mut active = self.active_connections.write();
+                active.insert(conn_info.id.clone(), conn_info);
+            } // Drop lock before await
 
             self.update_stats_on_acquire().await;
             return Ok(connection);
@@ -440,8 +442,10 @@ impl AdaptiveConnectionPool {
             );
 
             // Add to active connections
-            let mut active = self.active_connections.write();
-            active.insert(conn_info.id.clone(), conn_info);
+            {
+                let mut active = self.active_connections.write();
+                active.insert(conn_info.id.clone(), conn_info);
+            } // Drop lock before await
 
             self.update_stats_on_acquire().await;
             return Ok(connection);
@@ -456,21 +460,23 @@ impl AdaptiveConnectionPool {
         connection_id: String,
         performance: ConnectionPerformance,
     ) {
-        let mut active = self.active_connections.write();
-        if let Some(mut conn_info) = active.remove(&connection_id) {
-            conn_info.in_use = false;
-            conn_info.performance = performance;
+        {
+            let mut active = self.active_connections.write();
+            if let Some(mut conn_info) = active.remove(&connection_id) {
+                conn_info.in_use = false;
+                conn_info.performance = performance;
 
-            // Check if connection should be retired
-            if self.should_retire_connection(&conn_info) {
-                debug!("Retiring connection {} due to age/health", connection_id);
-                drop(conn_info);
-            } else {
-                // Return to available pool
-                let mut available = self.available_connections.lock();
-                available.push_back(conn_info);
+                // Check if connection should be retired
+                if self.should_retire_connection(&conn_info) {
+                    debug!("Retiring connection {} due to age/health", connection_id);
+                    drop(conn_info);
+                } else {
+                    // Return to available pool
+                    let mut available = self.available_connections.lock();
+                    available.push_back(conn_info);
+                }
             }
-        }
+        } // Drop lock before await
 
         self.update_stats_on_return().await;
     }

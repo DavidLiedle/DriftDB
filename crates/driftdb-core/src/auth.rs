@@ -590,7 +590,7 @@ impl AuthManager {
         sessions.insert(token.clone(), session.clone());
         user_sessions
             .entry(user_id)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(token);
 
         Ok(session)

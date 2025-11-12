@@ -116,7 +116,7 @@ impl OptimizedQueryExecutor {
         }
 
         // Convert QueryResult to Value
-        result.map(|query_result| Self::query_result_to_json(query_result))
+        result.map(Self::query_result_to_json)
     }
 
     /// Convert QueryResult to JSON Value

@@ -281,14 +281,13 @@ impl MVCCManager {
         if self.config.detect_write_conflicts {
             let active_txns = self.active_txns.read();
             for (other_txn_id, other_txn) in active_txns.iter() {
-                if *other_txn_id != txn.id {
-                    if other_txn.write_set.read().contains_key(&record_id) {
+                if *other_txn_id != txn.id
+                    && other_txn.write_set.read().contains_key(&record_id) {
                         return Err(DriftError::Other(format!(
                             "Write conflict on record {:?}",
                             record_id
                         )));
                     }
-                }
             }
         }
 
@@ -427,7 +426,7 @@ impl MVCCManager {
             }
 
             // Check previous version
-            current = v.prev_version.as_ref().map(|b| &**b);
+            current = v.prev_version.as_deref();
         }
 
         Ok(None)
@@ -593,7 +592,7 @@ impl LockManager {
 
             // Update wait graph for deadlock detection
             let mut wait_graph = self.wait_graph.write();
-            let waiting_for = wait_graph.entry(txn_id).or_insert_with(HashSet::new);
+            let waiting_for = wait_graph.entry(txn_id).or_default();
             waiting_for.extend(&lock_info.holders);
 
             Err(DriftError::Other("Lock acquisition blocked".to_string()))

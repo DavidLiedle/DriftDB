@@ -170,6 +170,12 @@ pub struct TriggerStatistics {
     pub avg_execution_time_ms: f64,
 }
 
+impl Default for TriggerManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TriggerManager {
     /// Create a new trigger manager
     pub fn new() -> Self {
@@ -220,7 +226,7 @@ impl TriggerManager {
             let mut by_table = self.triggers_by_table.write();
             by_table
                 .entry(table_name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(definition.clone());
         }
 
@@ -668,7 +674,7 @@ impl TriggerManager {
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     Value::Null => "NULL".to_string(),
-                    _ => format!("'{}'", value.to_string()),
+                    _ => format!("'{}'", value),
                 };
                 eval_condition = eval_condition.replace(&placeholder, &value_str);
             }
@@ -682,7 +688,7 @@ impl TriggerManager {
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     Value::Null => "NULL".to_string(),
-                    _ => format!("'{}'", value.to_string()),
+                    _ => format!("'{}'", value),
                 };
                 eval_condition = eval_condition.replace(&placeholder, &value_str);
             }

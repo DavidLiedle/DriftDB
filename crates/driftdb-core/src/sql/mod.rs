@@ -22,6 +22,12 @@ pub use parser::TemporalSqlParser as Parser; // Alias for compatibility
 // Simplified Executor wrapper that doesn't require mutable reference
 pub struct Executor;
 
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Executor {
     pub fn new() -> Self {
         Executor
@@ -135,7 +141,7 @@ impl SystemTimeClause {
         if normalized.contains("AS OF") {
             if normalized.contains("CURRENT_TIMESTAMP") {
                 Ok(SystemTimeClause::AsOf(TemporalPoint::CurrentTimestamp))
-            } else if let Some(ts_str) = Self::extract_timestamp(&expr) {
+            } else if let Some(ts_str) = Self::extract_timestamp(expr) {
                 let dt = DateTime::parse_from_rfc3339(&ts_str)
                     .map_err(|e| format!("Invalid timestamp: {}", e))?
                     .with_timezone(&Utc);

@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use serde_json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;

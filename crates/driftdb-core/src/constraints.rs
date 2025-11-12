@@ -100,6 +100,12 @@ struct ForeignKeyGraph {
     dependencies: HashMap<String, Vec<(String, Constraint)>>,
 }
 
+impl Default for ConstraintManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConstraintManager {
     pub fn new() -> Self {
         Self {
@@ -129,7 +135,7 @@ impl ConstraintManager {
         // Store constraint
         self.constraints
             .entry(constraint.table_name.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(constraint);
 
         Ok(())
@@ -150,7 +156,7 @@ impl ConstraintManager {
         for constraint in table_constraints.unwrap() {
             match &constraint.constraint_type {
                 ConstraintType::NotNull { column } => {
-                    if record.get(column).map_or(true, |v| v.is_null()) {
+                    if record.get(column).is_none_or(|v| v.is_null()) {
                         return Err(anyhow!(
                             "NOT NULL constraint violation: column '{}' cannot be null",
                             column
@@ -181,7 +187,7 @@ impl ConstraintManager {
                 }
                 ConstraintType::Default { column, value } => {
                     // Apply default if column is missing or null
-                    if record.get(column).map_or(true, |v| v.is_null()) {
+                    if record.get(column).is_none_or(|v| v.is_null()) {
                         if let Some(obj) = record.as_object_mut() {
                             obj.insert(column.clone(), value.clone());
                         }
@@ -265,7 +271,7 @@ impl ConstraintManager {
                 {
                     // Check if any child records reference this record
                     let child_refs = self.find_referencing_records(
-                        &child_table,
+                        child_table,
                         columns,
                         record,
                         reference_columns,
@@ -500,7 +506,7 @@ impl ForeignKeyGraph {
     ) {
         self.dependencies
             .entry(parent_table)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((child_table, constraint));
     }
 

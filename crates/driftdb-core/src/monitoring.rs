@@ -803,7 +803,7 @@ impl AlertManager {
 
         let rules = self.rules.read().clone();
         for rule in &rules {
-            if let Some(alert) = self.evaluate_rule(&rule, &snapshot) {
+            if let Some(alert) = self.evaluate_rule(rule, &snapshot) {
                 new_alerts.push(alert.clone());
 
                 // Send notifications
@@ -873,27 +873,27 @@ impl PrometheusExporter {
         let mut output = String::new();
 
         // System metrics
-        output.push_str(&format!("# TYPE cpu_usage_percent gauge\n"));
+        output.push_str(&"# TYPE cpu_usage_percent gauge\n".to_string());
         output.push_str(&format!(
             "cpu_usage_percent {}\n",
             snapshot.system.cpu_usage_percent
         ));
 
-        output.push_str(&format!("# TYPE memory_usage_bytes gauge\n"));
+        output.push_str(&"# TYPE memory_usage_bytes gauge\n".to_string());
         output.push_str(&format!(
             "memory_usage_bytes {}\n",
             snapshot.system.memory_usage_bytes
         ));
 
         // Database metrics
-        output.push_str(&format!("# TYPE database_tables_count gauge\n"));
+        output.push_str(&"# TYPE database_tables_count gauge\n".to_string());
         output.push_str(&format!(
             "database_tables_count {}\n",
             snapshot.database.tables_count
         ));
 
         // Query metrics
-        output.push_str(&format!("# TYPE query_avg_time_ms histogram\n"));
+        output.push_str(&"# TYPE query_avg_time_ms histogram\n".to_string());
         output.push_str(&format!(
             "query_avg_time_ms {}\n",
             snapshot.query.avg_query_time_ms

@@ -145,6 +145,12 @@ pub struct MvccStats {
     gc_collected: u64,
 }
 
+impl Default for MvccEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MvccEngine {
     pub fn new() -> Self {
         Self {
@@ -269,7 +275,7 @@ impl MvccEngine {
         let table_versions = version_store
             .tables
             .entry(table.to_string())
-            .or_insert_with(HashMap::new);
+            .or_default();
 
         let version_chain =
             table_versions
@@ -408,7 +414,7 @@ impl MvccEngine {
             }
 
             // Move to previous version
-            current = version.prev.as_ref().map(|b| &**b);
+            current = version.prev.as_deref();
         }
 
         Ok(None)
@@ -443,7 +449,7 @@ impl MvccEngine {
                     self.waits_for
                         .lock()
                         .entry(txn_id)
-                        .or_insert_with(HashSet::new)
+                        .or_default()
                         .insert(holder);
 
                     // Wait and retry
@@ -621,7 +627,7 @@ impl MvccEngine {
                 }
             }
 
-            current = version.prev.as_mut().map(|b| &mut **b);
+            current = version.prev.as_deref_mut();
         }
 
         collected

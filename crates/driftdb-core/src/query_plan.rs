@@ -151,6 +151,12 @@ pub struct QueryPlanBuilder {
     optimization_rules: Vec<Box<dyn OptimizationRule>>,
 }
 
+impl Default for QueryPlanBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryPlanBuilder {
     pub fn new() -> Self {
         Self {
@@ -377,7 +383,7 @@ impl QueryPlanVisualizer {
             for rule in &plan.optimization_rules_applied {
                 output.push_str(&format!("  - {}\n", rule));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         output.push_str(&format!("Estimated Cost: {:.2}\n", plan.estimated_cost));
@@ -405,7 +411,7 @@ impl QueryPlanVisualizer {
             if let Some(actual_rows) = node.actual_rows {
                 output.push_str(&format!(" (actual: {})", actual_rows));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         if self.show_actual_stats && node.actual_time_ms.is_some() {
@@ -674,6 +680,12 @@ pub struct PlanAnalyzer {
     suggestions: Vec<String>,
 }
 
+impl Default for PlanAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlanAnalyzer {
     pub fn new() -> Self {
         Self {
@@ -833,6 +845,12 @@ struct NodeTiming {
     memory_peak: usize,
 }
 
+impl Default for PlanExecutionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlanExecutionTracker {
     pub fn new() -> Self {
         Self {
@@ -867,7 +885,7 @@ impl PlanExecutionTracker {
     }
 
     pub fn generate_profile(&self, plan: &mut QueryPlan) {
-        self.update_node_stats(&mut Arc::get_mut(&mut plan.root).unwrap());
+        self.update_node_stats(Arc::get_mut(&mut plan.root).unwrap());
     }
 
     fn update_node_stats(&self, node: &mut PlanNode) {

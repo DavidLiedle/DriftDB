@@ -240,6 +240,12 @@ struct ProcedureStatistics {
     cache_misses: u64,
 }
 
+impl Default for ProcedureManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcedureManager {
     pub fn new() -> Self {
         Self {

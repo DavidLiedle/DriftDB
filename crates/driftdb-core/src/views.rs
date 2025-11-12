@@ -150,7 +150,7 @@ impl ViewDependencyGraph {
         for dep in deps {
             self.dependents
                 .entry(dep)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(view_name.clone());
         }
     }
@@ -220,6 +220,12 @@ pub struct ViewStatistics {
     pub cache_misses: u64,
     pub refresh_count: u64,
     pub avg_query_time_ms: f64,
+}
+
+impl Default for ViewManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ViewManager {

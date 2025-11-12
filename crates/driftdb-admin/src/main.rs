@@ -800,7 +800,7 @@ async fn compact_storage(
 
         for i in 0..100 {
             pb.set_position(i);
-            pb.set_message(format!("Compacting segments"));
+            pb.set_message("Compacting segments".to_string());
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 

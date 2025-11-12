@@ -158,9 +158,7 @@ impl TlsManager {
         let cert_chain = rustls_pemfile::certs(&mut cert_reader)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| anyhow!("Failed to parse certificate: {}", e))?
-            .into_iter()
-            .map(rustls::pki_types::CertificateDer::from)
-            .collect();
+            .into_iter().collect();
 
         // Read private key
         let key_file = tokio::fs::read(&config.key_path).await
@@ -322,7 +320,7 @@ pub fn generate_self_signed_cert(cert_path: &Path, key_path: &Path) -> Result<()
 
     // Add subject alternative names
     params.subject_alt_names = vec![
-        SanType::DnsName("localhost".try_into().unwrap()),
+        SanType::DnsName("localhost".into()),
         SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
         SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
     ];

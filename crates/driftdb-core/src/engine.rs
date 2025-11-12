@@ -987,7 +987,7 @@ impl Engine {
     pub fn get_total_database_size(&self) -> u64 {
         let mut total_size = 0u64;
 
-        for (_, storage) in &self.tables {
+        for storage in self.tables.values() {
             if let Ok(size) = storage.calculate_size_bytes() {
                 total_size += size;
             }
@@ -998,10 +998,10 @@ impl Engine {
 
     /// Create a view
     pub fn create_view(&self, definition: ViewDefinition) -> Result<()> {
-        let result = self.view_manager.create_view(definition)?;
+        self.view_manager.create_view(definition)?;
         // Save views to disk after creating
         self.save_views()?;
-        Ok(result)
+        Ok(())
     }
 
     /// Create a view using builder pattern
@@ -1015,10 +1015,10 @@ impl Engine {
 
     /// Drop a view
     pub fn drop_view(&self, view_name: &str, cascade: bool) -> Result<()> {
-        let result = self.view_manager.drop_view(view_name, cascade)?;
+        self.view_manager.drop_view(view_name, cascade)?;
         // Save views to disk after dropping
         self.save_views()?;
-        Ok(result)
+        Ok(())
     }
 
     /// Query a view
@@ -1512,7 +1512,7 @@ impl Engine {
         for column in &schema.columns {
             if let Some(obj) = record.as_object_mut() {
                 // If column is missing or null, check if it has auto-increment
-                if obj.get(&column.name).map_or(true, |v| v.is_null()) {
+                if obj.get(&column.name).is_none_or(|v| v.is_null()) {
                     // Try to get auto-increment value
                     if let Ok(next_val) = self
                         .sequence_manager

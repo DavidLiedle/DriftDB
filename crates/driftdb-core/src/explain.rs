@@ -14,8 +14,10 @@ use crate::errors::Result;
 
 /// EXPLAIN output format
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ExplainFormat {
     /// Human-readable text format
+    #[default]
     Text,
     /// JSON format for programmatic consumption
     Json,
@@ -25,11 +27,6 @@ pub enum ExplainFormat {
     Tree,
 }
 
-impl Default for ExplainFormat {
-    fn default() -> Self {
-        ExplainFormat::Text
-    }
-}
 
 /// EXPLAIN options
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +126,7 @@ impl ExplainPlan {
     pub fn format_text(&self, options: &ExplainOptions) -> String {
         let mut output = String::new();
 
-        output.push_str(&format!("Query Plan\n"));
+        output.push_str(&"Query Plan\n".to_string());
         output.push_str(&format!("{}\n", "=".repeat(60)));
 
         self.format_node_text(&self.plan, 0, &mut output, options);

@@ -383,7 +383,7 @@ impl RaftNodeInner {
 
         // Request votes from all peers
         let votes_received = 1; // Vote for self
-        let majority = (self.config.peers.len() + 1) / 2 + 1;
+        let majority = self.config.peers.len().div_ceil(2) + 1;
 
         for peer_id in self.config.peers.keys() {
             let message = RaftMessage::RequestVote {
@@ -656,7 +656,7 @@ impl RaftNodeInner {
                     && persistent
                         .voted_for
                         .as_ref()
-                        .map_or(true, |v| v == &candidate_id)
+                        .is_none_or(|v| v == &candidate_id)
                 {
                     persistent.voted_for = Some(candidate_id);
                     vote_granted = true;

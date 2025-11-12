@@ -170,7 +170,7 @@ impl ForeignKeyManager {
         self.table_constraints
             .write()
             .entry(child_table.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(name.clone());
 
         // Update reference index
@@ -178,12 +178,12 @@ impl ForeignKeyManager {
         index
             .parent_to_children
             .entry(parent_table.clone())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(child_table.clone());
         index
             .child_to_parents
             .entry(child_table)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(parent_table);
 
         Ok(())
@@ -352,7 +352,7 @@ impl ForeignKeyManager {
                         cascade_result
                             .deleted_rows
                             .entry(constraint.child_table.clone())
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .extend(dependent_rows);
 
                         cascade_result.affected_tables.push(constraint.child_table);
@@ -361,7 +361,7 @@ impl ForeignKeyManager {
                         cascade_result
                             .nullified_rows
                             .entry(constraint.child_table.clone())
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .extend(dependent_rows);
 
                         cascade_result.affected_tables.push(constraint.child_table);
@@ -371,7 +371,7 @@ impl ForeignKeyManager {
                         cascade_result
                             .updated_rows
                             .entry(constraint.child_table.clone())
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .extend(dependent_rows);
 
                         cascade_result.affected_tables.push(constraint.child_table);

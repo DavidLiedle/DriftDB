@@ -12,6 +12,12 @@ pub struct TemporalSqlParser {
     dialect: GenericDialect,
 }
 
+impl Default for TemporalSqlParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TemporalSqlParser {
     pub fn new() -> Self {
         Self {
@@ -86,11 +92,11 @@ impl TemporalSqlParser {
         let upper = clause.to_uppercase();
 
         if upper.contains("AS OF") {
-            self.parse_as_of(&clause)
+            self.parse_as_of(clause)
         } else if upper.contains("BETWEEN") && upper.contains("AND") {
-            self.parse_between(&clause)
+            self.parse_between(clause)
         } else if upper.contains("FROM") && upper.contains("TO") {
-            self.parse_from_to(&clause)
+            self.parse_from_to(clause)
         } else if upper.contains("ALL") {
             Ok(SystemTimeClause::All)
         } else {

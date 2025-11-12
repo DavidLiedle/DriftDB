@@ -48,12 +48,12 @@ impl ViewDependencyGraph {
     fn add_dependency(&mut self, view: &str, depends_on: &str) {
         self.dependencies
             .entry(view.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(depends_on.to_string());
 
         self.dependents
             .entry(depends_on.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(view.to_string());
     }
 
@@ -150,7 +150,7 @@ impl SqlViewManager {
 
                 // Determine refresh policy for materialized views
                 let refresh_policy = if *materialized {
-                    Some(self.parse_refresh_policy(&options)?)
+                    Some(self.parse_refresh_policy(options)?)
                 } else {
                     None
                 };

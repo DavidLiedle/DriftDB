@@ -408,7 +408,7 @@ impl QueryOptimizer {
     /// Register an index
     pub fn register_index(&self, table: String, column: String) {
         let mut indexes = self.indexes.write().unwrap();
-        indexes.entry(table).or_insert_with(Vec::new).push(column);
+        indexes.entry(table).or_default().push(column);
     }
 
     /// Generate cache key for query plan

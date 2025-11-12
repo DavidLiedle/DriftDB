@@ -230,7 +230,7 @@ impl QueryCache {
         }
 
         stats.total_size_bytes += size_bytes;
-        stats.avg_entry_size = if cache.len() > 0 {
+        stats.avg_entry_size = if !cache.is_empty() {
             stats.total_size_bytes / cache.len()
         } else {
             0
@@ -322,7 +322,7 @@ impl QueryCache {
             }
         }
 
-        if cache.len() > 0 {
+        if !cache.is_empty() {
             stats.avg_entry_size = stats.total_size_bytes / cache.len();
         }
     }

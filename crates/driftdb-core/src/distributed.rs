@@ -572,7 +572,7 @@ impl QueryCoordinator {
                 .topology
                 .data_centers
                 .entry(node_info.data_center.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(node_id.clone());
         }
 

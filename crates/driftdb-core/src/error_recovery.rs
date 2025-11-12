@@ -422,7 +422,7 @@ impl RecoveryManager {
                 let entry = entry?;
                 let path = entry.path();
 
-                if path.is_file() && path.extension().map_or(false, |ext| ext == "seg") {
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "seg") {
                     segments.push(path);
                 } else if path.is_dir() {
                     scan_directory(&path, segments)?;

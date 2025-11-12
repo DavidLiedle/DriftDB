@@ -260,7 +260,7 @@ impl Message {
 
                 // Calculate length
                 let mut len = 4; // Length itself
-                for (_code, value) in fields {
+                for value in fields.values() {
                     len += 1 + value.len() + 1; // Code + value + null
                 }
                 len += 1; // Final null

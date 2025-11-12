@@ -643,8 +643,8 @@ impl Cache {
 
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
-            && self.segment_hot.as_ref().map_or(true, |h| h.is_empty())
-            && self.segment_cold.as_ref().map_or(true, |c| c.is_empty())
+            && self.segment_hot.as_ref().is_none_or(|h| h.is_empty())
+            && self.segment_cold.as_ref().is_none_or(|c| c.is_empty())
     }
 
     fn entry_count(&self) -> usize {
@@ -669,7 +669,7 @@ impl InvalidationManager {
 
         for table in tables {
             deps.entry(table)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(key.clone());
         }
 

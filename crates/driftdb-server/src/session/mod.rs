@@ -562,7 +562,7 @@ impl Session {
                 let error_msg = if self
                     .auth_db
                     .get_user_info(username)
-                    .map_or(false, |user| user.is_locked())
+                    .is_some_and(|user| user.is_locked())
                 {
                     "User account is temporarily locked due to failed login attempts"
                 } else {
@@ -659,7 +659,7 @@ impl Session {
                 }
 
                 // Record successful query metrics if registry is available
-                if crate::metrics::REGISTRY.gather().len() > 0 {
+                if !crate::metrics::REGISTRY.gather().is_empty() {
                     crate::metrics::record_query(&query_type, "success", duration_secs);
                 }
 
@@ -691,7 +691,7 @@ impl Session {
                 error!("Query error: {}", e);
 
                 // Record failed query metrics if registry is available
-                if crate::metrics::REGISTRY.gather().len() > 0 {
+                if !crate::metrics::REGISTRY.gather().is_empty() {
                     crate::metrics::record_query(&query_type, "error", duration_secs);
                     crate::metrics::record_error("query", &query_type);
                 }
@@ -1309,7 +1309,7 @@ impl Session {
                         }
 
                         // Record successful query metrics if registry is available
-                        if crate::metrics::REGISTRY.gather().len() > 0 {
+                        if !crate::metrics::REGISTRY.gather().is_empty() {
                             let query_type = determine_query_type(&sql);
                             crate::metrics::record_query(&query_type, "success", duration_secs);
                         }
@@ -1341,7 +1341,7 @@ impl Session {
                         error!("Execute error: {}", e);
 
                         // Record failed query metrics if registry is available
-                        if crate::metrics::REGISTRY.gather().len() > 0 {
+                        if !crate::metrics::REGISTRY.gather().is_empty() {
                             let query_type = determine_query_type(&sql);
                             crate::metrics::record_query(&query_type, "error", duration_secs);
                             crate::metrics::record_error("query", &query_type);

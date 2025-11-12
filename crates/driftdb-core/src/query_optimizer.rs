@@ -847,7 +847,7 @@ impl QueryOptimizer {
             selectivity: cardinality as f64 / child.cardinality as f64,
             resources: ResourceRequirements {
                 memory_bytes: cardinality * 100,
-                cpu_cycles: cardinality * 1,
+                cpu_cycles: cardinality,
                 io_operations: 0,
                 network_operations: 0,
             },

@@ -745,7 +745,7 @@ async fn start_postgres_server(
             Ok((tcp_stream, client_addr)) => {
                 info!("New connection from {}", client_addr);
 
-                if metrics::REGISTRY.gather().len() > 0 {
+                if !metrics::REGISTRY.gather().is_empty() {
                     metrics::record_connection();
                 }
 
@@ -759,7 +759,7 @@ async fn start_postgres_server(
                                 Ok(stream) => stream,
                                 Err(e) => {
                                     error!("TLS handshake failed for {}: {}", client_addr, e);
-                                    if metrics::REGISTRY.gather().len() > 0 {
+                                    if !metrics::REGISTRY.gather().is_empty() {
                                         metrics::record_error("tls", "handshake");
                                     }
                                     return;
@@ -775,13 +775,13 @@ async fn start_postgres_server(
 
                     let result = session_mgr.handle_secure_connection(secure_stream, client_addr).await;
 
-                    if metrics::REGISTRY.gather().len() > 0 {
+                    if !metrics::REGISTRY.gather().is_empty() {
                         metrics::record_connection_closed();
                     }
 
                     if let Err(e) = result {
                         error!("Connection error from {}: {}", client_addr, e);
-                        if metrics::REGISTRY.gather().len() > 0 {
+                        if !metrics::REGISTRY.gather().is_empty() {
                             metrics::record_error("connection", "handle_connection");
                         }
                     }
@@ -789,7 +789,7 @@ async fn start_postgres_server(
             }
             Err(e) => {
                 error!("Failed to accept connection: {}", e);
-                if metrics::REGISTRY.gather().len() > 0 {
+                if !metrics::REGISTRY.gather().is_empty() {
                     metrics::record_error("connection", "accept");
                 }
             }

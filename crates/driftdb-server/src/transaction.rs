@@ -19,18 +19,15 @@ static NEXT_TXN_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Transaction isolation levels
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum IsolationLevel {
     ReadUncommitted,
+    #[default]
     ReadCommitted,
     RepeatableRead,
     Serializable,
 }
 
-impl Default for IsolationLevel {
-    fn default() -> Self {
-        IsolationLevel::ReadCommitted
-    }
-}
 
 /// Transaction state for a session
 #[derive(Debug, Clone)]

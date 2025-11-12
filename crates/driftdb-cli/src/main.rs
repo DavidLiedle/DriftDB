@@ -251,17 +251,14 @@ fn main() -> Result<()> {
                 .execute_query(query)
                 .context("Failed to execute select")?;
 
-            match result {
-                QueryResult::Rows { data } => {
-                    if output_json {
-                        println!("{}", serde_json::to_string_pretty(&data)?);
-                    } else {
-                        for row in data {
-                            println!("{}", serde_json::to_string_pretty(&row)?);
-                        }
+            if let QueryResult::Rows { data } = result {
+                if output_json {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                } else {
+                    for row in data {
+                        println!("{}", serde_json::to_string_pretty(&row)?);
                     }
                 }
-                _ => {}
             }
         }
         Commands::Drift { data, table, key } => {
@@ -275,13 +272,10 @@ fn main() -> Result<()> {
                 .execute_query(query)
                 .context("Failed to get drift history")?;
 
-            match result {
-                QueryResult::DriftHistory { events } => {
-                    for event in events {
-                        println!("{}", serde_json::to_string_pretty(&event)?);
-                    }
+            if let QueryResult::DriftHistory { events } = result {
+                for event in events {
+                    println!("{}", serde_json::to_string_pretty(&event)?);
                 }
-                _ => {}
             }
         }
         Commands::Snapshot { data, table } => {
@@ -294,10 +288,7 @@ fn main() -> Result<()> {
                 .execute_query(query)
                 .context("Failed to create snapshot")?;
 
-            match result {
-                QueryResult::Success { message } => println!("{}", message),
-                _ => {}
-            }
+            if let QueryResult::Success { message } = result { println!("{}", message) }
         }
         Commands::Compact { data, table } => {
             let mut engine = Engine::open(&data).context("Failed to open database")?;
@@ -309,10 +300,7 @@ fn main() -> Result<()> {
                 .execute_query(query)
                 .context("Failed to compact table")?;
 
-            match result {
-                QueryResult::Success { message } => println!("{}", message),
-                _ => {}
-            }
+            if let QueryResult::Success { message } = result { println!("{}", message) }
         }
         Commands::Doctor { data } => {
             let engine = Engine::open(&data).context("Failed to open database")?;

@@ -8,7 +8,6 @@ use parking_lot::{Mutex as ParkingMutex, RwLock as SyncRwLock};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use time;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -743,7 +742,7 @@ impl<'a> QueryExecutor<'a> {
 
     /// Parse ORDER BY clause
     fn parse_order_by_clause(&self, order_by_clause: &str) -> Result<OrderBy> {
-        let parts: Vec<&str> = order_by_clause.trim().split_whitespace().collect();
+        let parts: Vec<&str> = order_by_clause.split_whitespace().collect();
 
         if parts.is_empty() {
             return Err(anyhow!("Empty ORDER BY clause"));
@@ -912,7 +911,7 @@ impl<'a> QueryExecutor<'a> {
                 }
 
                 // Add row to the appropriate group
-                groups.entry(group_key).or_insert_with(Vec::new).push(row);
+                groups.entry(group_key).or_default().push(row);
             } else {
                 return Err(anyhow!("Invalid row format for grouping"));
             }
@@ -1216,7 +1215,7 @@ impl<'a> QueryExecutor<'a> {
                 // Direct match
                 col == &order_by.column || col.to_lowercase() == order_by.column.to_lowercase() ||
             // Check if column matches the suffix after the table prefix (e.g., "table.column" matches "column")
-            col.split('.').last().map_or(false, |suffix| {
+            col.split('.').next_back().is_some_and(|suffix| {
                 suffix == order_by.column || suffix.to_lowercase() == order_by.column.to_lowercase()
             })
             })
@@ -1399,7 +1398,7 @@ impl<'a> QueryExecutor<'a> {
             None
         };
 
-        let result = driftdb_core::sql_bridge::execute_sql(&mut *engine, sql);
+        let result = driftdb_core::sql_bridge::execute_sql(&mut engine, sql);
 
         match result {
             Ok(core_result) => {
@@ -3802,7 +3801,6 @@ impl<'a> QueryExecutor<'a> {
             let remaining = &from_part[subquery_sql.len() + 2..].trim(); // +2 for parentheses
             let alias = if remaining.to_lowercase().starts_with("as ") {
                 remaining[3..]
-                    .trim()
                     .split_whitespace()
                     .next()
                     .ok_or_else(|| anyhow!("Missing alias for derived table"))?
@@ -4322,13 +4320,13 @@ impl<'a> QueryExecutor<'a> {
                             TemporalPoint::Timestamp(ts) => {
                                 // Parse the timestamp string to OffsetDateTime
                                 let timestamp = time::OffsetDateTime::parse(
-                                    &ts,
+                                    ts,
                                     &time::format_description::well_known::Rfc3339,
                                 )
                                 .or_else(|_| {
                                     // Try ISO 8601 format
                                     time::PrimitiveDateTime::parse(
-                                        &ts,
+                                        ts,
                                         &time::format_description::well_known::Iso8601::DEFAULT,
                                     )
                                     .map(|dt| dt.assume_utc())

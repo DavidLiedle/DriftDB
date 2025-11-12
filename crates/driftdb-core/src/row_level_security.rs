@@ -221,7 +221,7 @@ impl RlsManager {
         info!("Creating policy '{}' for table '{}'", policy.name, table_name);
 
         let mut policies = self.policies.write();
-        let table_policies = policies.entry(table_name.clone()).or_insert_with(Vec::new);
+        let table_policies = policies.entry(table_name.clone()).or_default();
 
         // Check for duplicate policy names
         if table_policies.iter().any(|p| p.name == policy.name) {

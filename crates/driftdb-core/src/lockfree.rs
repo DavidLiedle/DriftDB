@@ -28,6 +28,12 @@ struct TableData {
     version: u64,
 }
 
+impl Default for LockFreeTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LockFreeTable {
     pub fn new() -> Self {
         let initial_data = TableData {
@@ -154,6 +160,12 @@ struct IndexNode {
     is_leaf: bool,
 }
 
+impl Default for LockFreeIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LockFreeIndex {
     pub fn new() -> Self {
         let root = IndexNode {
@@ -254,6 +266,12 @@ impl LockFreeIndex {
 pub struct OptimizedReadPath {
     tables: HashMap<String, Arc<LockFreeTable>>,
     indexes: HashMap<String, Arc<LockFreeIndex>>,
+}
+
+impl Default for OptimizedReadPath {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OptimizedReadPath {

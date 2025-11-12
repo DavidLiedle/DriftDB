@@ -475,7 +475,7 @@ fn update_dynamic_metrics(state: &MetricsState) {
 
     // Update database size metrics
     if let Some(engine) = state.engine.try_read() {
-        match collect_database_size_metrics(&*engine) {
+        match collect_database_size_metrics(&engine) {
             Ok(_) => debug!("Database size metrics updated"),
             Err(e) => error!("Failed to update database size metrics: {}", e),
         }

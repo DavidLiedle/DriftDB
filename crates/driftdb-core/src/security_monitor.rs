@@ -867,7 +867,7 @@ impl ThreatDetector {
         let attempts = self
             .login_attempts
             .entry(ip.to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
         attempts.push_back(timestamp);
 
         // Keep only recent attempts (within the window)

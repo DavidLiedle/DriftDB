@@ -70,7 +70,7 @@ impl BloomFilter {
     pub fn new(config: BloomConfig) -> Self {
         let num_bits = config.optimal_bits();
         let num_hashes = config.optimal_hashes();
-        let num_u64s = (num_bits + 63) / 64; // Round up to nearest u64
+        let num_u64s = num_bits.div_ceil(64); // Round up to nearest u64
 
         Self {
             bits: vec![0u64; num_u64s],
@@ -83,7 +83,7 @@ impl BloomFilter {
 
     /// Create a bloom filter with explicit parameters
     pub fn with_params(num_bits: usize, num_hashes: usize) -> Self {
-        let num_u64s = (num_bits + 63) / 64;
+        let num_u64s = num_bits.div_ceil(64);
         Self {
             bits: vec![0u64; num_u64s],
             num_bits,

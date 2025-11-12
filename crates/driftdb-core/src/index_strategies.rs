@@ -353,7 +353,7 @@ impl HashIndex {
         let key_str = serde_json::to_string(&key)?;
         let mut data = self.data.write();
         data.entry(key_str)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(record_id);
         self.stats.write().inserts += 1;
         Ok(())
@@ -365,7 +365,7 @@ impl HashIndex {
         let results = data
             .get(&key_str)
             .map(|set| set.iter().cloned().collect())
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
         self.stats.write().searches += 1;
         Ok(results)
     }
@@ -547,7 +547,7 @@ impl BloomFilter {
         let num_hashes = Self::optimal_hashes(expected_items, size_bits);
 
         Self {
-            bits: vec![0; (size_bits + 63) / 64],
+            bits: vec![0; size_bits.div_ceil(64)],
             num_hashes,
             size_bits,
         }
@@ -668,7 +668,7 @@ impl LSMTree {
         let ordered_key = OrderedValue::from(key);
         memtable
             .entry(ordered_key)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(record_id);
 
         // Check if memtable is full and needs flushing
@@ -690,7 +690,7 @@ impl LSMTree {
         let mut immutable = self.immutable_memtables.write();
 
         // Move current memtable to immutable list
-        let old_memtable = std::mem::replace(&mut *memtable, BTreeMap::new());
+        let old_memtable = std::mem::take(&mut *memtable);
         immutable.push(old_memtable);
 
         // Trigger background compaction
@@ -810,6 +810,12 @@ impl IndexOperations for HashIndex {
 
     fn stats(&self) -> IndexStats {
         self.stats.read().clone()
+    }
+}
+
+impl Default for AdvancedIndexManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

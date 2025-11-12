@@ -655,13 +655,13 @@ fn apply_filter(metadata: &HashMap<String, serde_json::Value>, filter: &Metadata
         .map(|condition| {
             match condition {
                 FilterCondition::Equals { field, value } => {
-                    metadata.get(field).map_or(false, |v| v == value)
+                    metadata.get(field) == Some(value)
                 }
                 FilterCondition::NotEquals { field, value } => {
-                    metadata.get(field).map_or(true, |v| v != value)
+                    metadata.get(field) != Some(value)
                 }
                 FilterCondition::GreaterThan { field, value } => {
-                    metadata.get(field).map_or(false, |v| {
+                    metadata.get(field).is_some_and(|v| {
                         // Simple comparison for numbers
                         if let (Some(v_num), Some(val_num)) = (v.as_f64(), value.as_f64()) {
                             v_num > val_num
@@ -671,7 +671,7 @@ fn apply_filter(metadata: &HashMap<String, serde_json::Value>, filter: &Metadata
                     })
                 }
                 FilterCondition::LessThan { field, value } => {
-                    metadata.get(field).map_or(false, |v| {
+                    metadata.get(field).is_some_and(|v| {
                         if let (Some(v_num), Some(val_num)) = (v.as_f64(), value.as_f64()) {
                             v_num < val_num
                         } else {
@@ -680,12 +680,12 @@ fn apply_filter(metadata: &HashMap<String, serde_json::Value>, filter: &Metadata
                     })
                 }
                 FilterCondition::In { field, values } => {
-                    metadata.get(field).map_or(false, |v| values.contains(v))
+                    metadata.get(field).is_some_and(|v| values.contains(v))
                 }
                 FilterCondition::Contains { field, value } => metadata
                     .get(field)
                     .and_then(|v| v.as_str())
-                    .map_or(false, |s| s.contains(value)),
+                    .is_some_and(|s| s.contains(value)),
             }
         })
         .collect();
@@ -711,6 +711,12 @@ struct VectorSearchStats {
     total_adds: u64,
     #[allow(dead_code)]
     total_removes: u64,
+}
+
+impl Default for VectorSearchManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VectorSearchManager {

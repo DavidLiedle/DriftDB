@@ -121,6 +121,12 @@ pub struct SnapshotManager {
     min_sequence: Arc<RwLock<u64>>,
 }
 
+impl Default for SnapshotManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SnapshotManager {
     pub fn new() -> Self {
         Self {

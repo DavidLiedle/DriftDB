@@ -117,6 +117,12 @@ pub struct Dictionary {
     pub indices: HashMap<Vec<u8>, u32>,
 }
 
+impl Default for Dictionary {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Dictionary {
     pub fn new() -> Self {
         Self {
@@ -301,7 +307,7 @@ impl ColumnarStorage {
                 .map(|row| row.get(&column_schema.name).cloned().flatten())
                 .collect();
 
-            let chunk = self.encode_column(&column_schema, column_data)?;
+            let chunk = self.encode_column(column_schema, column_data)?;
 
             row_group.metadata.byte_size += chunk.data.len() as u64;
             row_group.metadata.columns.push(ColumnChunkMetadata {
@@ -796,6 +802,12 @@ impl ColumnarStorage {
 #[derive(Debug, Clone)]
 pub struct Row {
     values: HashMap<String, Option<Value>>,
+}
+
+impl Default for Row {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Row {
