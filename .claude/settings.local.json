@@ -4,7 +4,8 @@
       "Bash(cargo clippy:*)",
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
-      "Bash(tokei:*)"
+      "Bash(tokei:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

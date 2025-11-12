@@ -9,6 +9,72 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 // use tokio::sync::mpsc;
 
+/// Rate tracker for calculating per-second metrics
+struct RateTracker {
+    last_value: u64,
+    last_timestamp: SystemTime,
+    current_rate: f64,
+}
+
+impl RateTracker {
+    fn new() -> Self {
+        Self {
+            last_value: 0,
+            last_timestamp: SystemTime::now(),
+            current_rate: 0.0,
+        }
+    }
+
+    fn update(&mut self, current_value: u64) -> f64 {
+        let now = SystemTime::now();
+        let elapsed = now.duration_since(self.last_timestamp).unwrap_or(Duration::from_secs(1));
+        let elapsed_secs = elapsed.as_secs_f64();
+
+        if elapsed_secs > 0.0 && current_value >= self.last_value {
+            self.current_rate = (current_value - self.last_value) as f64 / elapsed_secs;
+        }
+
+        self.last_value = current_value;
+        self.last_timestamp = now;
+        self.current_rate
+    }
+}
+
+/// Percentile tracker using a simple histogram approach
+struct PercentileTracker {
+    values: VecDeque<u64>,
+    max_samples: usize,
+}
+
+impl PercentileTracker {
+    fn new(max_samples: usize) -> Self {
+        Self {
+            values: VecDeque::with_capacity(max_samples),
+            max_samples,
+        }
+    }
+
+    fn add(&mut self, value: u64) {
+        if self.values.len() >= self.max_samples {
+            self.values.pop_front();
+        }
+        self.values.push_back(value);
+    }
+
+    fn percentile(&self, p: f64) -> f64 {
+        if self.values.is_empty() {
+            return 0.0;
+        }
+
+        let mut sorted: Vec<u64> = self.values.iter().copied().collect();
+        sorted.sort_unstable();
+
+        let index = ((p / 100.0) * (sorted.len() as f64)) as usize;
+        let index = index.min(sorted.len() - 1);
+        sorted[index] as f64 / 1000.0 // Convert microseconds to milliseconds
+    }
+}
+
 /// Comprehensive monitoring system for DriftDB
 pub struct MonitoringSystem {
     metrics: Arc<Metrics>,
@@ -20,6 +86,13 @@ pub struct MonitoringSystem {
     #[allow(dead_code)]
     dashboard: Arc<RwLock<Dashboard>>,
     engine: Option<Arc<RwLock<Engine>>>,
+    // Rate trackers
+    query_rate_tracker: Arc<RwLock<RateTracker>>,
+    request_rate_tracker: Arc<RwLock<RateTracker>>,
+    // Percentile trackers
+    query_latency_tracker: Arc<RwLock<PercentileTracker>>,
+    slow_query_threshold_ms: f64,
+    slow_query_count: Arc<RwLock<u64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +374,11 @@ impl MonitoringSystem {
             )))),
             dashboard: Arc::new(RwLock::new(Dashboard::default())),
             engine: None,
+            query_rate_tracker: Arc::new(RwLock::new(RateTracker::new())),
+            request_rate_tracker: Arc::new(RwLock::new(RateTracker::new())),
+            query_latency_tracker: Arc::new(RwLock::new(PercentileTracker::new(10000))), // Track last 10k queries
+            slow_query_threshold_ms: 1000.0, // 1 second default threshold
+            slow_query_count: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -308,6 +386,23 @@ impl MonitoringSystem {
     pub fn with_engine(mut self, engine: Arc<RwLock<Engine>>) -> Self {
         self.engine = Some(engine);
         self
+    }
+
+    /// Record a query latency and detect slow queries
+    pub fn record_query_latency(&self, latency_us: u64) {
+        // Add to percentile tracker
+        self.query_latency_tracker.write().add(latency_us);
+
+        // Check if it's a slow query
+        let latency_ms = latency_us as f64 / 1000.0;
+        if latency_ms > self.slow_query_threshold_ms {
+            *self.slow_query_count.write() += 1;
+        }
+    }
+
+    /// Set the slow query threshold in milliseconds
+    pub fn set_slow_query_threshold(&mut self, threshold_ms: f64) {
+        self.slow_query_threshold_ms = threshold_ms;
     }
 
     /// Start the monitoring system
@@ -363,9 +458,9 @@ impl MonitoringSystem {
     ) -> MetricSnapshot {
         let system = Self::collect_system_metrics();
         let database = self.collect_database_metrics(metrics);
-        let query = Self::collect_query_metrics(metrics);
-        let storage = Self::collect_storage_metrics(metrics);
-        let network = Self::collect_network_metrics(metrics);
+        let query = self.collect_query_metrics(metrics);
+        let storage = self.collect_storage_metrics(metrics);
+        let network = self.collect_network_metrics(metrics);
 
         let mut custom = HashMap::new();
         for collector in collectors.read().iter() {
@@ -442,7 +537,7 @@ impl MonitoringSystem {
         (used_memory as f64 / total_memory as f64) * 100.0
     }
 
-    fn collect_query_metrics(metrics: &Arc<Metrics>) -> QueryMetrics {
+    fn collect_query_metrics(&self, metrics: &Arc<Metrics>) -> QueryMetrics {
         let total_queries = metrics.queries_total.load(Ordering::Relaxed);
         let failed_queries = metrics.queries_failed.load(Ordering::Relaxed);
         let total_latency = metrics.query_latency_us.load(Ordering::Relaxed);
@@ -453,38 +548,75 @@ impl MonitoringSystem {
             0.0
         };
 
+        // Calculate queries per second
+        let queries_per_second = self.query_rate_tracker.write().update(total_queries);
+
+        // Get percentiles from tracker
+        let latency_tracker = self.query_latency_tracker.read();
+        let p50 = latency_tracker.percentile(50.0);
+        let p95 = latency_tracker.percentile(95.0);
+        let p99 = latency_tracker.percentile(99.0);
+        drop(latency_tracker);
+
+        // Get slow query count
+        let slow_queries_count = *self.slow_query_count.read();
+
         QueryMetrics {
-            queries_per_second: 0.0, // TODO: Calculate rate
+            queries_per_second,
             avg_query_time_ms: avg_latency,
-            p50_query_time_ms: 0.0, // TODO: Track percentiles
-            p95_query_time_ms: 0.0,
-            p99_query_time_ms: 0.0,
-            slow_queries_count: 0, // TODO: Track slow queries
+            p50_query_time_ms: p50,
+            p95_query_time_ms: p95,
+            p99_query_time_ms: p99,
+            slow_queries_count,
             failed_queries_count: failed_queries,
-            query_queue_length: 0, // TODO: Track queue
+            query_queue_length: 0, // Queue tracking would require integration with query executor
         }
     }
 
-    fn collect_storage_metrics(metrics: &Arc<Metrics>) -> StorageMetrics {
+    fn collect_storage_metrics(&self, metrics: &Arc<Metrics>) -> StorageMetrics {
+        // Calculate WAL size from filesystem if engine is available
+        let wal_size_bytes = if let Some(engine) = &self.engine {
+            if let Some(guard) = engine.try_read() {
+                self.calculate_wal_size_from_engine(&guard)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         StorageMetrics {
             segments_count: metrics.segments_created.load(Ordering::Relaxed) as usize,
-            segment_avg_size_bytes: 0, // TODO: Calculate average
-            compaction_pending: 0,     // TODO: Track pending compactions
-            wal_size_bytes: 0,         // TODO: Get WAL size
-            wal_lag_bytes: 0,          // TODO: Track WAL lag
+            segment_avg_size_bytes: 0, // Would need segment size tracking in storage layer
+            compaction_pending: 0,     // Would need integration with compaction scheduler
+            wal_size_bytes,
+            wal_lag_bytes: 0,          // Would need replication lag tracking
             snapshots_count: metrics.snapshots_created.load(Ordering::Relaxed) as usize,
-            index_size_bytes: 0, // TODO: Calculate index size
+            index_size_bytes: 0, // Would need index size tracking
         }
     }
 
-    fn collect_network_metrics(metrics: &Arc<Metrics>) -> NetworkMetrics {
+    fn calculate_wal_size_from_engine(&self, _engine: &Engine) -> u64 {
+        // In a real implementation, this would traverse the data directory
+        // and sum up WAL file sizes. For now, return a placeholder.
+        // This would require Engine to expose its data_dir path.
+        0
+    }
+
+    fn collect_network_metrics(&self, metrics: &Arc<Metrics>) -> NetworkMetrics {
+        // Calculate requests per second from total queries + writes + reads
+        let total_requests = metrics.queries_total.load(Ordering::Relaxed) +
+                           metrics.writes_total.load(Ordering::Relaxed) +
+                           metrics.reads_total.load(Ordering::Relaxed);
+        let requests_per_second = self.request_rate_tracker.write().update(total_requests);
+
         NetworkMetrics {
             active_connections: metrics.active_connections.load(Ordering::Relaxed),
             bytes_received: metrics.read_bytes.load(Ordering::Relaxed),
             bytes_sent: metrics.write_bytes.load(Ordering::Relaxed),
-            requests_per_second: 0.0,  // TODO: Calculate rate
-            avg_response_time_ms: 0.0, // TODO: Track response time
-            connection_errors: 0,      // TODO: Track errors
+            requests_per_second,
+            avg_response_time_ms: 0.0, // Would need response time tracking
+            connection_errors: 0,      // Would need error tracking
         }
     }
 
