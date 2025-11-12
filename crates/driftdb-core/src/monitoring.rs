@@ -962,4 +962,107 @@ mod tests {
 
         assert_eq!(alert_rule.name, "High CPU Usage");
     }
+
+    #[test]
+    fn test_rate_tracker() {
+        let mut tracker = RateTracker::new();
+
+        // Initial update with value 0
+        let rate = tracker.update(0);
+        assert_eq!(rate, 0.0);
+
+        // Simulate some time passing and value increasing
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let rate = tracker.update(100);
+
+        // Rate should be approximately 100 / 0.1 = 1000 per second
+        // Allow some tolerance for timing variations
+        assert!(rate > 500.0 && rate < 2000.0, "Rate {} is outside expected range", rate);
+
+        // Another update
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let rate = tracker.update(200);
+        assert!(rate > 500.0 && rate < 2000.0);
+    }
+
+    #[test]
+    fn test_percentile_tracker() {
+        let mut tracker = PercentileTracker::new(100);
+
+        // Add some latency samples (in microseconds)
+        tracker.add(10000); // 10ms
+        tracker.add(20000); // 20ms
+        tracker.add(30000); // 30ms
+        tracker.add(40000); // 40ms
+        tracker.add(50000); // 50ms
+        tracker.add(60000); // 60ms
+        tracker.add(70000); // 70ms
+        tracker.add(80000); // 80ms
+        tracker.add(90000); // 90ms
+        tracker.add(100000); // 100ms
+
+        // Check percentiles (returned in milliseconds)
+        let p50 = tracker.percentile(50.0);
+        assert!(p50 >= 40.0 && p50 <= 65.0, "p50 {} is outside expected range", p50);
+
+        let p95 = tracker.percentile(95.0);
+        assert!(p95 >= 85.0 && p95 <= 100.0, "p95 {} is outside expected range", p95);
+
+        let p99 = tracker.percentile(99.0);
+        assert!(p99 >= 90.0 && p99 <= 100.0, "p99 {} is outside expected range", p99);
+    }
+
+    #[test]
+    fn test_percentile_tracker_max_samples() {
+        let mut tracker = PercentileTracker::new(5);
+
+        // Add more samples than max (in microseconds)
+        for i in 1..=10 {
+            tracker.add(i * 10000); // 10ms, 20ms, ..., 100ms
+        }
+
+        // Should only keep last 5 samples (60ms, 70ms, 80ms, 90ms, 100ms)
+        let p50 = tracker.percentile(50.0);
+        assert!(p50 >= 70.0 && p50 <= 85.0, "p50 {} is outside expected range", p50);
+    }
+
+    #[tokio::test]
+    async fn test_monitoring_system_query_metrics() {
+        let metrics = Arc::new(Metrics::new());
+        let config = MonitoringConfig::default();
+        let system = Arc::new(MonitoringSystem::new(metrics.clone(), config));
+
+        // Record some query latencies (in microseconds)
+        system.record_query_latency(10000); // 10ms
+        system.record_query_latency(20000); // 20ms
+        system.record_query_latency(30000); // 30ms
+
+        // Collect metrics
+        let collectors = Arc::new(RwLock::new(Vec::new()));
+        let snapshot = system.collect_metrics(&metrics, &collectors).await;
+
+        // Check that percentiles are calculated
+        assert!(snapshot.query.p50_query_time_ms >= 0.0);
+        assert!(snapshot.query.p95_query_time_ms >= 0.0);
+        assert!(snapshot.query.p99_query_time_ms >= 0.0);
+    }
+
+    #[test]
+    fn test_monitoring_system_slow_queries() {
+        let metrics = Arc::new(Metrics::new());
+        let config = MonitoringConfig::default();
+        let mut system = MonitoringSystem::new(metrics.clone(), config);
+
+        // Set slow query threshold
+        system.set_slow_query_threshold(25.0);
+
+        // Record some queries (in microseconds)
+        system.record_query_latency(10000); // 10ms - Fast
+        system.record_query_latency(30000); // 30ms - Slow
+        system.record_query_latency(40000); // 40ms - Slow
+
+        // Check slow query count
+        let slow_count = *system.slow_query_count.read();
+        assert_eq!(slow_count, 2);
+    }
 }
