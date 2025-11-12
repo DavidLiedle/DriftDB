@@ -476,6 +476,10 @@ impl TriggerManager {
                             debug!("Trigger SQL executed and returned history");
                             Ok(TriggerResult::Continue)
                         }
+                        Ok(QueryResult::Plan { .. }) => {
+                            debug!("Trigger SQL returned query plan (EXPLAIN)");
+                            Ok(TriggerResult::Continue)
+                        }
                         Ok(QueryResult::Error { message }) => {
                             error!("Trigger SQL execution failed: {}", message);
                             Ok(TriggerResult::Abort(format!("Trigger failed: {}", message)))

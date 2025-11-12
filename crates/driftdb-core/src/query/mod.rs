@@ -1,4 +1,5 @@
 pub mod executor;
+pub mod optimizer;
 pub mod parser;
 
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,9 @@ pub enum Query {
     VerifyBackup {
         backup_path: String,
     },
+    Explain {
+        query: Box<Query>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,4 +95,5 @@ pub enum QueryResult {
     Rows { data: Vec<Value> },
     DriftHistory { events: Vec<Value> },
     Error { message: String },
+    Plan { plan: optimizer::QueryPlan },
 }

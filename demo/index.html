@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DriftDB Interactive Demo - Time-Travel Database</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            gap: 0;
+            min-height: 600px;
+        }
+
+        .sidebar {
+            background: #f8f9fa;
+            border-right: 1px solid #e0e0e0;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .sidebar h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+
+        .example-query {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.9em;
+        }
+
+        .example-query:hover {
+            border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+        }
+
+        .example-query .title {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .example-query .description {
+            color: #666;
+            font-size: 0.85em;
+        }
+
+        .workspace {
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+
+        .time-travel-section {
+            background: #f0f4ff;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .time-travel-section h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .time-travel-section h3::before {
+            content: "⏰";
+            font-size: 1.2em;
+        }
+
+        .slider-container {
+            margin: 15px 0;
+        }
+
+        .slider-container label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .time-slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .time-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .timeline-markers {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-size: 0.85em;
+            color: #666;
+        }
+
+        .editor-section {
+            margin-bottom: 20px;
+        }
+
+        .editor-section h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        #sql-editor {
+            width: 100%;
+            min-height: 150px;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            resize: vertical;
+            transition: border-color 0.2s;
+        }
+
+        #sql-editor:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+
+        .results-section {
+            margin-top: 20px;
+        }
+
+        .results-section h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .results-info {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 12px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+
+        .results-container {
+            overflow-x: auto;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+        }
+
+        th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state::before {
+            content: "📊";
+            display: block;
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .error-message {
+            background: #fee;
+            border: 1px solid #fcc;
+            border-radius: 6px;
+            padding: 15px;
+            color: #c33;
+            margin-bottom: 15px;
+        }
+
+        .success-message {
+            background: #efe;
+            border: 1px solid #cfc;
+            border-radius: 6px;
+            padding: 15px;
+            color: #3c3;
+            margin-bottom: 15px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #667eea;
+            font-size: 1.1em;
+        }
+
+        .loading::before {
+            content: "⏳";
+            display: block;
+            font-size: 2em;
+            margin-bottom: 10px;
+            animation: spin 2s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        footer {
+            background: #f8f9fa;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        .mode-toggle {
+            margin-top: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+        }
+
+        .mode-toggle label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .mode-toggle select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DriftDB Interactive Demo</h1>
+            <p>Experience Time-Travel Queries in Real-Time</p>
+        </header>
+
+        <div class="main-content">
+            <aside class="sidebar">
+                <h3>Example Queries</h3>
+                <div class="example-queries" id="example-queries">
+                    <!-- Populated by JavaScript -->
+                </div>
+
+                <div class="mode-toggle">
+                    <label>Connection Mode:</label>
+                    <select id="connection-mode">
+                        <option value="mock" selected>Demo Mode (Mock Data)</option>
+                        <option value="local">Local Server (localhost:5433)</option>
+                        <option value="custom">Custom Server</option>
+                    </select>
+                </div>
+
+                <div class="mode-toggle" style="margin-top: 10px;">
+                    <label>Sample Dataset:</label>
+                    <select id="dataset-selector">
+                        <option value="ecommerce" selected>E-Commerce Orders</option>
+                        <option value="users">User Management</option>
+                        <option value="inventory">Inventory Tracking</option>
+                    </select>
+                </div>
+            </aside>
+
+            <main class="workspace">
+                <div class="time-travel-section">
+                    <h3>Time Travel Controls</h3>
+                    <div class="slider-container">
+                        <label>
+                            <span>Query Point in Time:</span>
+                            <span id="current-time-display">Latest (Now)</span>
+                        </label>
+                        <input type="range" id="time-slider" class="time-slider"
+                               min="0" max="10" value="10" step="1">
+                        <div class="timeline-markers">
+                            <span>Past</span>
+                            <span>Present</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; font-size: 0.9em; color: #666;">
+                        <strong>Sequence Number:</strong> <span id="seq-display">Current</span> |
+                        <strong>Timestamp:</strong> <span id="timestamp-display">-</span>
+                    </div>
+                </div>
+
+                <div class="editor-section">
+                    <h3>SQL Query Editor</h3>
+                    <textarea id="sql-editor" placeholder="Enter your SQL query here...
+Example: SELECT * FROM orders WHERE status = 'shipped'"></textarea>
+                    <div class="button-group">
+                        <button class="btn-primary" id="run-query">▶ Run Query</button>
+                        <button class="btn-secondary" id="clear-editor">Clear</button>
+                        <button class="btn-secondary" id="format-query">Format SQL</button>
+                    </div>
+                </div>
+
+                <div class="results-section" id="results-section">
+                    <h3>Query Results</h3>
+                    <div class="empty-state">
+                        <p>Run a query to see results</p>
+                        <p style="font-size: 0.9em; margin-top: 10px;">Try clicking an example query or write your own SQL</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <footer>
+            <p>DriftDB - PostgreSQL-Compatible Time-Travel Database</p>
+            <p style="margin-top: 10px;">
+                <a href="https://github.com/driftdb/driftdb" target="_blank">GitHub</a> |
+                <a href="https://docs.driftdb.com" target="_blank">Documentation</a> |
+                <a href="https://driftdb.com" target="_blank">Website</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="demo.js"></script>
+</body>
+</html>

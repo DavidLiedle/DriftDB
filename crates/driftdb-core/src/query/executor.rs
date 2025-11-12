@@ -206,6 +206,25 @@ impl Engine {
                     ),
                 })
             }
+            Query::Explain { query } => {
+                // Generate query plan without executing
+                match query.as_ref() {
+                    Query::Select {
+                        table,
+                        conditions,
+                        as_of,
+                        limit,
+                    } => {
+                        // Use query optimizer to generate plan
+                        let optimizer = super::optimizer::QueryOptimizer::new();
+                        let plan = optimizer.optimize_select(table, conditions, as_of, *limit)?;
+                        Ok(QueryResult::Plan { plan })
+                    }
+                    _ => Ok(QueryResult::Error {
+                        message: "EXPLAIN only supports SELECT queries".to_string(),
+                    }),
+                }
+            }
         }
     }
 

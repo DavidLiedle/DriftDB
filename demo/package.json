@@ -1,0 +1,33 @@
+{
+  "name": "driftdb-demo",
+  "version": "1.0.0",
+  "description": "Interactive demo for DriftDB time-travel database",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js 8080",
+    "serve": "node server.js"
+  },
+  "keywords": [
+    "driftdb",
+    "database",
+    "time-travel",
+    "demo",
+    "temporal",
+    "sql"
+  ],
+  "author": "DriftDB Contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=12.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/driftdb/driftdb.git",
+    "directory": "demo"
+  },
+  "bugs": {
+    "url": "https://github.com/driftdb/driftdb/issues"
+  },
+  "homepage": "https://driftdb.com"
+}

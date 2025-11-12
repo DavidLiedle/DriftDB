@@ -1,8 +1,28 @@
 # DriftDB
 
-**Experimental PostgreSQL-Compatible Time-Travel Database (v0.7.3-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
+**Experimental PostgreSQL-Compatible Time-Travel Database (v0.9.0-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
 
 ⚠️ **ALPHA SOFTWARE - NOT FOR PRODUCTION USE**: This version contains experimental implementations of enterprise features. The codebase now compiles cleanly with minimal warnings (reduced from 335 to 17). Many advanced features remain as architectural designs requiring implementation.
+
+## 🎮 Try the Interactive Demo
+
+**Experience DriftDB's time-travel capabilities right now!**
+
+```bash
+cd demo
+./run-demo.sh
+# Opens at http://localhost:8080
+```
+
+Or simply open `demo/index.html` in your browser - no installation required!
+
+The interactive demo features:
+- Visual time-travel slider to query data at any point in history
+- Real-time SQL editor with example queries
+- Multiple sample datasets (e-commerce, users, inventory)
+- No setup needed - runs entirely in your browser
+
+[📖 See demo documentation](demo/README.md)
 
 ## 🚀 Quick Start
 

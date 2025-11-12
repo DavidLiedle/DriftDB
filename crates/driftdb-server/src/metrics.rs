@@ -504,7 +504,7 @@ fn collect_database_size_metrics(engine: &Engine) -> anyhow::Result<()> {
         // Also get and record total table size
         if let Ok(total_size) = engine.get_table_size(&table_name) {
             DATABASE_SIZE_BYTES
-                .with_label_values(&[&table_name, "total"])
+                .with_label_values(&[table_name.as_str(), "total"])
                 .set(total_size as f64);
         }
     }

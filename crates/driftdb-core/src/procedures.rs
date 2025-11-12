@@ -840,6 +840,10 @@ impl ProcedureManager {
                             debug!("Procedure SQL executed and returned drift history");
                             context.variables.insert("@@ROWCOUNT".to_string(), json!(0));
                         }
+                        Ok(QueryResult::Plan { .. }) => {
+                            debug!("Procedure SQL executed and returned query plan (EXPLAIN)");
+                            context.variables.insert("@@ROWCOUNT".to_string(), json!(0));
+                        }
                         Ok(QueryResult::Error { message }) => {
                             return Err(DriftError::InvalidQuery(format!(
                                 "SQL execution failed in procedure: {}",
