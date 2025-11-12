@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{AsOf, Query, QueryResult, WhereCondition};
@@ -132,12 +133,66 @@ impl Engine {
             Query::BackupTable {
                 table,
                 destination,
-                compression: _,
+                compression,
             } => {
-                // Table-specific backup would be implemented by copying just that table's files
-                // For now, return a placeholder
+                // Verify table exists
+                if !self.tables.contains_key(&table) {
+                    return Ok(QueryResult::Error {
+                        message: format!("Table '{}' not found", table),
+                    });
+                }
+
+                // Create a BackupManager and backup just this table
+                let metrics = Arc::new(Metrics::new());
+                let _backup_manager = BackupManager::new(self.base_path(), metrics);
+
+                // Create backup directory
+                std::fs::create_dir_all(&destination).map_err(|e| {
+                    crate::errors::DriftError::Other(format!("Failed to create backup directory: {}", e))
+                })?;
+
+                // Call the private backup_table_full method via a new public wrapper
+                // For now, we'll use the same approach as full backup but only for one table
+                let src_table_dir = self.base_path().join("tables").join(&table);
+                let dst_table_dir = PathBuf::from(&destination).join("tables").join(&table);
+
+                std::fs::create_dir_all(&dst_table_dir).map_err(|e| {
+                    crate::errors::DriftError::Other(format!("Failed to create table backup directory: {}", e))
+                })?;
+
+                // Copy all table files
+                let mut files_copied = 0;
+                if src_table_dir.exists() {
+                    for entry in std::fs::read_dir(&src_table_dir)? {
+                        let entry = entry?;
+                        let src_path = entry.path();
+                        let file_name = entry.file_name();
+                        let dst_path = dst_table_dir.join(file_name);
+
+                        if src_path.is_file() {
+                            std::fs::copy(&src_path, &dst_path)?;
+                            files_copied += 1;
+                        } else if src_path.is_dir() {
+                            // Recursively copy directories (like segments/)
+                            Self::copy_dir_recursive(&src_path, &dst_path)?;
+                            files_copied += 1;
+                        }
+                    }
+                }
+
+                // Create simple metadata
+                let metadata = serde_json::json!({
+                    "table": table,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "compression": format!("{:?}", compression),
+                    "files_copied": files_copied,
+                });
+
+                let metadata_path = PathBuf::from(&destination).join("metadata.json");
+                std::fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
+
                 Ok(QueryResult::Success {
-                    message: format!("Table '{}' backup created at '{}'", table, destination),
+                    message: format!("Table '{}' backed up to '{}' ({} files)", table, destination, files_copied),
                 })
             }
             Query::RestoreDatabase {
@@ -158,14 +213,79 @@ impl Engine {
                 })
             }
             Query::RestoreTable {
-                table: _,
-                source: _,
-                target: _,
-                verify: _,
+                table,
+                source,
+                target,
+                verify,
             } => {
-                // For now, return error indicating feature not fully implemented
-                Ok(QueryResult::Error {
-                    message: "Table-level restore not yet implemented. Use full database restore instead.".to_string(),
+                // Verify source backup exists
+                let source_path = PathBuf::from(&source);
+                if !source_path.exists() {
+                    return Ok(QueryResult::Error {
+                        message: format!("Backup source '{}' not found", source),
+                    });
+                }
+
+                // Read metadata if available
+                let metadata_path = source_path.join("metadata.json");
+                if metadata_path.exists() {
+                    let metadata_content = std::fs::read_to_string(&metadata_path)?;
+                    let metadata: serde_json::Value = serde_json::from_str(&metadata_content)?;
+
+                    // Verify it's the right table
+                    if let Some(backup_table) = metadata.get("table").and_then(|t| t.as_str()) {
+                        if backup_table != table {
+                            return Ok(QueryResult::Error {
+                                message: format!("Backup is for table '{}', but trying to restore '{}'", backup_table, table),
+                            });
+                        }
+                    }
+                }
+
+                // Determine target table name
+                let target_table = target.as_deref().unwrap_or(&table);
+
+                // Check if target table already exists
+                if self.tables.contains_key(target_table) {
+                    return Ok(QueryResult::Error {
+                        message: format!("Target table '{}' already exists. Drop it first or use a different target name.", target_table),
+                    });
+                }
+
+                // Restore the table files
+                let src_table_dir = source_path.join("tables").join(&table);
+                if !src_table_dir.exists() {
+                    return Ok(QueryResult::Error {
+                        message: format!("Table '{}' not found in backup", table),
+                    });
+                }
+
+                let dst_table_dir = self.base_path().join("tables").join(target_table);
+
+                // Verify backup integrity if requested
+                if verify {
+                    // Basic verification: check if required files exist
+                    let schema_file = src_table_dir.join("schema.json");
+                    if !schema_file.exists() {
+                        return Ok(QueryResult::Error {
+                            message: format!("Backup verification failed: schema.json not found"),
+                        });
+                    }
+                }
+
+                // Copy all table files
+                Self::copy_dir_recursive(&src_table_dir, &dst_table_dir)?;
+
+                // Reload the table into the engine
+                // Note: This requires the Engine to be mutable, which it is in execute_query
+                // We'll need to use interior mutability or restructure this
+                // For now, return success and note that engine restart may be needed
+                Ok(QueryResult::Success {
+                    message: format!(
+                        "Table '{}' restored to '{}'. Restart the engine or reload the table to use it.",
+                        table,
+                        target_table
+                    ),
                 })
             }
             Query::ShowBackups { directory } => {
@@ -408,5 +528,24 @@ impl Engine {
 
         // Return all column names from the schema
         Ok(schema.columns.iter().map(|c| c.name.clone()).collect())
+    }
+
+    /// Recursively copy a directory
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+        std::fs::create_dir_all(dst)?;
+
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+
+            if src_path.is_file() {
+                std::fs::copy(&src_path, &dst_path)?;
+            } else if src_path.is_dir() {
+                Self::copy_dir_recursive(&src_path, &dst_path)?;
+            }
+        }
+
+        Ok(())
     }
 }
