@@ -1,0 +1,2 @@
+# This directory stores benchmark baselines for regression detection
+# Run `./scripts/benchmark_regression.sh --save-baseline` to update baselines

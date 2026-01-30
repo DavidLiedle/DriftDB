@@ -1,4 +1,4 @@
-.PHONY: build test bench demo clean fmt clippy ci
+.PHONY: build test bench bench-baseline bench-check bench-check-strict demo clean fmt clippy ci
 
 # Build the project
 build:
@@ -50,6 +50,18 @@ test-coverage:
 # Run benchmarks
 bench:
 	cargo bench --all
+
+# Run benchmarks and save as baseline
+bench-baseline:
+	./scripts/benchmark_regression.sh --save-baseline
+
+# Run benchmarks and check for regressions (10% threshold)
+bench-check:
+	./scripts/benchmark_regression.sh --threshold 10
+
+# Run benchmarks and check with custom threshold
+bench-check-strict:
+	./scripts/benchmark_regression.sh --threshold 5
 
 # Run the demo scenario
 demo: build

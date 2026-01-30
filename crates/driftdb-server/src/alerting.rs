@@ -519,46 +519,200 @@ impl AlertManager {
         history.iter().rev().take(limit).cloned().collect()
     }
 
-    // Metric getter helpers (these would query actual Prometheus metrics)
+    // Metric getter helpers that query actual Prometheus metrics
+    // Note: For labeled metrics (CounterVec, GaugeVec), we use with_label_values()
+    // to access specific label combinations directly
 
+    /// Get current error rate as a ratio of failed to total queries
     fn get_error_rate(&self) -> f64 {
-        // TODO: Query actual error rate from metrics
-        0.0
+        use crate::metrics::{ERROR_TOTAL, QUERY_TOTAL};
+
+        // Count errors for common error types and operations
+        let error_types = ["syntax", "permission", "not_found", "timeout", "internal"];
+        let operations = ["query", "insert", "update", "delete", "connect"];
+
+        let mut error_count = 0.0_f64;
+        for error_type in &error_types {
+            for operation in &operations {
+                error_count += ERROR_TOTAL
+                    .with_label_values(&[error_type, operation])
+                    .get();
+            }
+        }
+
+        // Count total queries for common types and statuses
+        let query_types = ["SELECT", "INSERT", "UPDATE", "DELETE", "PATCH"];
+        let statuses = ["success", "error"];
+
+        let mut total_count = 0.0_f64;
+        for query_type in &query_types {
+            for status in &statuses {
+                total_count += QUERY_TOTAL.with_label_values(&[query_type, status]).get();
+            }
+        }
+
+        if total_count > 0.0 {
+            error_count / total_count
+        } else {
+            0.0
+        }
     }
 
+    /// Get maximum replication lag across all replicas
     fn get_max_replication_lag(&self) -> f64 {
-        // TODO: Query max replication lag from metrics
-        0.0
+        use crate::metrics::REPLICATION_LAG_SECONDS;
+
+        // Check a set of common replica names for lag
+        // In production, this list would be dynamically populated
+        let replicas = ["replica_1", "replica_2", "replica_3", "standby"];
+
+        let mut max_lag = 0.0_f64;
+        for replica in &replicas {
+            let lag = REPLICATION_LAG_SECONDS.with_label_values(&[replica]).get();
+            if lag > max_lag {
+                max_lag = lag;
+            }
+        }
+        max_lag
     }
 
+    /// Get pool utilization as percentage (active / total)
     fn get_pool_utilization(&self) -> f64 {
-        // TODO: Query pool utilization from metrics
-        0.0
+        use crate::metrics::{POOL_ACTIVE, POOL_SIZE};
+
+        let pool_size = POOL_SIZE.get();
+        let pool_active = POOL_ACTIVE.get();
+
+        if pool_size > 0.0 {
+            (pool_active / pool_size) * 100.0
+        } else {
+            0.0
+        }
     }
 
+    /// Get free disk space percentage using fs2 crate
     fn get_disk_space_free_percent(&self) -> f64 {
-        // TODO: Query disk space from system
-        100.0
+        use std::path::Path;
+
+        // Try to get disk space for current directory
+        let path = Path::new(".");
+
+        match fs2::available_space(path) {
+            Ok(available) => match fs2::total_space(path) {
+                Ok(total) if total > 0 => (available as f64 / total as f64) * 100.0,
+                _ => 100.0, // Unknown, assume OK
+            },
+            Err(_) => 100.0, // Unknown, assume OK
+        }
     }
 
+    /// Get memory usage percentage using sysinfo
     fn get_memory_usage_percent(&self) -> f64 {
-        // TODO: Query memory usage from system
-        0.0
+        use crate::metrics::MEMORY_USAGE_BYTES;
+        use sysinfo::System;
+
+        // First try to get process memory from our metric
+        let process_memory = MEMORY_USAGE_BYTES
+            .with_label_values(&["process_physical"])
+            .get();
+
+        // Get system total memory using sysinfo
+        let mut sys = System::new();
+        sys.refresh_memory();
+
+        let total_memory = sys.total_memory() as f64 * 1024.0; // Convert KB to bytes
+        if total_memory > 0.0 && process_memory > 0.0 {
+            (process_memory / total_memory) * 100.0
+        } else {
+            // Fallback: use system used memory / total memory
+            let used_memory = sys.used_memory() as f64 * 1024.0;
+            if total_memory > 0.0 {
+                (used_memory / total_memory) * 100.0
+            } else {
+                0.0
+            }
+        }
     }
 
+    /// Get transaction abort rate as ratio of aborted to total transactions
     fn get_transaction_abort_rate(&self) -> f64 {
-        // TODO: Query transaction abort rate from metrics
-        0.0
+        use crate::metrics::TRANSACTION_TOTAL;
+
+        // Transaction types and statuses
+        let txn_types = ["read-only", "read-write"];
+        let abort_statuses = ["aborted", "rolled-back"];
+        let all_statuses = ["committed", "aborted", "rolled-back"];
+
+        let mut aborted = 0.0_f64;
+        let mut total = 0.0_f64;
+
+        for txn_type in &txn_types {
+            for status in &all_statuses {
+                let value = TRANSACTION_TOTAL.with_label_values(&[txn_type, status]).get();
+                total += value;
+                if abort_statuses.contains(status) {
+                    aborted += value;
+                }
+            }
+        }
+
+        if total > 0.0 {
+            (aborted / total) * 100.0 // Return as percentage
+        } else {
+            0.0
+        }
     }
 
+    /// Get slow query rate as percentage of total queries
     fn get_slow_query_rate(&self) -> f64 {
-        // TODO: Query slow query rate from metrics
-        0.0
+        use crate::metrics::{QUERY_TOTAL, SLOW_QUERIES_TOTAL};
+
+        // Count slow queries by type
+        let query_types = ["SELECT", "INSERT", "UPDATE", "DELETE", "PATCH"];
+
+        let mut slow_count = 0.0_f64;
+        for query_type in &query_types {
+            slow_count += SLOW_QUERIES_TOTAL.with_label_values(&[query_type]).get();
+        }
+
+        // Count total queries
+        let statuses = ["success", "error"];
+        let mut total_count = 0.0_f64;
+        for query_type in &query_types {
+            for status in &statuses {
+                total_count += QUERY_TOTAL.with_label_values(&[query_type, status]).get();
+            }
+        }
+
+        if total_count > 0.0 {
+            (slow_count / total_count) * 100.0
+        } else {
+            0.0
+        }
     }
 
+    /// Get CPU usage percentage using sysinfo
     fn get_cpu_usage_percent(&self) -> f64 {
-        // TODO: Query CPU usage from system
-        0.0
+        use crate::metrics::CPU_USAGE_PERCENT;
+
+        // First try to get from our metric (updated by update_system_metrics)
+        let process_cpu = CPU_USAGE_PERCENT.with_label_values(&["process"]).get();
+
+        if process_cpu > 0.0 {
+            process_cpu
+        } else {
+            // Fallback: calculate directly using sysinfo
+            use sysinfo::{Pid, System};
+            let mut sys = System::new();
+            sys.refresh_all();
+
+            let pid = Pid::from(std::process::id() as usize);
+            if let Some(process) = sys.process(pid) {
+                process.cpu_usage() as f64
+            } else {
+                0.0
+            }
+        }
     }
 }
 

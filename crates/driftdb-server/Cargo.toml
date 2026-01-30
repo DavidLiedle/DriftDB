@@ -45,6 +45,7 @@ prometheus = { version = "0.14", features = ["gen"] }
 lazy_static = "1.4"
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.30"
+fs2 = "0.4"
 sqlparser = "0.51"
 # TLS support
 tokio-rustls = "0.25"

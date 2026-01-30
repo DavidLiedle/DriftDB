@@ -9,7 +9,7 @@ use crate::encryption::EncryptionService;
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
 use crate::schema::Schema;
-use crate::storage::{Segment, SegmentWriter, TableMeta};
+use crate::storage::{Segment, SegmentBounds, SegmentWriter, TableMeta};
 
 #[derive(Debug, Clone)]
 pub struct TableStats {
@@ -118,14 +118,95 @@ impl TableStorage {
             segment.create()?
         };
 
-        Ok(Self {
+        let storage = Self {
             path,
             schema,
             meta: Arc::new(RwLock::new(meta)),
             current_writer: Arc::new(RwLock::new(Some(writer))),
             encryption_service,
             _lock_file: Some(lock_file),
-        })
+        };
+
+        // Build segment index if needed
+        storage.ensure_segment_index()?;
+
+        Ok(storage)
+    }
+
+    /// Ensure the segment index is built and up-to-date
+    fn ensure_segment_index(&self) -> Result<()> {
+        let meta = self.meta.read();
+        if meta.segment_index.needs_rebuild(meta.segment_count) {
+            drop(meta); // Release read lock before acquiring write lock
+            self.build_segment_index()?;
+        }
+        Ok(())
+    }
+
+    /// Scan all segments and build the sequence index
+    pub fn build_segment_index(&self) -> Result<()> {
+        let segments_dir = self.path.join("segments");
+
+        let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s == "seg")
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        segment_files.sort_by_key(|entry| entry.path());
+
+        let mut meta = self.meta.write();
+
+        for entry in segment_files {
+            // Extract segment ID from filename (e.g., "00000001.seg" -> 1)
+            let segment_id = entry
+                .path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            if segment_id == 0 {
+                continue;
+            }
+
+            // Check if we already have bounds for this segment
+            if meta.segment_index.segments.contains_key(&segment_id) {
+                continue;
+            }
+
+            // Read segment to get min/max sequence
+            let segment = if let Some(ref encryption_service) = self.encryption_service {
+                Segment::new_with_encryption(entry.path(), segment_id, encryption_service.clone())
+            } else {
+                Segment::new(entry.path(), segment_id)
+            };
+
+            if let Ok(mut reader) = segment.open_reader() {
+                let events = reader.read_all_events().unwrap_or_default();
+                if !events.is_empty() {
+                    let min_seq = events.first().map(|e| e.sequence).unwrap_or(0);
+                    let max_seq = events.last().map(|e| e.sequence).unwrap_or(0);
+                    let event_count = events.len() as u64;
+
+                    meta.segment_index.update_segment(
+                        segment_id,
+                        SegmentBounds::new(min_seq, max_seq, event_count),
+                    );
+                }
+            }
+        }
+
+        // Save updated meta with segment index
+        meta.save_to_file(self.path.join("meta.json"))?;
+
+        Ok(())
     }
 
     pub fn append_event(&self, mut event: Event) -> Result<u64> {
@@ -135,13 +216,26 @@ impl TableStorage {
         meta.last_sequence += 1;
         event.sequence = meta.last_sequence;
 
+        let current_segment_id = meta.segment_count;
+
         if let Some(writer) = writer_guard.as_mut() {
             let bytes_written = writer.append_event(&event)?;
 
             // Always sync after writing to ensure data is persisted
             writer.sync()?;
 
+            // Update segment index bounds for current segment
+            let bounds = meta
+                .segment_index
+                .segments
+                .entry(current_segment_id)
+                .or_insert_with(|| SegmentBounds::new(event.sequence, event.sequence, 0));
+            // Update max_sequence and event_count
+            bounds.max_sequence = event.sequence;
+            bounds.event_count += 1;
+
             if bytes_written > self.segment_rotation_threshold() {
+                // Rotate to new segment
                 meta.segment_count += 1;
                 let new_segment_path = self
                     .path
@@ -334,9 +428,24 @@ impl TableStorage {
     }
 
     /// Read only events after a specific sequence number
+    /// Uses the segment index to skip segments that don't contain relevant events
     pub fn read_events_after_sequence(&self, after_seq: u64) -> Result<Vec<Event>> {
-        // For now, just filter from all events
-        // TODO: Optimize this to only read relevant segments
+        let meta = self.meta.read();
+
+        // If segment index is available and populated, use optimized path
+        if !meta.segment_index.segments.is_empty() {
+            // Find the first segment that might contain events after after_seq
+            if let Some(first_segment_id) = meta.segment_index.find_first_segment_after(after_seq) {
+                drop(meta); // Release lock before reading segments
+                return self.read_events_from_segments_after(first_segment_id, after_seq);
+            } else {
+                // No segments contain events after after_seq
+                return Ok(Vec::new());
+            }
+        }
+
+        // Fallback to unoptimized path if index is not available
+        drop(meta);
         let all_events = self.read_all_events()?;
 
         let filtered_events: Vec<Event> = all_events
@@ -345,6 +454,64 @@ impl TableStorage {
             .collect();
 
         Ok(filtered_events)
+    }
+
+    /// Read events from segments starting at a specific segment ID, filtering by sequence
+    fn read_events_from_segments_after(
+        &self,
+        start_segment_id: u64,
+        after_seq: u64,
+    ) -> Result<Vec<Event>> {
+        let segments_dir = self.path.join("segments");
+        let mut all_events = Vec::new();
+
+        // Get segment files, sorted by name
+        let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s == "seg")
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        segment_files.sort_by_key(|entry| entry.path());
+
+        for entry in segment_files {
+            // Extract segment ID from filename
+            let segment_id = entry
+                .path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            // Skip segments before the start segment
+            if segment_id < start_segment_id {
+                continue;
+            }
+
+            let segment = if let Some(ref encryption_service) = self.encryption_service {
+                Segment::new_with_encryption(entry.path(), segment_id, encryption_service.clone())
+            } else {
+                Segment::new(entry.path(), segment_id)
+            };
+
+            let mut reader = segment.open_reader()?;
+            let segment_events = reader.read_all_events()?;
+
+            // Filter events to only those after after_seq
+            for event in segment_events {
+                if event.sequence > after_seq {
+                    all_events.push(event);
+                }
+            }
+        }
+
+        Ok(all_events)
     }
 
     pub fn find_sequence_at_timestamp(

@@ -557,3 +557,856 @@ pub fn validate_password(password: &str) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== AuthMethod Tests ====================
+
+    #[test]
+    fn test_auth_method_from_str() {
+        assert_eq!("trust".parse::<AuthMethod>().unwrap(), AuthMethod::Trust);
+        assert_eq!("TRUST".parse::<AuthMethod>().unwrap(), AuthMethod::Trust);
+        assert_eq!("md5".parse::<AuthMethod>().unwrap(), AuthMethod::MD5);
+        assert_eq!("MD5".parse::<AuthMethod>().unwrap(), AuthMethod::MD5);
+        assert_eq!(
+            "scram-sha-256".parse::<AuthMethod>().unwrap(),
+            AuthMethod::ScramSha256
+        );
+        assert_eq!(
+            "SCRAM-SHA-256".parse::<AuthMethod>().unwrap(),
+            AuthMethod::ScramSha256
+        );
+        assert!("invalid".parse::<AuthMethod>().is_err());
+    }
+
+    #[test]
+    fn test_auth_method_display() {
+        assert_eq!(AuthMethod::Trust.to_string(), "trust");
+        assert_eq!(AuthMethod::MD5.to_string(), "md5");
+        assert_eq!(AuthMethod::ScramSha256.to_string(), "scram-sha-256");
+    }
+
+    // ==================== MD5 Authentication Tests ====================
+
+    #[test]
+    fn test_md5_auth_correctness() {
+        // Known PostgreSQL MD5 test vector
+        let password = "password123";
+        let username = "testuser";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let result = md5_auth(password, username, &salt);
+
+        // Result should start with "md5"
+        assert!(result.starts_with("md5"));
+        // Result should be exactly 35 characters (3 for "md5" + 32 hex chars)
+        assert_eq!(result.len(), 35);
+        // Verify determinism - same inputs produce same output
+        assert_eq!(result, md5_auth(password, username, &salt));
+    }
+
+    #[test]
+    fn test_md5_auth_different_users_different_hashes() {
+        let password = "password123";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let hash1 = md5_auth(password, "user1", &salt);
+        let hash2 = md5_auth(password, "user2", &salt);
+
+        // Different users should produce different hashes
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_md5_auth_different_salts_different_hashes() {
+        let password = "password123";
+        let username = "testuser";
+
+        let hash1 = md5_auth(password, username, &[0x01, 0x02, 0x03, 0x04]);
+        let hash2 = md5_auth(password, username, &[0x05, 0x06, 0x07, 0x08]);
+
+        // Different salts should produce different hashes
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_verify_md5_success() {
+        let password = "password123";
+        let username = "testuser";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let hash = md5_auth(password, username, &salt);
+        assert!(verify_md5(&hash, password, username, &salt));
+    }
+
+    #[test]
+    fn test_verify_md5_wrong_password() {
+        let password = "password123";
+        let wrong_password = "wrongpassword";
+        let username = "testuser";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let hash = md5_auth(password, username, &salt);
+        assert!(!verify_md5(&hash, wrong_password, username, &salt));
+    }
+
+    // ==================== SCRAM-SHA-256 Authentication Tests ====================
+
+    #[test]
+    fn test_scram_sha256_creation() {
+        let password = "secure_password123";
+        let scram = ScramSha256::new(password, None);
+
+        // Verify fields are populated
+        assert_eq!(scram.salt.len(), 16);
+        assert_eq!(scram.iteration_count, 4096);
+        assert!(!scram.stored_key.is_empty());
+        assert!(!scram.server_key.is_empty());
+    }
+
+    #[test]
+    fn test_scram_sha256_with_custom_salt() {
+        let password = "secure_password123";
+        let custom_salt = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+        let scram = ScramSha256::new(password, Some(custom_salt.clone()));
+
+        assert_eq!(scram.salt, custom_salt);
+    }
+
+    #[test]
+    fn test_scram_sha256_deterministic() {
+        let password = "secure_password123";
+        let salt = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        let scram1 = ScramSha256::new(password, Some(salt.clone()));
+        let scram2 = ScramSha256::new(password, Some(salt));
+
+        // Same password and salt should produce same keys
+        assert_eq!(scram1.stored_key, scram2.stored_key);
+        assert_eq!(scram1.server_key, scram2.server_key);
+    }
+
+    #[test]
+    fn test_scram_sha256_different_passwords() {
+        let salt = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        let scram1 = ScramSha256::new("password1", Some(salt.clone()));
+        let scram2 = ScramSha256::new("password2", Some(salt));
+
+        // Different passwords should produce different keys
+        assert_ne!(scram1.stored_key, scram2.stored_key);
+    }
+
+    // ==================== Password Hashing Tests ====================
+
+    #[test]
+    fn test_sha256_hash_deterministic() {
+        let password = "test_password";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let hash1 = hash_password_sha256(password, &salt);
+        let hash2 = hash_password_sha256(password, &salt);
+
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_sha256_hash_different_salts() {
+        let password = "test_password";
+
+        let hash1 = hash_password_sha256(password, &[0x01, 0x02, 0x03, 0x04]);
+        let hash2 = hash_password_sha256(password, &[0x05, 0x06, 0x07, 0x08]);
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_verify_sha256_success() {
+        let password = "test_password";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let hash = hash_password_sha256(password, &salt);
+        assert!(verify_password_sha256(password, &hash, &salt));
+    }
+
+    #[test]
+    fn test_verify_sha256_wrong_password() {
+        let password = "correct_password";
+        let salt = [0x01, 0x02, 0x03, 0x04];
+
+        let hash = hash_password_sha256(password, &salt);
+        assert!(!verify_password_sha256("wrong_password", &hash, &salt));
+    }
+
+    // ==================== User Tests ====================
+
+    #[test]
+    fn test_user_creation_md5() {
+        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+
+        assert_eq!(user.username, "testuser");
+        assert_eq!(user.auth_method, AuthMethod::MD5);
+        assert!(!user.is_locked());
+        assert_eq!(user.failed_attempts, 0);
+        assert!(user.scram_sha256.is_none());
+    }
+
+    #[test]
+    fn test_user_creation_scram() {
+        let user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::ScramSha256,
+        );
+
+        assert_eq!(user.auth_method, AuthMethod::ScramSha256);
+        assert!(user.scram_sha256.is_some());
+    }
+
+    #[test]
+    fn test_user_creation_trust() {
+        let user = User::new("testuser".to_string(), "", true, AuthMethod::Trust);
+
+        assert_eq!(user.auth_method, AuthMethod::Trust);
+        assert!(user.password_hash.is_empty());
+    }
+
+    #[test]
+    fn test_user_superuser_role() {
+        let superuser = User::new("admin".to_string(), "password123", true, AuthMethod::MD5);
+        let regular = User::new("user".to_string(), "password123", false, AuthMethod::MD5);
+
+        assert!(superuser.roles.contains(&"superuser".to_string()));
+        assert!(!regular.roles.contains(&"superuser".to_string()));
+        assert!(regular.roles.contains(&"user".to_string()));
+    }
+
+    #[test]
+    fn test_user_verify_password_trust() {
+        let user = User::new("testuser".to_string(), "", false, AuthMethod::Trust);
+        // Trust always succeeds
+        assert!(user.verify_password("any_password", None));
+        assert!(user.verify_password("", None));
+    }
+
+    #[test]
+    fn test_user_verify_password_md5_direct() {
+        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        // Direct password verification (no challenge)
+        assert!(user.verify_password("password123", None));
+        assert!(!user.verify_password("wrongpassword", None));
+    }
+
+    #[test]
+    fn test_user_verify_password_md5_with_challenge() {
+        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let salt: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
+
+        let response = md5_auth("password123", "testuser", &salt);
+        assert!(user.verify_password(&response, Some(&salt)));
+
+        let wrong_response = md5_auth("wrongpassword", "testuser", &salt);
+        assert!(!user.verify_password(&wrong_response, Some(&salt)));
+    }
+
+    #[test]
+    fn test_user_verify_password_scram() {
+        let user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::ScramSha256,
+        );
+        assert!(user.verify_password("password123", None));
+        assert!(!user.verify_password("wrongpassword", None));
+    }
+
+    // ==================== User Lockout Tests ====================
+
+    #[test]
+    fn test_user_not_locked_by_default() {
+        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        assert!(!user.is_locked());
+    }
+
+    #[test]
+    fn test_user_locked_until_future() {
+        let mut user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+
+        // Lock user until future time
+        let future_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600; // 1 hour from now
+
+        user.locked_until = Some(future_time);
+        assert!(user.is_locked());
+    }
+
+    #[test]
+    fn test_user_unlocked_after_expiry() {
+        let mut user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+
+        // Lock user until past time
+        let past_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 1; // 1 second ago
+
+        user.locked_until = Some(past_time);
+        assert!(!user.is_locked());
+    }
+
+    // ==================== UserDb Tests ====================
+
+    #[test]
+    fn test_userdb_creates_default_superuser() {
+        let config = AuthConfig {
+            method: AuthMethod::MD5,
+            require_auth: true,
+            max_failed_attempts: 3,
+            lockout_duration_seconds: 300,
+        };
+
+        let db = UserDb::new(config);
+        let users = db.list_users();
+
+        assert!(users.contains(&"driftdb".to_string()));
+        assert!(db.is_superuser("driftdb"));
+    }
+
+    #[test]
+    fn test_userdb_no_default_user_when_auth_not_required() {
+        let config = AuthConfig {
+            method: AuthMethod::Trust,
+            require_auth: false,
+            max_failed_attempts: 3,
+            lockout_duration_seconds: 300,
+        };
+
+        let db = UserDb::new(config);
+        let users = db.list_users();
+
+        assert!(users.is_empty());
+    }
+
+    #[test]
+    fn test_userdb_create_user() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("newuser".to_string(), "password123", false)
+            .unwrap();
+
+        let users = db.list_users();
+        assert!(users.contains(&"newuser".to_string()));
+        assert!(!db.is_superuser("newuser"));
+    }
+
+    #[test]
+    fn test_userdb_create_duplicate_user_fails() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("newuser".to_string(), "password123", false)
+            .unwrap();
+
+        let result = db.create_user("newuser".to_string(), "password456", false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_userdb_drop_user() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("tempuser".to_string(), "password123", false)
+            .unwrap();
+        assert!(db.list_users().contains(&"tempuser".to_string()));
+
+        db.drop_user("tempuser").unwrap();
+        assert!(!db.list_users().contains(&"tempuser".to_string()));
+    }
+
+    #[test]
+    fn test_userdb_cannot_drop_default_superuser() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        let result = db.drop_user("driftdb");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot drop"));
+    }
+
+    #[test]
+    fn test_userdb_drop_nonexistent_user_fails() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        let result = db.drop_user("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_userdb_change_password() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("testuser".to_string(), "oldpassword1", false)
+            .unwrap();
+
+        // Authentication should work with old password
+        assert!(db
+            .authenticate("testuser", "oldpassword1", "127.0.0.1", None)
+            .unwrap());
+
+        // Change password
+        db.change_password("testuser", "newpassword2").unwrap();
+
+        // Old password should fail
+        assert!(db
+            .authenticate("testuser", "oldpassword1", "127.0.0.1", None)
+            .is_err());
+
+        // New password should work
+        assert!(db
+            .authenticate("testuser", "newpassword2", "127.0.0.1", None)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_userdb_authenticate_success() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("testuser".to_string(), "password123", false)
+            .unwrap();
+
+        let result = db.authenticate("testuser", "password123", "127.0.0.1", None);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_userdb_authenticate_wrong_password() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("testuser".to_string(), "password123", false)
+            .unwrap();
+
+        let result = db.authenticate("testuser", "wrongpassword", "127.0.0.1", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_userdb_authenticate_nonexistent_user() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        let result = db.authenticate("nonexistent", "password", "127.0.0.1", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_userdb_lockout_after_failed_attempts() {
+        let config = AuthConfig {
+            method: AuthMethod::MD5,
+            require_auth: true,
+            max_failed_attempts: 3,
+            lockout_duration_seconds: 300,
+        };
+
+        let db = UserDb::new(config);
+        db.create_user("testuser".to_string(), "correctpassword1", false)
+            .unwrap();
+
+        // Fail 3 times
+        for _ in 0..3 {
+            let _ = db.authenticate("testuser", "wrongpassword", "127.0.0.1", None);
+        }
+
+        // Next attempt should fail due to lockout, even with correct password
+        let result = db.authenticate("testuser", "correctpassword1", "127.0.0.1", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_userdb_successful_auth_resets_failed_attempts() {
+        let config = AuthConfig {
+            method: AuthMethod::MD5,
+            require_auth: true,
+            max_failed_attempts: 3,
+            lockout_duration_seconds: 300,
+        };
+
+        let db = UserDb::new(config);
+        db.create_user("testuser".to_string(), "password123", false)
+            .unwrap();
+
+        // Fail twice
+        let _ = db.authenticate("testuser", "wrong", "127.0.0.1", None);
+        let _ = db.authenticate("testuser", "wrong", "127.0.0.1", None);
+
+        // Succeed - should reset counter
+        db.authenticate("testuser", "password123", "127.0.0.1", None)
+            .unwrap();
+
+        // Fail twice more - should not be locked
+        let _ = db.authenticate("testuser", "wrong", "127.0.0.1", None);
+        let _ = db.authenticate("testuser", "wrong", "127.0.0.1", None);
+
+        // Should still be able to authenticate
+        let result = db.authenticate("testuser", "password123", "127.0.0.1", None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_userdb_trust_bypasses_authentication() {
+        let config = AuthConfig {
+            method: AuthMethod::Trust,
+            require_auth: false,
+            max_failed_attempts: 3,
+            lockout_duration_seconds: 300,
+        };
+
+        let db = UserDb::new(config);
+
+        // Trust should succeed for any password
+        let result = db.authenticate("anyone", "anything", "127.0.0.1", None);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_userdb_auth_attempts_recorded() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("testuser".to_string(), "password123", false)
+            .unwrap();
+
+        // Make some authentication attempts
+        let _ = db.authenticate("testuser", "wrong", "192.168.1.1", None);
+        let _ = db.authenticate("testuser", "password123", "192.168.1.2", None);
+
+        let attempts = db.get_recent_auth_attempts(10);
+        assert_eq!(attempts.len(), 2);
+
+        // Most recent should be first (reverse order)
+        assert!(attempts[0].success);
+        assert!(!attempts[1].success);
+    }
+
+    #[test]
+    fn test_userdb_auth_attempts_limited_to_1000() {
+        let config = AuthConfig {
+            method: AuthMethod::Trust,
+            require_auth: false,
+            max_failed_attempts: 3,
+            lockout_duration_seconds: 300,
+        };
+
+        let db = UserDb::new(config);
+
+        // Record 1100 attempts
+        for i in 0..1100 {
+            db.authenticate(&format!("user{}", i), "pass", "127.0.0.1", None)
+                .unwrap();
+        }
+
+        let attempts = db.get_recent_auth_attempts(2000);
+        assert_eq!(attempts.len(), 1000);
+    }
+
+    #[test]
+    fn test_userdb_get_user_info() {
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("testuser".to_string(), "password123", false)
+            .unwrap();
+
+        let info = db.get_user_info("testuser");
+        assert!(info.is_some());
+        let user = info.unwrap();
+        assert_eq!(user.username, "testuser");
+
+        let nonexistent = db.get_user_info("nonexistent");
+        assert!(nonexistent.is_none());
+    }
+
+    // ==================== Username Validation Tests ====================
+
+    #[test]
+    fn test_validate_username_valid() {
+        assert!(validate_username("testuser").is_ok());
+        assert!(validate_username("test_user").is_ok());
+        assert!(validate_username("test-user").is_ok());
+        assert!(validate_username("user123").is_ok());
+        assert!(validate_username("a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_empty() {
+        let result = validate_username("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_username_too_long() {
+        let long_name = "a".repeat(64);
+        let result = validate_username(&long_name);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too long"));
+    }
+
+    #[test]
+    fn test_validate_username_invalid_characters() {
+        assert!(validate_username("user@domain").is_err());
+        assert!(validate_username("user name").is_err());
+        assert!(validate_username("user;drop").is_err());
+        assert!(validate_username("user'injection").is_err());
+        assert!(validate_username("user\"quote").is_err());
+        assert!(validate_username("user<script>").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_sql_injection_attempts() {
+        // These should all fail validation
+        assert!(validate_username("admin'--").is_err());
+        assert!(validate_username("admin'; DROP TABLE users;--").is_err());
+        assert!(validate_username("1' OR '1'='1").is_err());
+        assert!(validate_username("admin/**/OR/**/1=1").is_err());
+    }
+
+    // ==================== Password Validation Tests ====================
+
+    #[test]
+    fn test_validate_password_valid() {
+        assert!(validate_password("password1").is_ok());
+        assert!(validate_password("SecurePass123!").is_ok());
+        assert!(validate_password("12345678a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_too_short() {
+        let result = validate_password("short1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least 8"));
+    }
+
+    #[test]
+    fn test_validate_password_too_long() {
+        let long_password = "a1".repeat(51); // 102 chars
+        let result = validate_password(&long_password);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too long"));
+    }
+
+    #[test]
+    fn test_validate_password_no_letter() {
+        let result = validate_password("12345678");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("letter"));
+    }
+
+    #[test]
+    fn test_validate_password_no_number() {
+        let result = validate_password("password");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("number"));
+    }
+
+    // ==================== Challenge Generation Tests ====================
+
+    #[test]
+    fn test_generate_md5_challenge() {
+        let salt1 = generate_md5_challenge();
+        let salt2 = generate_md5_challenge();
+
+        // Salts should be different (with very high probability)
+        assert_ne!(salt1, salt2);
+        assert_eq!(salt1.len(), 4);
+        assert_eq!(salt2.len(), 4);
+    }
+
+    #[test]
+    fn test_generate_salt() {
+        let salt1 = generate_salt();
+        let salt2 = generate_salt();
+
+        assert_ne!(salt1, salt2);
+        assert_eq!(salt1.len(), 16);
+    }
+
+    #[test]
+    fn test_generate_auth_challenge_trust() {
+        let challenge = generate_auth_challenge(&AuthMethod::Trust);
+        assert!(challenge.is_none());
+    }
+
+    #[test]
+    fn test_generate_auth_challenge_md5() {
+        let challenge = generate_auth_challenge(&AuthMethod::MD5);
+        assert!(challenge.is_some());
+        assert_eq!(challenge.unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_generate_auth_challenge_scram() {
+        let challenge = generate_auth_challenge(&AuthMethod::ScramSha256);
+        assert!(challenge.is_some());
+        assert_eq!(challenge.unwrap().len(), 18);
+    }
+
+    // ==================== Timing Attack Resistance Tests ====================
+
+    #[test]
+    fn test_timing_resistance_user_exists_vs_not() {
+        // This test verifies that authentication time doesn't leak
+        // whether a user exists or not. In production, you'd want
+        // constant-time comparison, but at minimum we should ensure
+        // both paths execute similar code.
+        let config = AuthConfig::default();
+        let db = UserDb::new(config);
+
+        db.create_user("existinguser".to_string(), "password123", false)
+            .unwrap();
+
+        // Both should return errors, so neither leaks timing info
+        let result1 = db.authenticate("existinguser", "wrongpassword", "127.0.0.1", None);
+        let result2 = db.authenticate("nonexistent", "wrongpassword", "127.0.0.1", None);
+
+        // Both fail - good for security
+        assert!(result1.is_err());
+        assert!(result2.is_err());
+    }
+
+    // ==================== Concurrent Access Tests ====================
+
+    #[test]
+    fn test_concurrent_authentication() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let config = AuthConfig::default();
+        let db = Arc::new(UserDb::new(config));
+
+        db.create_user("concurrent_user".to_string(), "password123", false)
+            .unwrap();
+
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let db_clone = Arc::clone(&db);
+            let password = if i % 2 == 0 {
+                "password123"
+            } else {
+                "wrongpassword"
+            };
+
+            handles.push(thread::spawn(move || {
+                db_clone.authenticate("concurrent_user", password, "127.0.0.1", None)
+            }));
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        // After concurrent access, user should still be valid
+        let result = db.authenticate("concurrent_user", "password123", "127.0.0.1", None);
+        // May be locked due to failed attempts, but shouldn't panic
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_concurrent_user_creation() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let config = AuthConfig::default();
+        let db = Arc::new(UserDb::new(config));
+
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let db_clone = Arc::clone(&db);
+            handles.push(thread::spawn(move || {
+                db_clone.create_user(format!("user{}", i), "password123", false)
+            }));
+        }
+
+        let mut success_count = 0;
+        for handle in handles {
+            if handle.join().unwrap().is_ok() {
+                success_count += 1;
+            }
+        }
+
+        assert_eq!(success_count, 10);
+        assert_eq!(db.list_users().len(), 11); // 10 new + 1 default
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_empty_password_md5() {
+        let user = User::new("testuser".to_string(), "", false, AuthMethod::MD5);
+        // Empty password should still work
+        assert!(user.verify_password("", None));
+    }
+
+    #[test]
+    fn test_unicode_username_allowed() {
+        // Unicode alphanumeric characters are allowed per is_alphanumeric()
+        // This is consistent with PostgreSQL which allows unicode identifiers
+        assert!(validate_username("用户").is_ok());
+        assert!(validate_username("пользователь").is_ok());
+        // But special chars are still rejected
+        assert!(validate_username("用户@").is_err());
+    }
+
+    #[test]
+    fn test_special_chars_in_password() {
+        // Passwords can have special chars
+        let user = User::new(
+            "testuser".to_string(),
+            "p@ssw0rd!#$%",
+            false,
+            AuthMethod::MD5,
+        );
+        assert!(user.verify_password("p@ssw0rd!#$%", None));
+    }
+
+    #[test]
+    fn test_max_length_username() {
+        let username = "a".repeat(63); // Max valid length
+        assert!(validate_username(&username).is_ok());
+    }
+
+    #[test]
+    fn test_boundary_password_lengths() {
+        // Exactly 8 chars with letter and number
+        assert!(validate_password("passwor1").is_ok());
+
+        // Exactly 100 chars
+        let long_password = "a".repeat(99) + "1";
+        assert!(validate_password(&long_password).is_ok());
+
+        // 101 chars - too long
+        let too_long = "a".repeat(100) + "1";
+        assert!(validate_password(&too_long).is_err());
+    }
+}

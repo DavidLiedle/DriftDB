@@ -43,6 +43,41 @@ jobs:
       - name: Security audit
         run: cargo install cargo-audit --locked && cargo audit
 
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download baseline
+        uses: actions/cache@v4
+        with:
+          path: benchmarks/baseline
+          key: benchmark-baseline-${{ github.base_ref }}
+          restore-keys: |
+            benchmark-baseline-main
+            benchmark-baseline-
+
+      - name: Run benchmark regression check
+        run: ./scripts/benchmark_regression.sh --threshold 15
+        continue-on-error: true
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: |
+            benchmark_report.txt
+            target/criterion/
+
   build-release:
     name: Build Release
     needs: test

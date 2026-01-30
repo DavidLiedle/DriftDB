@@ -911,6 +911,7 @@ version = "0.9.0-alpha"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "chrono",
  "clap",
  "driftdb-core",
  "predicates",
@@ -1009,6 +1010,7 @@ dependencies = [
  "clap",
  "dashmap",
  "driftdb-core",
+ "fs2",
  "futures",
  "hex",
  "hmac",

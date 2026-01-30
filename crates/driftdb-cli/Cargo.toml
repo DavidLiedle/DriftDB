@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 time = { workspace = true }
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }

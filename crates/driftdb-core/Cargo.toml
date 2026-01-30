@@ -77,3 +77,8 @@ path = "../../benches/time_travel_bench.rs"
 name = "core_operations"
 harness = false
 path = "../../benches/core_operations.rs"
+
+[[bench]]
+name = "large_scale_bench"
+harness = false
+path = "../../benches/large_scale_bench.rs"

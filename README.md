@@ -1,6 +1,6 @@
 # DriftDB
 
-**Experimental PostgreSQL-Compatible Time-Travel Database (v0.9.0-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
+**Experimental PostgreSQL-Compatible Time-Travel Database (v0.9.1-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
 
 ⚠️ **ALPHA SOFTWARE - NOT FOR PRODUCTION USE**: This version contains experimental implementations of enterprise features. The codebase compiles cleanly with zero warnings and includes comprehensive CI with security auditing. Many advanced features remain as architectural designs requiring implementation.
 
@@ -100,14 +100,16 @@ SELECT * FROM events;                -- Shows 'modified'
 - **Secondary indexes**: B-tree indexes for fast lookups
 - **Snapshots & compaction**: Optimized performance with compression
 
-### Planned Enterprise Features (Not Yet Functional)
-The following features have been architecturally designed but are not yet operational:
-- **Authentication & Authorization**: Planned RBAC with user management (code incomplete)
-- **Encryption at Rest**: Designed AES-256-GCM encryption (not functional)
-- **Distributed Consensus**: Raft protocol structure (requires debugging)
-- **Advanced Transactions**: MVCC design for isolation levels (partial implementation)
-- **Enterprise Backup**: Backup system architecture (compilation errors)
-- **Security Monitoring**: Monitoring framework (not integrated)
+### Enterprise Features (In Progress)
+The following features have been architecturally designed with varying levels of implementation:
+- **Row-Level Security**: Policy-based access control with SQL injection protection
+- **MVCC Isolation**: Multi-version concurrency control with SSI write-skew detection
+- **Query Optimizer**: Cost-based optimization with join reordering and index selection
+- **Point-in-Time Recovery**: Restore database to any timestamp
+- **Alerting System**: Real-time metrics monitoring with configurable alerts
+- **Authentication & Authorization**: RBAC with user management (partial)
+- **Encryption at Rest**: AES-256-GCM encryption (partial)
+- **Performance Regression Detection**: CI-integrated benchmark comparison
 
 ### Working Infrastructure
 - **Connection pooling**: Thread-safe connection pool with RAII guards
@@ -562,6 +564,12 @@ make test
 # Run benchmarks
 make bench
 
+# Save benchmark baseline (for regression detection)
+make bench-baseline
+
+# Check for performance regressions (10% threshold)
+make bench-check
+
 # Format code
 make fmt
 
@@ -571,6 +579,23 @@ make clippy
 # Full CI checks
 make ci
 ```
+
+### Performance Regression Detection
+
+DriftDB includes automated benchmark regression detection:
+
+```bash
+# Save current performance as baseline
+./scripts/benchmark_regression.sh --save-baseline
+
+# Check for regressions (default 10% threshold)
+./scripts/benchmark_regression.sh
+
+# Check with custom threshold
+./scripts/benchmark_regression.sh --threshold 5
+```
+
+The CI pipeline automatically checks for performance regressions on pull requests.
 
 ## Performance
 
@@ -671,13 +696,17 @@ DriftDB is currently in **alpha** stage with significant recent improvements but
 | PostgreSQL Protocol | 🟢 Working | Yes |
 | WAL & Crash Recovery | 🟡 Beta | Almost |
 | ACID Transactions | 🟡 Beta | Almost |
+| MVCC Isolation | 🟡 Beta | Almost |
 | Event Sourcing | 🟢 Working | Yes |
 | WHERE Clause Support | 🟢 Working | Yes |
 | UPDATE/DELETE | 🟢 Working | Yes |
+| Row-Level Security | 🟡 Beta | Almost |
+| Query Optimizer | 🟡 Beta | Almost |
+| Point-in-Time Recovery | 🟡 Beta | Almost |
 | Replication Framework | 🟡 Beta | Almost |
 | Schema Migrations | 🟡 Beta | Almost |
 | Connection Pooling | 🔶 Alpha | No |
-| Monitoring & Metrics | 🔶 Placeholder | No |
+| Monitoring & Alerting | 🟡 Beta | Almost |
 | Admin Tools | 🔶 Alpha | No |
 
 ## Roadmap

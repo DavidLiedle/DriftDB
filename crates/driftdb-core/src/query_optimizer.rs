@@ -461,9 +461,400 @@ impl QueryOptimizer {
     }
 
     /// Generate index-optimized plan
+    ///
+    /// Analyzes WHERE conditions and available indexes to determine if an index scan
+    /// would be more efficient than a full table scan.
     fn generate_index_optimized_plan(&self, query: &OptimizableQuery) -> Result<ExecutionPlan> {
-        // TODO: Implement index selection logic
-        self.generate_basic_plan(query)
+        // Get the primary table
+        let table = query.tables.first().ok_or_else(|| {
+            DriftError::InvalidQuery("No tables in query".to_string())
+        })?;
+
+        // Find the best index for the query conditions
+        let best_index = self.find_best_index(table, &query.where_conditions)?;
+
+        let current_node = match best_index {
+            Some((index_name, index_conditions, remaining_conditions)) => {
+                // Create an index scan node
+                self.create_index_scan_node(
+                    table,
+                    &index_name,
+                    &index_conditions,
+                    &remaining_conditions,
+                )?
+            }
+            None => {
+                // No suitable index found, fall back to table scan
+                return self.generate_basic_plan(query);
+            }
+        };
+
+        // Add joins for multiple tables
+        let mut result_node = current_node;
+        for other_table in query.tables.iter().skip(1) {
+            let join_scan = self.create_table_scan_node(other_table, &[])?;
+            result_node = self.create_join_node(result_node, join_scan, &query.where_conditions)?;
+        }
+
+        // Add projection if specific columns requested
+        if !query.select_columns.is_empty() && query.select_columns != vec!["*".to_string()] {
+            result_node = PlanNode {
+                operation: PlanOperation::Project {
+                    columns: query.select_columns.clone(),
+                },
+                children: vec![result_node.clone()],
+                cost: 0.0,
+                cardinality: result_node.cardinality,
+                selectivity: result_node.selectivity,
+                resources: ResourceRequirements {
+                    memory_bytes: result_node.cardinality * 8,
+                    cpu_cycles: result_node.cardinality,
+                    io_operations: 0,
+                    network_operations: 0,
+                },
+            };
+        }
+
+        // Add sort if order by specified
+        if !query.order_by.is_empty() {
+            result_node = PlanNode {
+                operation: PlanOperation::Sort {
+                    columns: query.order_by.clone(),
+                    limit: query.limit,
+                },
+                children: vec![result_node.clone()],
+                cost: 0.0,
+                cardinality: result_node.cardinality,
+                selectivity: result_node.selectivity,
+                resources: ResourceRequirements {
+                    memory_bytes: result_node.cardinality * 100,
+                    cpu_cycles: (result_node.cardinality as f64
+                        * (result_node.cardinality as f64).log2().max(1.0))
+                        as u64,
+                    io_operations: 0,
+                    network_operations: 0,
+                },
+            };
+        }
+
+        // Add limit if specified
+        if let Some(limit) = query.limit {
+            result_node = PlanNode {
+                operation: PlanOperation::Limit {
+                    count: limit,
+                    offset: query.offset,
+                },
+                children: vec![result_node.clone()],
+                cost: 0.0,
+                cardinality: std::cmp::min(result_node.cardinality, limit as u64),
+                selectivity: result_node.selectivity,
+                resources: ResourceRequirements {
+                    memory_bytes: limit as u64 * 100,
+                    cpu_cycles: limit as u64,
+                    io_operations: 0,
+                    network_operations: 0,
+                },
+            };
+        }
+
+        Ok(ExecutionPlan {
+            root: result_node,
+            estimated_cost: 0.0,
+            estimated_time_ms: 0,
+            estimated_memory_bytes: 0,
+            metadata: OptimizationMetadata {
+                optimization_time_ms: 0,
+                plans_considered: 0,
+                strategy: "IndexOptimized".to_string(),
+                warnings: Vec::new(),
+                hints_applied: Vec::new(),
+            },
+        })
+    }
+
+    /// Find the best index for the given table and conditions
+    ///
+    /// Returns Option<(index_name, index_conditions, remaining_conditions)>
+    /// - index_conditions: predicates that can be pushed to the index
+    /// - remaining_conditions: predicates to apply after index lookup
+    #[allow(clippy::type_complexity)]
+    fn find_best_index(
+        &self,
+        table: &str,
+        conditions: &[WhereCondition],
+    ) -> Result<Option<(String, Vec<WhereCondition>, Vec<WhereCondition>)>> {
+        // Get table statistics including index info
+        let table_stats = match self.stats_provider.get_table_stats(table) {
+            Some(stats) => stats,
+            None => return Ok(None),
+        };
+
+        if table_stats.index_stats.is_empty() {
+            return Ok(None);
+        }
+
+        // Extract columns referenced in WHERE conditions
+        let filter_columns: Vec<&str> = conditions
+            .iter()
+            .map(|c| c.column.as_str())
+            .collect();
+
+        if filter_columns.is_empty() {
+            return Ok(None);
+        }
+
+        // Score each index based on applicability and efficiency
+        let mut best_score = 0.0;
+        let mut best_index: Option<String> = None;
+
+        for (index_name, index_stats) in &table_stats.index_stats {
+            let score = self.score_index(
+                index_name,
+                index_stats,
+                &filter_columns,
+                &table_stats,
+            );
+
+            if score > best_score {
+                best_score = score;
+                best_index = Some(index_name.clone());
+            }
+        }
+
+        // Check if the best index is worth using (threshold check)
+        // If selectivity is too high, table scan may be better
+        if best_score < 0.1 {
+            return Ok(None);
+        }
+
+        if let Some(index_name) = best_index {
+            // Partition conditions into index-applicable and remaining
+            let (index_conditions, remaining_conditions) =
+                self.partition_conditions_for_index(&index_name, conditions);
+
+            Ok(Some((index_name, index_conditions, remaining_conditions)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Score an index for the given query
+    ///
+    /// Higher scores indicate better index suitability.
+    /// Factors considered:
+    /// - Column match: Does the index cover query columns?
+    /// - Selectivity: How selective is the index? (fewer matching rows = better)
+    /// - Depth: Shallower indexes are faster
+    /// - Covering: Can the index satisfy the query without table lookups?
+    fn score_index(
+        &self,
+        index_name: &str,
+        index_stats: &IndexStatistics,
+        filter_columns: &[&str],
+        table_stats: &TableStatistics,
+    ) -> f64 {
+        let mut score = 0.0;
+
+        // Check if index covers any of the filter columns
+        // Index names typically include the column name (e.g., "idx_users_email")
+        let index_covers_column = filter_columns.iter().any(|col| {
+            index_name.contains(col) || index_name.to_lowercase().contains(&col.to_lowercase())
+        });
+
+        if !index_covers_column {
+            return 0.0;
+        }
+
+        // Base score for column match
+        score += 0.5;
+
+        // Selectivity score: fewer unique keys relative to total rows = more selective
+        // A good index should have high selectivity (close to 1.0)
+        let selectivity = if table_stats.row_count > 0 {
+            index_stats.unique_keys as f64 / table_stats.row_count as f64
+        } else {
+            0.5
+        };
+        score += selectivity * 0.3;
+
+        // Depth score: shallower B-tree = faster lookups
+        // Typical B-tree depths: 2-5 for most tables
+        let depth_score = match index_stats.depth {
+            0..=2 => 0.2,
+            3..=4 => 0.15,
+            5..=6 => 0.1,
+            _ => 0.05,
+        };
+        score += depth_score;
+
+        score
+    }
+
+    /// Partition conditions into those that can use the index and those that cannot
+    fn partition_conditions_for_index(
+        &self,
+        index_name: &str,
+        conditions: &[WhereCondition],
+    ) -> (Vec<WhereCondition>, Vec<WhereCondition>) {
+        let mut index_conditions = Vec::new();
+        let mut remaining_conditions = Vec::new();
+
+        // Operators that are suitable for index lookup
+        let index_friendly_operators = ["=", "<", "<=", ">", ">=", "IN", "BETWEEN"];
+
+        for condition in conditions {
+            let column = &condition.column;
+            let operator = condition.operator.to_uppercase();
+
+            // Check if operator is index-friendly
+            let is_index_friendly = index_friendly_operators
+                .iter()
+                .any(|op| operator.contains(op));
+
+            if is_index_friendly {
+                // Check if index covers this column
+                if index_name.contains(column)
+                    || index_name.to_lowercase().contains(&column.to_lowercase())
+                {
+                    index_conditions.push(condition.clone());
+                } else {
+                    remaining_conditions.push(condition.clone());
+                }
+            } else {
+                remaining_conditions.push(condition.clone());
+            }
+        }
+
+        (index_conditions, remaining_conditions)
+    }
+
+    /// Create an index scan node
+    fn create_index_scan_node(
+        &self,
+        table: &str,
+        index_name: &str,
+        key_conditions: &[WhereCondition],
+        remaining_conditions: &[WhereCondition],
+    ) -> Result<PlanNode> {
+        let table_stats = self.stats_provider.get_table_stats(table);
+        let index_stats = self.stats_provider.get_index_stats(index_name);
+
+        let total_rows = table_stats.as_ref().map(|s| s.row_count).unwrap_or(1000);
+
+        // Estimate selectivity based on key conditions
+        let selectivity = self.estimate_index_selectivity(
+            key_conditions,
+            index_stats.as_ref(),
+            total_rows,
+        );
+
+        // Create filter for remaining conditions
+        let filter = if !remaining_conditions.is_empty() {
+            Some(self.create_filter_expression(remaining_conditions)?)
+        } else {
+            None
+        };
+
+        let cardinality = (total_rows as f64 * selectivity) as u64;
+
+        // Index scan cost: lookup cost + result retrieval
+        let index_depth = index_stats.as_ref().map(|s| s.depth).unwrap_or(3);
+        let lookup_cost = (index_depth as f64) * self.config.cost_model.index_lookup_cost;
+        let retrieval_cost = cardinality as f64 * self.config.cost_model.seq_scan_cost_per_row * 0.5;
+        let total_cost = lookup_cost + retrieval_cost;
+
+        Ok(PlanNode {
+            operation: PlanOperation::IndexScan {
+                table: table.to_string(),
+                index: index_name.to_string(),
+                key_conditions: key_conditions.to_vec(),
+                filter,
+            },
+            children: vec![],
+            cost: total_cost,
+            cardinality,
+            selectivity,
+            resources: ResourceRequirements {
+                memory_bytes: cardinality * 100,
+                cpu_cycles: cardinality * 5, // Index scan is typically cheaper
+                io_operations: (cardinality / 100).max(1), // Fewer I/O due to index
+                network_operations: 0,
+            },
+        })
+    }
+
+    /// Estimate selectivity for index key conditions
+    fn estimate_index_selectivity(
+        &self,
+        conditions: &[WhereCondition],
+        index_stats: Option<&IndexStatistics>,
+        total_rows: usize,
+    ) -> f64 {
+        if conditions.is_empty() {
+            return 1.0;
+        }
+
+        // Base selectivity estimation
+        let mut selectivity = 1.0;
+
+        for condition in conditions {
+            let operator = condition.operator.to_uppercase();
+
+            let condition_selectivity = if operator == "=" || operator == "==" {
+                // Equality is highly selective
+                if let Some(stats) = index_stats {
+                    // Estimate based on unique keys
+                    if stats.unique_keys > 0 {
+                        1.0 / stats.unique_keys as f64
+                    } else {
+                        0.01
+                    }
+                } else {
+                    0.01
+                }
+            } else if operator.contains("IN") {
+                // IN clause - estimate number of values from the value field
+                let num_values = match &condition.value {
+                    Value::Array(arr) => arr.len(),
+                    _ => 1,
+                };
+                let base = if let Some(stats) = index_stats {
+                    1.0 / stats.unique_keys.max(1) as f64
+                } else {
+                    0.01
+                };
+                base * num_values as f64
+            } else if operator == "<" || operator == "<=" || operator == ">" || operator == ">=" {
+                // Range queries (typically 10-30% selectivity)
+                0.3
+            } else if operator.contains("BETWEEN") {
+                // Between (typically 10-20% selectivity)
+                0.2
+            } else if operator.contains("LIKE") {
+                // LIKE depends on pattern - if starts with wildcard, poor selectivity
+                if let Value::String(pattern) = &condition.value {
+                    if pattern.starts_with('%') {
+                        0.5 // Can't use index prefix efficiently
+                    } else {
+                        0.2 // Prefix match is more selective
+                    }
+                } else {
+                    0.5
+                }
+            } else if operator.contains("!=") || operator.contains("<>") {
+                // Not equals - poor selectivity
+                0.9
+            } else {
+                // Other conditions get default selectivity
+                0.5
+            };
+
+            // Combine selectivities (assuming independence)
+            selectivity *= condition_selectivity;
+        }
+
+        // Ensure selectivity is within valid range
+        selectivity.max(1.0 / total_rows as f64).min(1.0)
     }
 
     /// Generate parallel execution plan

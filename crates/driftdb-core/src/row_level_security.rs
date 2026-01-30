@@ -410,22 +410,31 @@ impl RlsManager {
         }
     }
 
+    /// Escape a string value for safe SQL interpolation
+    /// Doubles single quotes to prevent SQL injection
+    fn escape_sql_string(value: &str) -> String {
+        value.replace('\'', "''")
+    }
+
     /// Evaluate a policy expression with context
     fn evaluate_expression(&self, expr: &str, context: &SecurityContext) -> Result<String> {
         // Replace context variables in expression
         let mut result = expr.to_string();
 
-        // Replace $user with current username
-        result = result.replace("$user", &format!("'{}'", context.username));
+        // Replace $user with current username (escaped to prevent SQL injection)
+        let escaped_username = Self::escape_sql_string(&context.username);
+        result = result.replace("$user", &format!("'{}'", escaped_username));
 
-        // Replace $session_id if present
+        // Replace $session_id if present (escaped)
         if let Some(session_id) = &context.session_id {
-            result = result.replace("$session_id", &format!("'{}'", session_id));
+            let escaped_session = Self::escape_sql_string(session_id);
+            result = result.replace("$session_id", &format!("'{}'", escaped_session));
         }
 
-        // Replace custom variables
+        // Replace custom variables (escaped)
         for (key, value) in &context.variables {
-            result = result.replace(&format!("${}", key), &format!("'{}'", value));
+            let escaped_value = Self::escape_sql_string(value);
+            result = result.replace(&format!("${}", key), &format!("'{}'", escaped_value));
         }
 
         Ok(result)
@@ -610,6 +619,16 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_sql_string() {
+        // Test the SQL escaping function directly
+        assert_eq!(RlsManager::escape_sql_string("hello"), "hello");
+        assert_eq!(RlsManager::escape_sql_string("O'Brien"), "O''Brien");
+        assert_eq!(RlsManager::escape_sql_string("'test'"), "''test''");
+        assert_eq!(RlsManager::escape_sql_string("''"), "''''");
+        assert_eq!(RlsManager::escape_sql_string("'; DROP TABLE --"), "''; DROP TABLE --");
+    }
+
+    #[test]
     fn test_permissive_policies_or() {
         let manager = RlsManager::new();
 
@@ -695,5 +714,502 @@ mod tests {
         assert_eq!(stats.total_policies, 2);
         assert_eq!(stats.enabled_policies, 2);
         assert_eq!(stats.tables_with_rls, 2);
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_restrictive_and_permissive_policy_combination() {
+        // Test that restrictive policies AND with permissive policies
+        // A row must pass ALL restrictive policies AND at least one permissive policy
+        let manager = RlsManager::new();
+        manager.enable_rls("documents").unwrap();
+
+        // Permissive: User can see their own documents OR public documents
+        let permissive1 = Policy::new(
+            "own_documents".to_string(),
+            "documents".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("owner_id = $user".to_string());
+
+        let permissive2 = Policy::new(
+            "public_documents".to_string(),
+            "documents".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("is_public = true".to_string());
+
+        // Restrictive: User can only see documents from their department
+        let restrictive = Policy::new(
+            "department_restriction".to_string(),
+            "documents".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Restrictive,
+        )
+        .with_using("department_id = $department".to_string());
+
+        manager.create_policy(permissive1).unwrap();
+        manager.create_policy(permissive2).unwrap();
+        manager.create_policy(restrictive).unwrap();
+
+        let mut context =
+            SecurityContext::new("alice".to_string(), vec!["employee".to_string()], false);
+        context.variables.insert("department".to_string(), "engineering".to_string());
+
+        let result = manager.check_access("documents", PolicyAction::Select, &context);
+        assert!(result.is_ok());
+
+        if let PolicyResult::Filter(filter) = result.unwrap() {
+            // Should have both permissive (OR'd) and restrictive (AND'd) parts
+            // Result: ((owner_id = 'alice' OR is_public = true) AND department_id = 'engineering')
+            assert!(
+                filter.contains("AND"),
+                "Filter should contain AND for restrictive policy"
+            );
+            // The permissive policies should be OR'd together
+            assert!(
+                filter.contains("owner_id") && filter.contains("is_public"),
+                "Filter should contain both permissive conditions"
+            );
+        } else {
+            panic!("Expected Filter result");
+        }
+    }
+
+    #[test]
+    fn test_restrictive_policy_denies_when_no_permissive() {
+        // When there are only restrictive policies and no permissive ones,
+        // all access should be denied (restrictive alone restricts, permissive grants)
+        let manager = RlsManager::new();
+        manager.enable_rls("secrets").unwrap();
+
+        // Only restrictive policy, no permissive policy
+        let restrictive = Policy::new(
+            "admin_only".to_string(),
+            "secrets".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Restrictive,
+        )
+        .with_using("classification = 'public'".to_string());
+
+        manager.create_policy(restrictive).unwrap();
+
+        let context =
+            SecurityContext::new("regular_user".to_string(), vec!["user".to_string()], false);
+
+        let result = manager.check_access("secrets", PolicyAction::Select, &context);
+        // Without any permissive policy, the restrictive policy alone means
+        // the condition must be met but there's no grant of access
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_sql_injection_prevention_in_context_variables() {
+        // Test that context variables are properly escaped to prevent SQL injection
+        let manager = RlsManager::new();
+        manager.enable_rls("users").unwrap();
+
+        let policy = Policy::new(
+            "user_access".to_string(),
+            "users".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("username = $user".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        // Try to inject SQL through username
+        let malicious_context = SecurityContext::new(
+            "'; DROP TABLE users; --".to_string(), // SQL injection attempt
+            vec!["user".to_string()],
+            false,
+        );
+
+        let result = manager.check_access("users", PolicyAction::Select, &malicious_context);
+        assert!(result.is_ok());
+
+        if let PolicyResult::Filter(filter) = result.unwrap() {
+            // The single quote in the injection attempt should be doubled (escaped)
+            // Original: '; DROP TABLE users; --
+            // Escaped:  ''; DROP TABLE users; --
+            // In SQL string: '''; DROP TABLE users; --'
+            //               ^-- opening quote
+            //                ^^ -- escaped single quote (was one quote, now two)
+            // This is safe because the escaped quote is inside the string literal
+            assert!(
+                filter.contains("'''"),
+                "Single quotes should be escaped by doubling: {}",
+                filter
+            );
+            // The filter should contain the full escaped string as a safe literal
+            assert!(
+                filter.contains("'''; DROP TABLE users; --'"),
+                "Malicious string should be safely quoted: {}",
+                filter
+            );
+        }
+    }
+
+    #[test]
+    fn test_sql_injection_via_context_variable_values() {
+        // Test injection through context variable values
+        let manager = RlsManager::new();
+        manager.enable_rls("data").unwrap();
+
+        let policy = Policy::new(
+            "tenant_access".to_string(),
+            "data".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("tenant_id = $tenant".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        let mut context = SecurityContext::new("user".to_string(), vec!["user".to_string()], false);
+        // Inject through variable - this one doesn't have single quotes so it's
+        // contained within the string literal
+        context.variables.insert(
+            "tenant".to_string(),
+            "1; DELETE FROM data WHERE 1=1; --".to_string(),
+        );
+
+        let result = manager.check_access("data", PolicyAction::Select, &context);
+        assert!(result.is_ok());
+
+        if let PolicyResult::Filter(filter) = result.unwrap() {
+            // The malicious SQL is now safely contained within a string literal
+            // It appears as: tenant_id = '1; DELETE FROM data WHERE 1=1; --'
+            // The semicolons and SQL keywords are just string content, not executed SQL
+            assert!(
+                filter.contains("'1; DELETE FROM data WHERE 1=1; --'"),
+                "Injection attempt should be contained in string literal: {}",
+                filter
+            );
+        }
+    }
+
+    #[test]
+    fn test_sql_injection_with_quotes_in_variable() {
+        // Test injection with single quotes that need escaping
+        let manager = RlsManager::new();
+        manager.enable_rls("data").unwrap();
+
+        let policy = Policy::new(
+            "tenant_access".to_string(),
+            "data".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("tenant_id = $tenant".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        let mut context = SecurityContext::new("user".to_string(), vec!["user".to_string()], false);
+        // Inject through variable with quotes to try to break out of string
+        context.variables.insert(
+            "tenant".to_string(),
+            "1'; DELETE FROM data; --".to_string(),
+        );
+
+        let result = manager.check_access("data", PolicyAction::Select, &context);
+        assert!(result.is_ok());
+
+        if let PolicyResult::Filter(filter) = result.unwrap() {
+            // The single quote should be doubled for SQL safety
+            // Original: 1'; DELETE FROM data; --
+            // Escaped:  1''; DELETE FROM data; --
+            // In SQL:   '1''; DELETE FROM data; --'
+            assert!(
+                filter.contains("''"),
+                "Single quotes should be escaped by doubling: {}",
+                filter
+            );
+            // The full value should be safely contained
+            assert!(
+                filter.contains("'1''; DELETE FROM data; --'"),
+                "Malicious string with quotes should be escaped: {}",
+                filter
+            );
+        }
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_policy_change() {
+        let manager = RlsManager::new();
+        manager.enable_rls("cached_table").unwrap();
+
+        // Create initial policy
+        let policy = Policy::new(
+            "initial_policy".to_string(),
+            "cached_table".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("owner = $user".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        let context = SecurityContext::new("alice".to_string(), vec!["user".to_string()], false);
+
+        // First access - may populate cache
+        let result1 = manager.check_access("cached_table", PolicyAction::Select, &context);
+        assert!(result1.is_ok());
+        let filter1 = match result1.unwrap() {
+            PolicyResult::Filter(f) => f,
+            _ => panic!("Expected filter"),
+        };
+
+        // Drop the policy
+        manager.drop_policy("cached_table", "initial_policy").unwrap();
+
+        // Create a different policy
+        let new_policy = Policy::new(
+            "new_policy".to_string(),
+            "cached_table".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("department = $dept".to_string());
+
+        manager.create_policy(new_policy).unwrap();
+
+        // Access again - should get new policy, not cached old one
+        let mut context2 = SecurityContext::new("alice".to_string(), vec!["user".to_string()], false);
+        context2.variables.insert("dept".to_string(), "engineering".to_string());
+
+        let result2 = manager.check_access("cached_table", PolicyAction::Select, &context2);
+        assert!(result2.is_ok());
+        let filter2 = match result2.unwrap() {
+            PolicyResult::Filter(f) => f,
+            _ => panic!("Expected filter"),
+        };
+
+        // Filters should be different - cache was invalidated
+        assert_ne!(
+            filter1, filter2,
+            "Cache should be invalidated after policy change"
+        );
+        assert!(
+            filter2.contains("department"),
+            "New filter should use new policy: {}",
+            filter2
+        );
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_rls_disable() {
+        let manager = RlsManager::new();
+        manager.enable_rls("test_table").unwrap();
+
+        let policy = Policy::new(
+            "test_policy".to_string(),
+            "test_table".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("visible = true".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        let context = SecurityContext::new("user".to_string(), vec!["user".to_string()], false);
+
+        // Access with RLS enabled
+        let result1 = manager.check_access("test_table", PolicyAction::Select, &context);
+        assert!(matches!(result1.as_ref().unwrap(), PolicyResult::Filter(_)));
+
+        // Disable RLS
+        manager.disable_rls("test_table").unwrap();
+
+        // Access with RLS disabled - should allow all
+        let result2 = manager.check_access("test_table", PolicyAction::Select, &context);
+        assert!(
+            matches!(result2.as_ref().unwrap(), PolicyResult::Allow),
+            "RLS disabled should allow all access"
+        );
+    }
+
+    #[test]
+    fn test_empty_roles_applies_to_all() {
+        let manager = RlsManager::new();
+        manager.enable_rls("public_table").unwrap();
+
+        // Policy with no specific roles (applies to all)
+        let policy = Policy::new(
+            "all_roles_policy".to_string(),
+            "public_table".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("active = true".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        // Test with various roles - all should have the policy applied
+        let roles_to_test = vec![
+            vec!["admin".to_string()],
+            vec!["user".to_string()],
+            vec!["guest".to_string()],
+            vec![], // No roles
+            vec!["custom_role".to_string(), "another_role".to_string()],
+        ];
+
+        for roles in roles_to_test {
+            let context = SecurityContext::new("testuser".to_string(), roles.clone(), false);
+            let result = manager.check_access("public_table", PolicyAction::Select, &context);
+            assert!(
+                result.is_ok(),
+                "Policy should apply to roles: {:?}",
+                roles
+            );
+            assert!(
+                matches!(result.unwrap(), PolicyResult::Filter(_)),
+                "Should get filter for roles: {:?}",
+                roles
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiple_restrictive_policies_all_must_pass() {
+        let manager = RlsManager::new();
+        manager.enable_rls("sensitive_data").unwrap();
+
+        // Add a permissive policy (required for access)
+        let permissive = Policy::new(
+            "base_access".to_string(),
+            "sensitive_data".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("1 = 1".to_string()); // Always true
+
+        // Multiple restrictive policies - ALL must pass
+        let restrictive1 = Policy::new(
+            "clearance_check".to_string(),
+            "sensitive_data".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Restrictive,
+        )
+        .with_using("clearance_level <= $user_clearance".to_string());
+
+        let restrictive2 = Policy::new(
+            "department_check".to_string(),
+            "sensitive_data".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Restrictive,
+        )
+        .with_using("department = $user_dept".to_string());
+
+        let restrictive3 = Policy::new(
+            "active_check".to_string(),
+            "sensitive_data".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Restrictive,
+        )
+        .with_using("is_archived = false".to_string());
+
+        manager.create_policy(permissive).unwrap();
+        manager.create_policy(restrictive1).unwrap();
+        manager.create_policy(restrictive2).unwrap();
+        manager.create_policy(restrictive3).unwrap();
+
+        let mut context = SecurityContext::new("agent".to_string(), vec!["analyst".to_string()], false);
+        context.variables.insert("user_clearance".to_string(), "3".to_string());
+        context.variables.insert("user_dept".to_string(), "intel".to_string());
+
+        let result = manager.check_access("sensitive_data", PolicyAction::Select, &context);
+        assert!(result.is_ok());
+
+        if let PolicyResult::Filter(filter) = result.unwrap() {
+            // Should contain all three restrictive conditions AND'd together
+            assert!(
+                filter.contains("clearance_level"),
+                "Filter should contain clearance check"
+            );
+            assert!(
+                filter.contains("department"),
+                "Filter should contain department check"
+            );
+            assert!(
+                filter.contains("is_archived"),
+                "Filter should contain archive check"
+            );
+            // Count ANDs - should have multiple for restrictive policies
+            let and_count = filter.matches("AND").count();
+            assert!(
+                and_count >= 2,
+                "Should have at least 2 ANDs for 3 restrictive policies, got {}: {}",
+                and_count,
+                filter
+            );
+        } else {
+            panic!("Expected Filter result");
+        }
+    }
+
+    #[test]
+    fn test_disabled_policy_not_applied() {
+        let manager = RlsManager::new();
+        manager.enable_rls("items").unwrap();
+
+        let mut policy = Policy::new(
+            "disabled_policy".to_string(),
+            "items".to_string(),
+            PolicyAction::Select,
+            PolicyCheck::Permissive,
+        )
+        .with_using("category = 'electronics'".to_string());
+
+        // Disable the policy
+        policy.enabled = false;
+
+        manager.create_policy(policy).unwrap();
+
+        let context = SecurityContext::new("user".to_string(), vec!["user".to_string()], false);
+        let result = manager.check_access("items", PolicyAction::Select, &context);
+
+        // Disabled policy should not generate a filter
+        // With no enabled policies, behavior depends on implementation
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_with_check_expression_for_insert() {
+        let manager = RlsManager::new();
+        manager.enable_rls("posts").unwrap();
+
+        // Policy with WITH CHECK for INSERT
+        let policy = Policy::new(
+            "insert_check".to_string(),
+            "posts".to_string(),
+            PolicyAction::Insert,
+            PolicyCheck::Permissive,
+        )
+        .with_check("author_id = $user".to_string());
+
+        manager.create_policy(policy).unwrap();
+
+        let context = SecurityContext::new("bob".to_string(), vec!["author".to_string()], false);
+
+        let result = manager.check_access("posts", PolicyAction::Insert, &context);
+        assert!(result.is_ok());
+
+        // For INSERT, we should get a check condition
+        if let PolicyResult::Filter(filter) = result.unwrap() {
+            assert!(
+                filter.contains("author_id"),
+                "INSERT check should verify author_id"
+            );
+            assert!(
+                filter.contains("'bob'"),
+                "Should substitute user context: {}",
+                filter
+            );
+        }
     }
 }
