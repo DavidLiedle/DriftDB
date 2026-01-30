@@ -202,7 +202,10 @@ impl QueryOptimizer {
                 estimated_rows
             )
         } else {
-            format!("Full table scan on {}, estimated {} rows", table, estimated_rows)
+            format!(
+                "Full table scan on {}, estimated {} rows",
+                table, estimated_rows
+            )
         };
 
         Ok(QueryPlan {
@@ -343,7 +346,11 @@ impl QueryOptimizer {
     }
 
     /// Estimate selectivity of a single condition
-    fn estimate_condition_selectivity(&self, condition: &WhereCondition, stats: &TableStats) -> f64 {
+    fn estimate_condition_selectivity(
+        &self,
+        condition: &WhereCondition,
+        stats: &TableStats,
+    ) -> f64 {
         // Get column statistics if available
         if let Some(col_stats) = stats.column_stats.get(&condition.column) {
             match condition.operator.as_str() {

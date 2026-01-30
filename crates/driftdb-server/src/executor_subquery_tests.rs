@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod subquery_tests {
-    
+
     use crate::executor::{QueryExecutor, SubqueryExpression, SubqueryQuantifier, WhereCondition};
     use driftdb_core::Engine;
     use parking_lot::RwLock;

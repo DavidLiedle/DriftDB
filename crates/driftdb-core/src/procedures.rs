@@ -749,12 +749,14 @@ impl ProcedureManager {
         for param in &definition.parameters {
             if (param.direction == ParameterDirection::In
                 || param.direction == ParameterDirection::InOut)
-                && param.is_required && !arguments.contains_key(&param.name) {
-                    return Err(DriftError::InvalidQuery(format!(
-                        "Required parameter '{}' not provided",
-                        param.name
-                    )));
-                }
+                && param.is_required
+                && !arguments.contains_key(&param.name)
+            {
+                return Err(DriftError::InvalidQuery(format!(
+                    "Required parameter '{}' not provided",
+                    param.name
+                )));
+            }
         }
 
         Ok(())

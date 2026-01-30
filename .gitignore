@@ -19,6 +19,7 @@ build/
 # Test data
 data/
 *_data/
+demo-data/
 *.db
 *.sqlite
 *.log

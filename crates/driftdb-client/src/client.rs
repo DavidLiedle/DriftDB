@@ -36,12 +36,13 @@ impl Client {
         info!("Connecting to DriftDB at {}", host);
 
         // Parse host:port
-        let connection_string = if host.starts_with("postgresql://") || host.starts_with("postgres://") {
-            host.to_string()
-        } else {
-            // Default to PostgreSQL connection string format
-            format!("postgresql://{}/?sslmode=disable", host)
-        };
+        let connection_string =
+            if host.starts_with("postgresql://") || host.starts_with("postgres://") {
+                host.to_string()
+            } else {
+                // Default to PostgreSQL connection string format
+                format!("postgresql://{}/?sslmode=disable", host)
+            };
 
         debug!("Connection string: {}", connection_string);
 
@@ -82,7 +83,8 @@ impl Client {
         // has incomplete support for the PostgreSQL extended query protocol
         // (Parse/Bind/Describe/Execute/Sync message sequence). The simple query
         // protocol sends SQL directly and works reliably for all operations.
-        let messages = self.inner
+        let messages = self
+            .inner
             .simple_query(sql)
             .await
             .map_err(|e| Error::Query(e.to_string()))?;
@@ -129,7 +131,8 @@ impl Client {
     ) -> Result<u64> {
         debug!("Executing SQL with {} params: {}", params.len(), sql);
 
-        let rows = self.inner
+        let rows = self
+            .inner
             .execute(sql, params)
             .await
             .map_err(|e| Error::Query(e.to_string()))?;
@@ -190,7 +193,8 @@ impl Client {
 
         // NOTE: We use simple_query() instead of the prepared statement protocol.
         // See execute() method for detailed explanation.
-        let messages = self.inner
+        let messages = self
+            .inner
             .simple_query(sql)
             .await
             .map_err(|e| Error::Query(e.to_string()))?;
@@ -236,7 +240,8 @@ impl Client {
     ) -> Result<Vec<Row>> {
         debug!("Querying with {} params: {}", params.len(), sql);
 
-        let pg_rows = self.inner
+        let pg_rows = self
+            .inner
             .query(sql, params)
             .await
             .map_err(|e| Error::Query(e.to_string()))?;
@@ -460,7 +465,9 @@ impl Client {
     /// # }
     /// ```
     pub async fn current_sequence(&self) -> Result<u64> {
-        let rows = self.query("SELECT MAX(sequence) FROM __driftdb_metadata__").await?;
+        let rows = self
+            .query("SELECT MAX(sequence) FROM __driftdb_metadata__")
+            .await?;
 
         rows.first()
             .and_then(|row| row.get_idx(0))

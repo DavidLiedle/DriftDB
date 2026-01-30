@@ -416,34 +416,33 @@ pub enum TlsVersion {
 impl TlsConfig {
     /// Create TLS acceptor for server
     pub fn create_acceptor(&self) -> Result<tokio_rustls::TlsAcceptor> {
-        use rustls::{Certificate, PrivateKey, ServerConfig};
+        use rustls::pki_types::PrivateKeyDer;
+        use rustls::ServerConfig;
         use std::fs;
         use std::io::BufReader;
 
         // Load certificates
         let cert_file = fs::File::open(&self.cert_path)?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs = rustls_pemfile::certs(&mut cert_reader)
-            .map_err(|_| DriftError::Other("Failed to load certificates".into()))?
-            .into_iter()
-            .map(Certificate)
-            .collect::<Vec<_>>();
+        let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| DriftError::Other("Failed to load certificates".into()))?;
 
         // Load private key
         let key_file = fs::File::open(&self.key_path)?;
         let mut key_reader = BufReader::new(key_file);
-        let keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
+        let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
+            .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|_| DriftError::Other("Failed to load private key".into()))?;
 
         if keys.is_empty() {
             return Err(DriftError::Other("No private key found".into()));
         }
 
-        let key = PrivateKey(keys[0].clone());
+        let key = PrivateKeyDer::Pkcs8(keys[0].clone_key());
 
         // Configure TLS
         let config = ServerConfig::builder()
-            .with_safe_defaults()
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .map_err(|e| DriftError::Other(format!("TLS config failed: {}", e)))?;
@@ -457,10 +456,10 @@ impl TlsConfig {
 // chacha20poly1305 = "0.10"
 // hkdf = "0.12"
 // rand = "0.8"
-// base64 = "0.21"
-// rustls = "0.21"
-// tokio-rustls = "0.24"
-// rustls-pemfile = "1.0"
+// base64 = "0.22"
+// rustls = "0.22"
+// tokio-rustls = "0.25"
+// rustls-pemfile = "2.0"
 
 #[cfg(test)]
 mod tests {

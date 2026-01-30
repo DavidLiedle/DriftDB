@@ -8,9 +8,9 @@
 //! - Role-Based Access Control (RBAC)
 //! - RBAC permission enforcement
 
-pub mod sql_validator;
 pub mod rbac;
 pub mod rbac_enforcement;
+pub mod sql_validator;
 
+pub use rbac::{Permission, RbacManager};
 pub use sql_validator::SqlValidator;
-pub use rbac::{RbacManager, Permission};

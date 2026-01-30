@@ -170,11 +170,7 @@ impl SlowQueryLogger {
         use std::fs::OpenOptions;
         use std::io::Write;
 
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
+        match OpenOptions::new().create(true).append(true).open(log_path) {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(log_line.as_bytes()) {
                     warn!("Failed to write to slow query log: {}", e);
@@ -189,12 +185,7 @@ impl SlowQueryLogger {
     /// Get recent slow queries
     pub fn get_recent_queries(&self, limit: usize) -> Vec<SlowQueryEntry> {
         let queries = self.queries.read();
-        queries
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        queries.iter().rev().take(limit).cloned().collect()
     }
 
     /// Get slow queries within a time range

@@ -86,8 +86,7 @@ impl DistributedCoordinator {
         // Update cluster state
         let mut cluster_state = self.cluster_state.write();
         cluster_state.total_nodes = config.peers.len() + 1; // Include self
-        cluster_state.has_quorum =
-            cluster_state.active_nodes > (cluster_state.total_nodes / 2);
+        cluster_state.has_quorum = cluster_state.active_nodes > (cluster_state.total_nodes / 2);
 
         // Initialize peer status
         let mut peer_status = self.peer_status.write();

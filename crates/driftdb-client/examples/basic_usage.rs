@@ -23,7 +23,9 @@ async fn main() -> Result<()> {
     println!("Creating table...");
     let _ = client.execute("DROP TABLE users").await; // Ignore error if table doesn't exist
     client
-        .execute("CREATE TABLE users (id BIGINT PRIMARY KEY, name TEXT, email TEXT, created_at TEXT)")
+        .execute(
+            "CREATE TABLE users (id BIGINT PRIMARY KEY, name TEXT, email TEXT, created_at TEXT)",
+        )
         .await?;
     println!("✓ Table created!\n");
 

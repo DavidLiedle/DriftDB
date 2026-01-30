@@ -9,7 +9,7 @@
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -20,8 +20,8 @@ use serde_json::{json, Value};
 use tokio::time::interval;
 use tracing::{debug, info};
 
-use driftdb_core::EnginePool;
 use crate::performance::PerformanceMonitor;
+use driftdb_core::EnginePool;
 
 /// Advanced connection pool manager with intelligent optimizations
 pub struct AdvancedPoolManager {
@@ -136,7 +136,10 @@ impl ConnectionAffinity {
         self.request_count += 1;
 
         // Increase affinity score based on session length and activity
-        let session_duration = self.last_activity.duration_since(self.session_start).as_secs() as f64;
+        let session_duration = self
+            .last_activity
+            .duration_since(self.session_start)
+            .as_secs() as f64;
         let request_count = self.request_count as f64;
 
         self.affinity_score = (session_duration / 60.0).min(5.0) + (request_count / 100.0).min(3.0);
@@ -252,7 +255,8 @@ impl ConnectionHealthPredictor {
         history.push_back(data);
 
         // Keep only recent data (last 24 hours worth)
-        while history.len() > 2880 { // 24 hours * 60 minutes * 2 samples per minute
+        while history.len() > 2880 {
+            // 24 hours * 60 minutes * 2 samples per minute
             history.pop_front();
         }
 
@@ -263,12 +267,16 @@ impl ConnectionHealthPredictor {
     }
 
     /// Predict connection health for the next period
-    pub fn predict_health(&self, connection_id: u64, current_data: &HealthDataPoint) -> Option<f64> {
+    pub fn predict_health(
+        &self,
+        connection_id: u64,
+        current_data: &HealthDataPoint,
+    ) -> Option<f64> {
         self.prediction_models.get(&connection_id).map(|model| {
             let features = vec![
                 current_data.response_time_ms / 1000.0, // Normalize to seconds
                 current_data.error_rate,
-                current_data.memory_usage_mb / 1024.0,  // Normalize to GB
+                current_data.memory_usage_mb / 1024.0, // Normalize to GB
                 current_data.cpu_usage_percent / 100.0,
                 current_data.connection_age_minutes / 60.0, // Normalize to hours
             ];
@@ -301,7 +309,10 @@ impl ConnectionHealthPredictor {
             // Calculate target health score based on next observation
             let target_health = self.calculate_health_score(&next);
 
-            let model = self.prediction_models.entry(connection_id).or_insert_with(LinearPredictor::new);
+            let model = self
+                .prediction_models
+                .entry(connection_id)
+                .or_insert_with(LinearPredictor::new);
             model.update(features, target_health);
         }
     }
@@ -329,7 +340,8 @@ impl ConnectionHealthPredictor {
         }
 
         // Penalize very old connections
-        if data.connection_age_minutes > 120.0 { // 2 hours
+        if data.connection_age_minutes > 120.0 {
+            // 2 hours
             score *= 0.9;
         }
 
@@ -388,27 +400,46 @@ impl LoadBalancer {
     /// Select optimal connection based on current load
     pub fn select_connection(&self, available_connections: &[u64]) -> Option<u64> {
         match self.strategy {
-            LoadBalancingStrategy::WeightedRoundRobin => self.weighted_round_robin(available_connections),
-            LoadBalancingStrategy::LeastConnections => self.least_connections(available_connections),
-            LoadBalancingStrategy::LeastResponseTime => self.least_response_time(available_connections),
+            LoadBalancingStrategy::WeightedRoundRobin => {
+                self.weighted_round_robin(available_connections)
+            }
+            LoadBalancingStrategy::LeastConnections => {
+                self.least_connections(available_connections)
+            }
+            LoadBalancingStrategy::LeastResponseTime => {
+                self.least_response_time(available_connections)
+            }
             LoadBalancingStrategy::AdaptiveOptimal => self.adaptive_optimal(available_connections),
         }
     }
 
     fn weighted_round_robin(&self, connections: &[u64]) -> Option<u64> {
-        connections.iter()
+        connections
+            .iter()
             .min_by(|&&a, &&b| {
-                let load_a = self.connection_loads.get(&a).map(|l| l.load_score).unwrap_or(0.0);
-                let load_b = self.connection_loads.get(&b).map(|l| l.load_score).unwrap_or(0.0);
-                load_a.partial_cmp(&load_b).unwrap_or(std::cmp::Ordering::Equal)
+                let load_a = self
+                    .connection_loads
+                    .get(&a)
+                    .map(|l| l.load_score)
+                    .unwrap_or(0.0);
+                let load_b = self
+                    .connection_loads
+                    .get(&b)
+                    .map(|l| l.load_score)
+                    .unwrap_or(0.0);
+                load_a
+                    .partial_cmp(&load_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .copied()
     }
 
     fn least_connections(&self, connections: &[u64]) -> Option<u64> {
-        connections.iter()
+        connections
+            .iter()
             .min_by_key(|&&conn_id| {
-                self.connection_loads.get(&conn_id)
+                self.connection_loads
+                    .get(&conn_id)
                     .map(|load| load.active_requests)
                     .unwrap_or(0)
             })
@@ -416,22 +447,36 @@ impl LoadBalancer {
     }
 
     fn least_response_time(&self, connections: &[u64]) -> Option<u64> {
-        connections.iter()
+        connections
+            .iter()
             .min_by(|&&a, &&b| {
-                let time_a = self.connection_loads.get(&a).map(|l| l.avg_response_time_ms).unwrap_or(f64::MAX);
-                let time_b = self.connection_loads.get(&b).map(|l| l.avg_response_time_ms).unwrap_or(f64::MAX);
-                time_a.partial_cmp(&time_b).unwrap_or(std::cmp::Ordering::Equal)
+                let time_a = self
+                    .connection_loads
+                    .get(&a)
+                    .map(|l| l.avg_response_time_ms)
+                    .unwrap_or(f64::MAX);
+                let time_b = self
+                    .connection_loads
+                    .get(&b)
+                    .map(|l| l.avg_response_time_ms)
+                    .unwrap_or(f64::MAX);
+                time_a
+                    .partial_cmp(&time_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .copied()
     }
 
     fn adaptive_optimal(&self, connections: &[u64]) -> Option<u64> {
         // Combination of multiple factors with dynamic weighting
-        connections.iter()
+        connections
+            .iter()
             .min_by(|&&a, &&b| {
                 let score_a = self.calculate_adaptive_score(a);
                 let score_b = self.calculate_adaptive_score(b);
-                score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+                score_a
+                    .partial_cmp(&score_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .copied()
     }
@@ -448,19 +493,25 @@ impl LoadBalancer {
             let cpu_score = load.current_cpu_usage / 100.0;
             let memory_score = load.current_memory_mb / 1024.0; // Convert to GB
 
-            active_weight * active_score +
-            response_weight * response_score +
-            cpu_weight * cpu_score +
-            memory_weight * memory_score
+            active_weight * active_score
+                + response_weight * response_score
+                + cpu_weight * cpu_score
+                + memory_weight * memory_score
         } else {
             0.0 // New connection, lowest score
         }
     }
 
     /// Update connection load metrics
-    pub fn update_connection_load(&self, connection_id: u64, update: impl FnOnce(&mut ConnectionLoad)) {
-        let mut entry = self.connection_loads.entry(connection_id).or_insert_with(|| {
-            ConnectionLoad {
+    pub fn update_connection_load(
+        &self,
+        connection_id: u64,
+        update: impl FnOnce(&mut ConnectionLoad),
+    ) {
+        let mut entry = self
+            .connection_loads
+            .entry(connection_id)
+            .or_insert_with(|| ConnectionLoad {
                 connection_id,
                 active_requests: 0,
                 avg_response_time_ms: 0.0,
@@ -468,8 +519,7 @@ impl LoadBalancer {
                 current_memory_mb: 0.0,
                 last_updated: Instant::now(),
                 load_score: 0.0,
-            }
-        });
+            });
         update(&mut entry);
         entry.last_updated = Instant::now();
     }
@@ -594,7 +644,8 @@ impl ResourceOptimizer {
         };
 
         // Check if memory optimization is needed
-        if memory_info.total_allocated > 1024 * 1024 * 1024 { // > 1GB
+        if memory_info.total_allocated > 1024 * 1024 * 1024 {
+            // > 1GB
             let freed = self.perform_memory_compaction().await;
             Some(OptimizationEvent {
                 timestamp: Instant::now(),
@@ -743,7 +794,8 @@ impl AdvancedPoolManager {
             return 0.0;
         }
 
-        let total: f64 = self.connection_affinity
+        let total: f64 = self
+            .connection_affinity
             .iter()
             .map(|entry| entry.affinity_score)
             .sum();
@@ -760,7 +812,9 @@ impl AdvancedPoolManager {
     }
 
     fn calculate_load_variance(&self) -> f64 {
-        let loads: Vec<f64> = self.load_balancer.connection_loads
+        let loads: Vec<f64> = self
+            .load_balancer
+            .connection_loads
             .iter()
             .map(|entry| entry.load_score)
             .collect();
@@ -770,9 +824,7 @@ impl AdvancedPoolManager {
         }
 
         let mean = loads.iter().sum::<f64>() / loads.len() as f64;
-        let variance = loads.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / loads.len() as f64;
+        let variance = loads.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / loads.len() as f64;
 
         variance.sqrt() // Return standard deviation
     }
@@ -801,7 +853,10 @@ impl AdvancedPoolManager {
 
                 match resource_optimizer.optimize_resources().await {
                     events if !events.is_empty() => {
-                        info!("Resource optimization completed with {} events", events.len());
+                        info!(
+                            "Resource optimization completed with {} events",
+                            events.len()
+                        );
                         for event in events {
                             debug!("Optimization event: {:?}", event);
                         }
@@ -861,7 +916,8 @@ impl AdvancedPoolManager {
         for entry in self.connection_affinity.iter() {
             let (client_addr, affinity) = (entry.key(), entry.value());
             total_affinity_score += affinity.affinity_score;
-            if affinity.last_activity.elapsed().as_secs() < 300 { // Active in last 5 minutes
+            if affinity.last_activity.elapsed().as_secs() < 300 {
+                // Active in last 5 minutes
                 active_sessions += 1;
             }
 
@@ -949,7 +1005,8 @@ impl AdvancedPoolManager {
 
         // Pool size recommendations
         let utilization = if self.config.max_connections > 0 {
-            pool_stats.connection_stats.active_connections as f64 / self.config.max_connections as f64
+            pool_stats.connection_stats.active_connections as f64
+                / self.config.max_connections as f64
         } else {
             0.0
         };
@@ -964,7 +1021,9 @@ impl AdvancedPoolManager {
                     self.config.max_connections,
                     self.config.max_connections + 20)
             }));
-        } else if utilization < 0.3 && pool_stats.connection_stats.total_connections > self.config.min_connections {
+        } else if utilization < 0.3
+            && pool_stats.connection_stats.total_connections > self.config.min_connections
+        {
             recommendations.push(json!({
                 "category": "Pool Sizing",
                 "priority": "Low",
@@ -1064,7 +1123,7 @@ impl AdvancedPoolManager {
     /// Helper method to get memory usage percentage
     async fn get_memory_usage_percent(&self) -> f64 {
         // Simplified implementation - in production, use sysinfo
-        use sysinfo::{System};
+        use sysinfo::System;
         let mut sys = System::new_all();
         sys.refresh_all();
 
@@ -1090,7 +1149,8 @@ impl AdvancedPoolManager {
 
         let connection_success_rate = if pool_stats.connection_stats.total_connections > 0 {
             (pool_stats.connection_stats.available_connections as f64
-             / pool_stats.connection_stats.total_connections as f64) * 100.0
+                / pool_stats.connection_stats.total_connections as f64)
+                * 100.0
         } else {
             100.0
         };

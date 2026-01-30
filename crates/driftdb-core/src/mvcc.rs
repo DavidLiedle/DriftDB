@@ -281,13 +281,12 @@ impl MVCCManager {
         if self.config.detect_write_conflicts {
             let active_txns = self.active_txns.read();
             for (other_txn_id, other_txn) in active_txns.iter() {
-                if *other_txn_id != txn.id
-                    && other_txn.write_set.read().contains_key(&record_id) {
-                        return Err(DriftError::Other(format!(
-                            "Write conflict on record {:?}",
-                            record_id
-                        )));
-                    }
+                if *other_txn_id != txn.id && other_txn.write_set.read().contains_key(&record_id) {
+                    return Err(DriftError::Other(format!(
+                        "Write conflict on record {:?}",
+                        record_id
+                    )));
+                }
             }
         }
 

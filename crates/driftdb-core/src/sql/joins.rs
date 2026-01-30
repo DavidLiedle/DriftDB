@@ -317,7 +317,9 @@ impl JoinExecutor {
         let state = storage.reconstruct_state_at(sequence)?;
 
         // Convert to Value and apply alias if needed
-        let mut rows: Vec<Value> = state.into_values().map(|row| {
+        let mut rows: Vec<Value> = state
+            .into_values()
+            .map(|row| {
                 // Add table prefix to columns if alias provided
                 if let Some(alias) = alias {
                     if let Value::Object(map) = row {
@@ -435,8 +437,6 @@ impl JoinExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
 
     #[test]
     fn test_join_query_parsing() {

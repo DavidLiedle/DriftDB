@@ -152,13 +152,7 @@ mod tests {
     #[test]
     fn test_time_travel_sql_generation() {
         // Test that TimeTravel generates correct SQL
-        assert_eq!(
-            TimeTravel::Sequence(42).to_sql(),
-            "AS OF @seq:42"
-        );
-        assert_eq!(
-            TimeTravel::All.to_sql(),
-            "FOR SYSTEM_TIME ALL"
-        );
+        assert_eq!(TimeTravel::Sequence(42).to_sql(), "AS OF @seq:42");
+        assert_eq!(TimeTravel::All.to_sql(), "FOR SYSTEM_TIME ALL");
     }
 }

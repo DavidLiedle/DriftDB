@@ -18,8 +18,7 @@ use driftdb_core::engine::Engine;
 static NEXT_TXN_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Transaction isolation levels
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum IsolationLevel {
     ReadUncommitted,
     #[default]
@@ -27,7 +26,6 @@ pub enum IsolationLevel {
     RepeatableRead,
     Serializable,
 }
-
 
 /// Transaction state for a session
 #[derive(Debug, Clone)]
@@ -58,7 +56,9 @@ impl TransactionState {
             .unwrap_or_else(|_| {
                 // System time is before Unix epoch - extremely rare but possible
                 // Fall back to 0, which is better than panicking
-                tracing::warn!("System time is before Unix epoch, using 0 for transaction start time");
+                tracing::warn!(
+                    "System time is before Unix epoch, using 0 for transaction start time"
+                );
                 std::time::Duration::from_secs(0)
             })
             .as_millis() as u64;
@@ -274,7 +274,10 @@ impl TransactionManager {
     /// Check if session is in an active transaction
     pub fn is_in_transaction(&self, session_id: &str) -> Result<bool> {
         let transactions = self.transactions.read();
-        Ok(transactions.get(session_id).map(|state| state.is_active).unwrap_or(false))
+        Ok(transactions
+            .get(session_id)
+            .map(|state| state.is_active)
+            .unwrap_or(false))
     }
 
     /// Add a pending write to the transaction

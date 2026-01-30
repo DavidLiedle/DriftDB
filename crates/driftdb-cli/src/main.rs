@@ -12,6 +12,7 @@ mod backup;
 
 #[derive(Parser)]
 #[command(name = "driftdb")]
+#[command(version)]
 #[command(about = "DriftDB - Append-only database with time-travel queries")]
 struct Cli {
     #[command(subcommand)]
@@ -288,7 +289,9 @@ fn main() -> Result<()> {
                 .execute_query(query)
                 .context("Failed to create snapshot")?;
 
-            if let QueryResult::Success { message } = result { println!("{}", message) }
+            if let QueryResult::Success { message } = result {
+                println!("{}", message)
+            }
         }
         Commands::Compact { data, table } => {
             let mut engine = Engine::open(&data).context("Failed to open database")?;
@@ -300,7 +303,9 @@ fn main() -> Result<()> {
                 .execute_query(query)
                 .context("Failed to compact table")?;
 
-            if let QueryResult::Success { message } = result { println!("{}", message) }
+            if let QueryResult::Success { message } = result {
+                println!("{}", message)
+            }
         }
         Commands::Doctor { data } => {
             let engine = Engine::open(&data).context("Failed to open database")?;

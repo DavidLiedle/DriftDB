@@ -234,7 +234,10 @@ impl BloomFilter {
 
     /// Count the number of set bits
     fn count_set_bits(&self) -> usize {
-        self.bits.iter().map(|chunk| chunk.count_ones() as usize).sum()
+        self.bits
+            .iter()
+            .map(|chunk| chunk.count_ones() as usize)
+            .sum()
     }
 }
 
@@ -322,7 +325,10 @@ impl ScalableBloomFilter {
 
     /// Get total memory usage
     pub fn memory_bytes(&self) -> usize {
-        self.filters.iter().map(|f| f.statistics().memory_bytes).sum()
+        self.filters
+            .iter()
+            .map(|f| f.statistics().memory_bytes)
+            .sum()
     }
 }
 
@@ -408,7 +414,11 @@ mod tests {
         let actual_fp_rate = false_positives as f64 / 1000.0;
 
         // False positive rate should be close to target (within 3x)
-        assert!(actual_fp_rate <= 0.03, "FP rate too high: {}", actual_fp_rate);
+        assert!(
+            actual_fp_rate <= 0.03,
+            "FP rate too high: {}",
+            actual_fp_rate
+        );
     }
 
     #[test]

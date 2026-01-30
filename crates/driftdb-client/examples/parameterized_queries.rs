@@ -44,7 +44,9 @@ async fn main() -> Result<()> {
     println!("  → Inserted Alice with parameterized query");
 
     // Verify
-    let rows = client.query("SELECT * FROM param_test WHERE id = 1").await?;
+    let rows = client
+        .query("SELECT * FROM param_test WHERE id = 1")
+        .await?;
     println!(
         "  ✓ Retrieved: {} - {}",
         rows[0].get("name").and_then(|v| v.as_str()).unwrap_or("?"),
@@ -76,7 +78,9 @@ async fn main() -> Result<()> {
     println!("     Description: {}", dangerous_description);
 
     // Verify the data was stored correctly and table still exists
-    let rows = client.query("SELECT * FROM param_test WHERE id = 2").await?;
+    let rows = client
+        .query("SELECT * FROM param_test WHERE id = 2")
+        .await?;
     println!("\n  ✓ Retrieved safely:");
     println!(
         "     Name: {}",
@@ -158,10 +162,7 @@ async fn main() -> Result<()> {
         .await?;
 
     let rows = client
-        .query_escaped(
-            "SELECT * FROM param_test WHERE id = $1",
-            &[Value::Int(4)],
-        )
+        .query_escaped("SELECT * FROM param_test WHERE id = $1", &[Value::Int(4)])
         .await?;
 
     println!("  → Inserted and retrieved unicode/emoji:");

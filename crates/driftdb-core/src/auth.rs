@@ -588,10 +588,7 @@ impl AuthManager {
         let mut user_sessions = self.user_sessions.write().unwrap();
 
         sessions.insert(token.clone(), session.clone());
-        user_sessions
-            .entry(user_id)
-            .or_default()
-            .insert(token);
+        user_sessions.entry(user_id).or_default().insert(token);
 
         Ok(session)
     }

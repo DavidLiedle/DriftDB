@@ -6,6 +6,29 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::{DriftError, Result};
 
+/// A B-tree secondary index for efficient lookups on non-primary-key columns.
+///
+/// The `Index` struct maintains a mapping from column values to sets of primary keys,
+/// enabling fast equality lookups without scanning the entire table.
+///
+/// # NULL Value Handling
+///
+/// NULL values are explicitly excluded from the index. When inserting a value,
+/// if the JSON value is `null`, it is silently ignored and no entry is created.
+/// This means queries using the index will never match rows with NULL values
+/// in the indexed column.
+///
+/// # Thread Safety
+///
+/// The `Index` struct itself is not thread-safe. Thread safety is provided at
+/// the `IndexManager` level through the engine's locking mechanisms. The engine
+/// uses a process-global write lock for mutations while allowing concurrent
+/// reads through snapshots.
+///
+/// # Storage
+///
+/// Indexes are persisted to disk using bincode serialization. Each index is
+/// stored as a separate `.idx` file in the table's `indexes/` directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
     pub column_name: String,
@@ -20,6 +43,18 @@ impl Index {
         }
     }
 
+    /// Insert a value-to-primary-key mapping into the index.
+    ///
+    /// # NULL Handling
+    ///
+    /// If `value` is JSON `null`, this method does nothing and returns immediately.
+    /// NULL values are intentionally excluded from the index.
+    ///
+    /// # Value Conversion
+    ///
+    /// - String values are stored directly
+    /// - Other non-null values (numbers, booleans, objects, arrays) are converted
+    ///   to their JSON string representation for storage
     pub fn insert(&mut self, value: &serde_json::Value, primary_key: &str) {
         if let Some(val_str) = value.as_str() {
             self.entries
@@ -35,6 +70,16 @@ impl Index {
         }
     }
 
+    /// Remove a value-to-primary-key mapping from the index.
+    ///
+    /// # Cleanup Behavior
+    ///
+    /// When the last primary key is removed for a given value, the value entry
+    /// itself is also removed from the index. This prevents memory leaks from
+    /// accumulating empty entry sets.
+    ///
+    /// If the value or primary key does not exist in the index, this method
+    /// does nothing (no error is raised).
     pub fn remove(&mut self, value: &serde_json::Value, primary_key: &str) {
         let val_str = if let Some(s) = value.as_str() {
             s.to_string()
@@ -50,6 +95,25 @@ impl Index {
         }
     }
 
+    /// Find all primary keys associated with a given indexed value.
+    ///
+    /// # Return Value
+    ///
+    /// Returns `Some(&HashSet<String>)` containing the set of primary keys
+    /// that have the specified value in the indexed column.
+    ///
+    /// Returns `None` if no rows have the specified value (or if all such
+    /// rows have been deleted/removed).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(keys) = index.find("active") {
+    ///     for pk in keys {
+    ///         // Process each primary key with status="active"
+    ///     }
+    /// }
+    /// ```
     pub fn find(&self, value: &str) -> Option<&HashSet<String>> {
         self.entries.get(value)
     }

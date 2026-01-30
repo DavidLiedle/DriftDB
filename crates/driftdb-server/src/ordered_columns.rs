@@ -43,30 +43,27 @@ impl OrderedRow {
 
     /// Get all values in column order
     pub fn get_ordered_values(&self) -> Vec<Option<&Value>> {
-        self.columns.iter()
+        self.columns
+            .iter()
             .map(|col| self.values.get(col))
             .collect()
     }
 
     /// Convert to JSON array in column order
     pub fn to_ordered_array(&self) -> Vec<Value> {
-        self.columns.iter()
-            .map(|col| {
-                self.values.get(col)
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            })
+        self.columns
+            .iter()
+            .map(|col| self.values.get(col).cloned().unwrap_or(Value::Null))
             .collect()
     }
 
     /// Convert to JSON object
     pub fn to_object(&self) -> Value {
         Value::Object(
-            self.columns.iter()
-                .filter_map(|col| {
-                    self.values.get(col).map(|v| (col.clone(), v.clone()))
-                })
-                .collect()
+            self.columns
+                .iter()
+                .filter_map(|col| self.values.get(col).map(|v| (col.clone(), v.clone())))
+                .collect(),
         )
     }
 }
@@ -126,15 +123,12 @@ impl TableSchema {
 
     /// Get column order
     pub fn get_column_order(&self) -> Vec<String> {
-        self.columns.iter()
-            .map(|col| col.name.clone())
-            .collect()
+        self.columns.iter().map(|col| col.name.clone()).collect()
     }
 
     /// Get column by name
     pub fn get_column(&self, name: &str) -> Option<&ColumnDefinition> {
-        self.columns.iter()
-            .find(|col| col.name == name)
+        self.columns.iter().find(|col| col.name == name)
     }
 
     /// Validate row data against schema
@@ -149,10 +143,7 @@ impl TableSchema {
                     ));
                 }
             } else if !column.nullable && column.default_value.is_none() {
-                return Err(format!(
-                    "Missing required column '{}'",
-                    column.name
-                ));
+                return Err(format!("Missing required column '{}'", column.name));
             }
         }
         Ok(())

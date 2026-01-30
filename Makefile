@@ -57,7 +57,7 @@ demo: build
 	@echo "Initializing database..."
 	./target/release/driftdb init ./demo-data
 	@echo "Creating orders table..."
-	./target/release/driftdb sql -d ./demo-data -e 'CREATE TABLE orders (pk=id, INDEX(status, customer_id))'
+	./target/release/driftdb sql -d ./demo-data -e 'CREATE TABLE orders (id VARCHAR, customer_id VARCHAR, status VARCHAR, amount_cents INTEGER, created_at VARCHAR, items INTEGER, PRIMARY KEY (id))'
 	@echo "Ingesting 10k orders..."
 	./target/release/driftdb ingest -d ./demo-data --table orders --file examples/demo/seed_orders.jsonl
 	@echo "\n=== Running demo queries ==="

@@ -52,11 +52,17 @@ async fn test_create_and_query_table() -> Result<()> {
 
     // Create table (drop first in case it exists from previous run)
     let _ = client.execute("DROP TABLE test_users").await;
-    client.execute("CREATE TABLE test_users (id BIGINT PRIMARY KEY, name TEXT)").await?;
+    client
+        .execute("CREATE TABLE test_users (id BIGINT PRIMARY KEY, name TEXT)")
+        .await?;
 
     // Insert data (use explicit column names for consistency)
-    client.execute("INSERT INTO test_users (id, name) VALUES (1, 'Alice')").await?;
-    client.execute("INSERT INTO test_users (id, name) VALUES (2, 'Bob')").await?;
+    client
+        .execute("INSERT INTO test_users (id, name) VALUES (1, 'Alice')")
+        .await?;
+    client
+        .execute("INSERT INTO test_users (id, name) VALUES (2, 'Bob')")
+        .await?;
 
     // Query
     let rows = client.query("SELECT * FROM test_users ORDER BY id").await?;
@@ -88,16 +94,36 @@ async fn test_typed_queries() -> Result<()> {
 
     // Setup
     let _ = client.execute("DROP TABLE typed_test").await;
-    client.execute("CREATE TABLE typed_test (id BIGINT PRIMARY KEY, name TEXT)").await?;
-    client.execute("INSERT INTO typed_test (id, name) VALUES (1, 'Alice')").await?;
-    client.execute("INSERT INTO typed_test (id, name) VALUES (2, 'Bob')").await?;
+    client
+        .execute("CREATE TABLE typed_test (id BIGINT PRIMARY KEY, name TEXT)")
+        .await?;
+    client
+        .execute("INSERT INTO typed_test (id, name) VALUES (1, 'Alice')")
+        .await?;
+    client
+        .execute("INSERT INTO typed_test (id, name) VALUES (2, 'Bob')")
+        .await?;
 
     // Query with type deserialization
-    let users: Vec<TestUser> = client.query_as("SELECT * FROM typed_test ORDER BY id").await?;
+    let users: Vec<TestUser> = client
+        .query_as("SELECT * FROM typed_test ORDER BY id")
+        .await?;
 
     assert_eq!(users.len(), 2);
-    assert_eq!(users[0], TestUser { id: 1, name: "Alice".to_string() });
-    assert_eq!(users[1], TestUser { id: 2, name: "Bob".to_string() });
+    assert_eq!(
+        users[0],
+        TestUser {
+            id: 1,
+            name: "Alice".to_string()
+        }
+    );
+    assert_eq!(
+        users[1],
+        TestUser {
+            id: 2,
+            name: "Bob".to_string()
+        }
+    );
 
     // Cleanup
     client.execute("DROP TABLE typed_test").await?;
@@ -116,10 +142,14 @@ async fn test_time_travel() -> Result<()> {
 
     // Setup
     let _ = client.execute("DROP TABLE time_travel_test").await; // Ignore error
-    client.execute("CREATE TABLE time_travel_test (id BIGINT PRIMARY KEY, value TEXT)").await?;
+    client
+        .execute("CREATE TABLE time_travel_test (id BIGINT PRIMARY KEY, value TEXT)")
+        .await?;
 
     // Insert initial value
-    client.execute("INSERT INTO time_travel_test (id, value) VALUES (1, 'v1')").await?;
+    client
+        .execute("INSERT INTO time_travel_test (id, value) VALUES (1, 'v1')")
+        .await?;
 
     // Try to get current sequence - skip test if metadata table doesn't exist
     let seq1 = match client.current_sequence().await {
@@ -132,10 +162,14 @@ async fn test_time_travel() -> Result<()> {
     };
 
     // Update value
-    client.execute("UPDATE time_travel_test SET value = 'v2' WHERE id = 1").await?;
+    client
+        .execute("UPDATE time_travel_test SET value = 'v2' WHERE id = 1")
+        .await?;
 
     // Query current state
-    let current = client.query("SELECT value FROM time_travel_test WHERE id = 1").await?;
+    let current = client
+        .query("SELECT value FROM time_travel_test WHERE id = 1")
+        .await?;
     assert_eq!(current[0].get("value").and_then(|v| v.as_str()), Some("v2"));
 
     // Query historical state
@@ -145,7 +179,10 @@ async fn test_time_travel() -> Result<()> {
         .execute()
         .await?;
 
-    assert_eq!(historical[0].get("value").and_then(|v| v.as_str()), Some("v1"));
+    assert_eq!(
+        historical[0].get("value").and_then(|v| v.as_str()),
+        Some("v1")
+    );
 
     // Cleanup
     client.execute("DROP TABLE time_travel_test").await?;
@@ -164,11 +201,15 @@ async fn test_transactions() -> Result<()> {
 
     // Setup - drop table if it exists from previous run
     let _ = client.execute("DROP TABLE txn_test").await; // Ignore error if table doesn't exist
-    client.execute("CREATE TABLE txn_test (id BIGINT PRIMARY KEY, value TEXT)").await?;
+    client
+        .execute("CREATE TABLE txn_test (id BIGINT PRIMARY KEY, value TEXT)")
+        .await?;
 
     // Transaction - commit
     client.execute("BEGIN").await?;
-    client.execute("INSERT INTO txn_test (id, value) VALUES (1, 'committed')").await?;
+    client
+        .execute("INSERT INTO txn_test (id, value) VALUES (1, 'committed')")
+        .await?;
     client.execute("COMMIT").await?;
 
     let rows = client.query("SELECT * FROM txn_test").await?;
@@ -176,7 +217,9 @@ async fn test_transactions() -> Result<()> {
 
     // Transaction - rollback
     client.execute("BEGIN").await?;
-    client.execute("INSERT INTO txn_test (id, value) VALUES (2, 'rolled_back')").await?;
+    client
+        .execute("INSERT INTO txn_test (id, value) VALUES (2, 'rolled_back')")
+        .await?;
     client.execute("ROLLBACK").await?;
 
     let rows = client.query("SELECT * FROM txn_test").await?;

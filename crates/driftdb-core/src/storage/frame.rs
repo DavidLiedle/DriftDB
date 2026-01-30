@@ -61,7 +61,7 @@ impl Frame {
         // Additional sanity check: reject zero-length frames
         if length == 0 {
             return Err(DriftError::CorruptSegment(
-                "Invalid zero-length frame".into()
+                "Invalid zero-length frame".into(),
             ));
         }
 

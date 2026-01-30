@@ -42,31 +42,37 @@ async fn setup_tables(client: &Client) -> Result<()> {
     let _ = client.execute("DROP TABLE orders").await;
 
     // Create test_data table with various types
-    client.execute(
-        "CREATE TABLE test_data (\
+    client
+        .execute(
+            "CREATE TABLE test_data (\
          id BIGINT PRIMARY KEY, \
          name TEXT, \
          active BOOLEAN, \
          count BIGINT, \
          price BIGINT\
-         )"
-    ).await?;
+         )",
+        )
+        .await?;
 
     // Create users and orders for JOIN tests
-    client.execute(
-        "CREATE TABLE users (\
+    client
+        .execute(
+            "CREATE TABLE users (\
          id BIGINT PRIMARY KEY, \
          name TEXT\
-         )"
-    ).await?;
+         )",
+        )
+        .await?;
 
-    client.execute(
-        "CREATE TABLE orders (\
+    client
+        .execute(
+            "CREATE TABLE orders (\
          id BIGINT PRIMARY KEY, \
          user_id BIGINT, \
          amount BIGINT\
-         )"
-    ).await?;
+         )",
+        )
+        .await?;
 
     println!("✓ Tables ready\n");
     Ok(())
@@ -80,36 +86,62 @@ async fn test_error_handling(client: &Client) {
     print!("  1. Invalid SQL syntax... ");
     match client.query("SELECT * FORM test_data").await {
         Ok(_) => println!("❌ UNEXPECTED: Should have failed"),
-        Err(e) => println!("✓ Correctly rejected: {}", e.to_string().lines().next().unwrap_or("")),
+        Err(e) => println!(
+            "✓ Correctly rejected: {}",
+            e.to_string().lines().next().unwrap_or("")
+        ),
     }
 
     // Test 2: Non-existent table
     print!("  2. Non-existent table... ");
     match client.query("SELECT * FROM nonexistent_table").await {
         Ok(_) => println!("❌ UNEXPECTED: Should have failed"),
-        Err(e) => println!("✓ Correctly rejected: {}", e.to_string().lines().next().unwrap_or("")),
+        Err(e) => println!(
+            "✓ Correctly rejected: {}",
+            e.to_string().lines().next().unwrap_or("")
+        ),
     }
 
     // Test 3: Duplicate primary key
     print!("  3. Duplicate primary key... ");
-    let _ = client.execute("INSERT INTO test_data (id, name) VALUES (1, 'first')").await;
-    match client.execute("INSERT INTO test_data (id, name) VALUES (1, 'duplicate')").await {
+    let _ = client
+        .execute("INSERT INTO test_data (id, name) VALUES (1, 'first')")
+        .await;
+    match client
+        .execute("INSERT INTO test_data (id, name) VALUES (1, 'duplicate')")
+        .await
+    {
         Ok(_) => println!("⚠️  WARNING: Duplicate key was accepted"),
-        Err(e) => println!("✓ Correctly rejected: {}", e.to_string().lines().next().unwrap_or("")),
+        Err(e) => println!(
+            "✓ Correctly rejected: {}",
+            e.to_string().lines().next().unwrap_or("")
+        ),
     }
 
     // Test 4: Missing required column
     print!("  4. Missing primary key... ");
-    match client.execute("INSERT INTO test_data (name) VALUES ('no id')").await {
+    match client
+        .execute("INSERT INTO test_data (name) VALUES ('no id')")
+        .await
+    {
         Ok(_) => println!("⚠️  WARNING: Missing primary key was accepted"),
-        Err(e) => println!("✓ Correctly rejected: {}", e.to_string().lines().next().unwrap_or("")),
+        Err(e) => println!(
+            "✓ Correctly rejected: {}",
+            e.to_string().lines().next().unwrap_or("")
+        ),
     }
 
     // Test 5: Invalid column in INSERT
     print!("  5. Invalid column name... ");
-    match client.execute("INSERT INTO test_data (id, nonexistent_col) VALUES (99, 'test')").await {
+    match client
+        .execute("INSERT INTO test_data (id, nonexistent_col) VALUES (99, 'test')")
+        .await
+    {
         Ok(_) => println!("⚠️  WARNING: Invalid column was accepted"),
-        Err(e) => println!("✓ Correctly rejected: {}", e.to_string().lines().next().unwrap_or("")),
+        Err(e) => println!(
+            "✓ Correctly rejected: {}",
+            e.to_string().lines().next().unwrap_or("")
+        ),
     }
 
     println!();
@@ -124,9 +156,15 @@ async fn test_data_types(client: &Client) {
 
     // Test 1: NULL values
     print!("  1. NULL values... ");
-    match client.execute("INSERT INTO test_data (id, name) VALUES (10, NULL)").await {
+    match client
+        .execute("INSERT INTO test_data (id, name) VALUES (10, NULL)")
+        .await
+    {
         Ok(_) => {
-            if let Ok(rows) = client.query("SELECT name FROM test_data WHERE id = 10").await {
+            if let Ok(rows) = client
+                .query("SELECT name FROM test_data WHERE id = 10")
+                .await
+            {
                 if let Some(row) = rows.first() {
                     if let Some(val) = row.get("name") {
                         if val.is_null() {
@@ -149,11 +187,20 @@ async fn test_data_types(client: &Client) {
 
     // Test 2: Boolean values
     print!("  2. Boolean true/false... ");
-    match client.execute("INSERT INTO test_data (id, active) VALUES (11, true)").await {
+    match client
+        .execute("INSERT INTO test_data (id, active) VALUES (11, true)")
+        .await
+    {
         Ok(_) => {
-            match client.execute("INSERT INTO test_data (id, active) VALUES (12, false)").await {
+            match client
+                .execute("INSERT INTO test_data (id, active) VALUES (12, false)")
+                .await
+            {
                 Ok(_) => {
-                    if let Ok(rows) = client.query("SELECT id, active FROM test_data WHERE id IN (11, 12) ORDER BY id").await {
+                    if let Ok(rows) = client
+                        .query("SELECT id, active FROM test_data WHERE id IN (11, 12) ORDER BY id")
+                        .await
+                    {
                         if rows.len() == 2 {
                             let t = rows[0].get("active").and_then(|v| v.as_bool());
                             let f = rows[1].get("active").and_then(|v| v.as_bool());
@@ -177,9 +224,15 @@ async fn test_data_types(client: &Client) {
 
     // Test 3: Empty strings
     print!("  3. Empty string... ");
-    match client.execute("INSERT INTO test_data (id, name) VALUES (20, '')").await {
+    match client
+        .execute("INSERT INTO test_data (id, name) VALUES (20, '')")
+        .await
+    {
         Ok(_) => {
-            if let Ok(rows) = client.query("SELECT name FROM test_data WHERE id = 20").await {
+            if let Ok(rows) = client
+                .query("SELECT name FROM test_data WHERE id = 20")
+                .await
+            {
                 if let Some(row) = rows.first() {
                     if let Some(val) = row.get("name").and_then(|v| v.as_str()) {
                         if val.is_empty() {
@@ -203,9 +256,18 @@ async fn test_data_types(client: &Client) {
     // Test 4: Special characters
     print!("  4. Special characters (quotes, backslash)... ");
     let special = "O'Reilly \"quoted\" \\backslash";
-    match client.execute(&format!("INSERT INTO test_data (id, name) VALUES (21, '{}')", special)).await {
+    match client
+        .execute(&format!(
+            "INSERT INTO test_data (id, name) VALUES (21, '{}')",
+            special
+        ))
+        .await
+    {
         Ok(_) => {
-            if let Ok(rows) = client.query("SELECT name FROM test_data WHERE id = 21").await {
+            if let Ok(rows) = client
+                .query("SELECT name FROM test_data WHERE id = 21")
+                .await
+            {
                 if let Some(row) = rows.first() {
                     if let Some(val) = row.get("name").and_then(|v| v.as_str()) {
                         if val == special {
@@ -229,9 +291,18 @@ async fn test_data_types(client: &Client) {
     // Test 5: Unicode
     print!("  5. Unicode characters (emoji, Chinese)... ");
     let unicode = "Hello 👋 世界 🚀";
-    match client.execute(&format!("INSERT INTO test_data (id, name) VALUES (22, '{}')", unicode)).await {
+    match client
+        .execute(&format!(
+            "INSERT INTO test_data (id, name) VALUES (22, '{}')",
+            unicode
+        ))
+        .await
+    {
         Ok(_) => {
-            if let Ok(rows) = client.query("SELECT name FROM test_data WHERE id = 22").await {
+            if let Ok(rows) = client
+                .query("SELECT name FROM test_data WHERE id = 22")
+                .await
+            {
                 if let Some(row) = rows.first() {
                     if let Some(val) = row.get("name").and_then(|v| v.as_str()) {
                         if val == unicode {
@@ -255,9 +326,18 @@ async fn test_data_types(client: &Client) {
     // Test 6: Large integers
     print!("  6. Large integers... ");
     let large = 9223372036854775806_i64; // Near i64::MAX
-    match client.execute(&format!("INSERT INTO test_data (id, count) VALUES (30, {})", large)).await {
+    match client
+        .execute(&format!(
+            "INSERT INTO test_data (id, count) VALUES (30, {})",
+            large
+        ))
+        .await
+    {
         Ok(_) => {
-            if let Ok(rows) = client.query("SELECT count FROM test_data WHERE id = 30").await {
+            if let Ok(rows) = client
+                .query("SELECT count FROM test_data WHERE id = 30")
+                .await
+            {
                 if let Some(row) = rows.first() {
                     if let Some(val) = row.get("count").and_then(|v| v.as_i64()) {
                         if val == large {
@@ -280,9 +360,15 @@ async fn test_data_types(client: &Client) {
 
     // Test 7: Zero values
     print!("  7. Zero values... ");
-    match client.execute("INSERT INTO test_data (id, count, price) VALUES (31, 0, 0)").await {
+    match client
+        .execute("INSERT INTO test_data (id, count, price) VALUES (31, 0, 0)")
+        .await
+    {
         Ok(_) => {
-            if let Ok(rows) = client.query("SELECT count, price FROM test_data WHERE id = 31").await {
+            if let Ok(rows) = client
+                .query("SELECT count, price FROM test_data WHERE id = 31")
+                .await
+            {
                 if let Some(row) = rows.first() {
                     let c = row.get("count").and_then(|v| v.as_i64());
                     let p = row.get("price").and_then(|v| v.as_i64());
@@ -312,14 +398,28 @@ async fn test_complex_queries(client: &Client) {
     let _ = client.execute("DELETE FROM users").await;
     let _ = client.execute("DELETE FROM orders").await;
 
-    let _ = client.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')").await;
-    let _ = client.execute("INSERT INTO users (id, name) VALUES (2, 'Bob')").await;
-    let _ = client.execute("INSERT INTO users (id, name) VALUES (3, 'Charlie')").await;
+    let _ = client
+        .execute("INSERT INTO users (id, name) VALUES (1, 'Alice')")
+        .await;
+    let _ = client
+        .execute("INSERT INTO users (id, name) VALUES (2, 'Bob')")
+        .await;
+    let _ = client
+        .execute("INSERT INTO users (id, name) VALUES (3, 'Charlie')")
+        .await;
 
-    let _ = client.execute("INSERT INTO orders (id, user_id, amount) VALUES (1, 1, 100)").await;
-    let _ = client.execute("INSERT INTO orders (id, user_id, amount) VALUES (2, 1, 200)").await;
-    let _ = client.execute("INSERT INTO orders (id, user_id, amount) VALUES (3, 2, 150)").await;
-    let _ = client.execute("INSERT INTO orders (id, user_id, amount) VALUES (4, 2, 250)").await;
+    let _ = client
+        .execute("INSERT INTO orders (id, user_id, amount) VALUES (1, 1, 100)")
+        .await;
+    let _ = client
+        .execute("INSERT INTO orders (id, user_id, amount) VALUES (2, 1, 200)")
+        .await;
+    let _ = client
+        .execute("INSERT INTO orders (id, user_id, amount) VALUES (3, 2, 150)")
+        .await;
+    let _ = client
+        .execute("INSERT INTO orders (id, user_id, amount) VALUES (4, 2, 250)")
+        .await;
 
     // Test 1: COUNT aggregation
     print!("  1. COUNT aggregation... ");
@@ -386,7 +486,10 @@ async fn test_complex_queries(client: &Client) {
 
     // Test 4: MAX/MIN
     print!("  4. MAX/MIN aggregation... ");
-    match client.query("SELECT MAX(amount), MIN(amount) FROM orders").await {
+    match client
+        .query("SELECT MAX(amount), MIN(amount) FROM orders")
+        .await
+    {
         Ok(rows) => {
             if let Some(row) = rows.first() {
                 let max = row.get_idx(0).and_then(|v| v.as_i64());
@@ -394,7 +497,10 @@ async fn test_complex_queries(client: &Client) {
                 if max == Some(250) && min == Some(100) {
                     println!("✓ MAX/MIN work (max={:?}, min={:?})", max, min);
                 } else {
-                    println!("⚠️  Expected max=250, min=100, got max={:?}, min={:?}", max, min);
+                    println!(
+                        "⚠️  Expected max=250, min=100, got max={:?}, min={:?}",
+                        max, min
+                    );
                 }
             } else {
                 println!("⚠️  No rows returned");
@@ -405,7 +511,10 @@ async fn test_complex_queries(client: &Client) {
 
     // Test 5: GROUP BY
     print!("  5. GROUP BY... ");
-    match client.query("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id ORDER BY user_id").await {
+    match client
+        .query("SELECT user_id, COUNT(*) FROM orders GROUP BY user_id ORDER BY user_id")
+        .await
+    {
         Ok(rows) => {
             if rows.len() == 2 {
                 let u1_count = rows[0].get_idx(1).and_then(|v| v.as_i64());
@@ -413,7 +522,10 @@ async fn test_complex_queries(client: &Client) {
                 if u1_count == Some(2) && u2_count == Some(2) {
                     println!("✓ GROUP BY works");
                 } else {
-                    println!("⚠️  Expected both counts=2, got {:?}, {:?}", u1_count, u2_count);
+                    println!(
+                        "⚠️  Expected both counts=2, got {:?}, {:?}",
+                        u1_count, u2_count
+                    );
                 }
             } else {
                 println!("⚠️  Expected 2 groups, got {}", rows.len());
@@ -446,14 +558,17 @@ async fn test_complex_queries(client: &Client) {
 
     // Test 7: ORDER BY with multiple columns
     print!("  7. ORDER BY multiple columns... ");
-    match client.query("SELECT user_id, amount FROM orders ORDER BY user_id DESC, amount ASC").await {
+    match client
+        .query("SELECT user_id, amount FROM orders ORDER BY user_id DESC, amount ASC")
+        .await
+    {
         Ok(rows) => {
             if rows.len() == 4 {
                 // Should be: (2,150), (2,250), (1,100), (1,200)
-                let check = rows[0].get("user_id").and_then(|v| v.as_i64()) == Some(2) &&
-                           rows[0].get("amount").and_then(|v| v.as_i64()) == Some(150) &&
-                           rows[3].get("user_id").and_then(|v| v.as_i64()) == Some(1) &&
-                           rows[3].get("amount").and_then(|v| v.as_i64()) == Some(200);
+                let check = rows[0].get("user_id").and_then(|v| v.as_i64()) == Some(2)
+                    && rows[0].get("amount").and_then(|v| v.as_i64()) == Some(150)
+                    && rows[3].get("user_id").and_then(|v| v.as_i64()) == Some(1)
+                    && rows[3].get("amount").and_then(|v| v.as_i64()) == Some(200);
 
                 if check {
                     println!("✓ Multi-column ORDER BY works");
@@ -482,7 +597,10 @@ async fn test_complex_queries(client: &Client) {
 
     // Test 9: WHERE with AND/OR
     print!("  9. WHERE with AND/OR... ");
-    match client.query("SELECT * FROM orders WHERE user_id = 1 AND amount > 150").await {
+    match client
+        .query("SELECT * FROM orders WHERE user_id = 1 AND amount > 150")
+        .await
+    {
         Ok(rows) => {
             if rows.len() == 1 {
                 if let Some(amt) = rows[0].get("amount").and_then(|v| v.as_i64()) {
@@ -503,7 +621,10 @@ async fn test_complex_queries(client: &Client) {
 
     // Test 10: Empty result set
     print!("  10. Empty result set... ");
-    match client.query("SELECT * FROM orders WHERE user_id = 999").await {
+    match client
+        .query("SELECT * FROM orders WHERE user_id = 999")
+        .await
+    {
         Ok(rows) => {
             if rows.is_empty() {
                 println!("✓ Empty result set handled correctly");

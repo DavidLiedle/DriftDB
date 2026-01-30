@@ -179,10 +179,7 @@ fn test_wal_checksum_verification() {
 
     // Corrupt the WAL file
     {
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(&wal_path)
-            .unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&wal_path).unwrap();
         // Append garbage data that won't parse correctly
         writeln!(file, "{{\"corrupted\": \"data\"}}").unwrap();
     }
@@ -279,7 +276,10 @@ fn test_wal_checkpoint_and_truncation() {
 
     // Verify new operations are logged correctly
     let entries = wal.replay_from_sequence(1).unwrap();
-    assert!(!entries.is_empty(), "Should have at least one entry after checkpoint");
+    assert!(
+        !entries.is_empty(),
+        "Should have at least one entry after checkpoint"
+    );
 
     println!("✅ WAL checkpoint and truncation passed");
 }

@@ -124,10 +124,7 @@ pub enum FailoverEvent {
         new_status: HealthStatus,
     },
     /// Leader failure detected
-    LeaderFailed {
-        leader_id: String,
-        reason: String,
-    },
+    LeaderFailed { leader_id: String, reason: String },
     /// Failover initiated
     FailoverInitiated {
         old_leader: String,
@@ -140,10 +137,7 @@ pub enum FailoverEvent {
         fencing_token: FencingToken,
     },
     /// Failover failed
-    FailoverFailed {
-        candidate: String,
-        reason: String,
-    },
+    FailoverFailed { candidate: String, reason: String },
     /// Node fenced (prevented from accepting writes)
     NodeFenced {
         node_id: String,
@@ -303,7 +297,7 @@ impl FailoverManager {
             if let Some(last_contact) = state_guard.last_leader_contact {
                 let elapsed = last_contact.elapsed();
                 let threshold = Duration::from_millis(
-                    config.health_check_interval_ms * config.failure_threshold as u64
+                    config.health_check_interval_ms * config.failure_threshold as u64,
                 );
 
                 if elapsed > threshold && !state_guard.failover_in_progress {

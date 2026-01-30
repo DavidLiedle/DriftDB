@@ -194,7 +194,9 @@ impl RlsManager {
     /// Enable RLS for a table
     pub fn enable_rls(&self, table_name: &str) -> Result<()> {
         info!("Enabling RLS for table: {}", table_name);
-        self.enabled_tables.write().insert(table_name.to_string(), true);
+        self.enabled_tables
+            .write()
+            .insert(table_name.to_string(), true);
         self.clear_cache_for_table(table_name);
         Ok(())
     }
@@ -202,7 +204,9 @@ impl RlsManager {
     /// Disable RLS for a table
     pub fn disable_rls(&self, table_name: &str) -> Result<()> {
         info!("Disabling RLS for table: {}", table_name);
-        self.enabled_tables.write().insert(table_name.to_string(), false);
+        self.enabled_tables
+            .write()
+            .insert(table_name.to_string(), false);
         self.clear_cache_for_table(table_name);
         Ok(())
     }
@@ -219,7 +223,10 @@ impl RlsManager {
     /// Create a new policy
     pub fn create_policy(&self, policy: Policy) -> Result<()> {
         let table_name = policy.table_name.clone();
-        info!("Creating policy '{}' for table '{}'", policy.name, table_name);
+        info!(
+            "Creating policy '{}' for table '{}'",
+            policy.name, table_name
+        );
 
         let mut policies = self.policies.write();
         let table_policies = policies.entry(table_name.clone()).or_default();
@@ -241,7 +248,10 @@ impl RlsManager {
 
     /// Drop a policy
     pub fn drop_policy(&self, table_name: &str, policy_name: &str) -> Result<()> {
-        info!("Dropping policy '{}' from table '{}'", policy_name, table_name);
+        info!(
+            "Dropping policy '{}' from table '{}'",
+            policy_name, table_name
+        );
 
         let mut policies = self.policies.write();
         if let Some(table_policies) = policies.get_mut(table_name) {
@@ -339,9 +349,7 @@ impl RlsManager {
 
         table_policies
             .iter()
-            .filter(|p| {
-                p.enabled && p.applies_to_action(action) && p.applies_to_role(user_roles)
-            })
+            .filter(|p| p.enabled && p.applies_to_action(action) && p.applies_to_role(user_roles))
             .cloned()
             .collect()
     }
@@ -592,12 +600,8 @@ mod tests {
     fn test_expression_substitution() {
         let manager = RlsManager::new();
 
-        let context = SecurityContext::new(
-            "alice".to_string(),
-            vec![],
-            false,
-        )
-        .with_variable("tenant_id".to_string(), "123".to_string());
+        let context = SecurityContext::new("alice".to_string(), vec![], false)
+            .with_variable("tenant_id".to_string(), "123".to_string());
 
         let expr = "user_id = $user AND tenant_id = $tenant_id";
         let result = manager.evaluate_expression(expr, &context).unwrap();

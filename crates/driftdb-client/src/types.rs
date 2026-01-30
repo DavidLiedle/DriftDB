@@ -147,10 +147,7 @@ mod tests {
 
     #[test]
     fn test_time_travel_to_sql() {
-        assert_eq!(
-            TimeTravel::Sequence(42).to_sql(),
-            "AS OF @seq:42"
-        );
+        assert_eq!(TimeTravel::Sequence(42).to_sql(), "AS OF @seq:42");
         assert_eq!(
             TimeTravel::Timestamp("2025-01-01T00:00:00Z".to_string()).to_sql(),
             "AS OF TIMESTAMP '2025-01-01T00:00:00Z'"
@@ -159,10 +156,7 @@ mod tests {
             TimeTravel::Between { start: 10, end: 20 }.to_sql(),
             "FOR SYSTEM_TIME BETWEEN @seq:10 AND @seq:20"
         );
-        assert_eq!(
-            TimeTravel::All.to_sql(),
-            "FOR SYSTEM_TIME ALL"
-        );
+        assert_eq!(TimeTravel::All.to_sql(), "FOR SYSTEM_TIME ALL");
     }
 
     #[test]

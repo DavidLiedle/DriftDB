@@ -78,12 +78,7 @@ pub struct ReplicaInfo {
 
 impl ReplicaInfo {
     /// Create a new replica info
-    pub fn new(
-        id: ReplicaId,
-        name: String,
-        address: SocketAddr,
-        mode: ReplicationMode,
-    ) -> Self {
+    pub fn new(id: ReplicaId, name: String, address: SocketAddr, mode: ReplicationMode) -> Self {
         Self {
             id,
             name,
@@ -322,14 +317,14 @@ impl ReplicaManager {
             // Check heartbeat timeout
             if !replica.is_healthy(self.config.heartbeat_timeout)
                 && replica.state != ReplicaState::Disconnected
-                    && replica.state != ReplicaState::Failed
-                {
-                    warn!(
-                        "Replica {} ({}) heartbeat timeout - marking as disconnected",
-                        replica.name, replica.id
-                    );
-                    replica.state = ReplicaState::Disconnected;
-                }
+                && replica.state != ReplicaState::Failed
+            {
+                warn!(
+                    "Replica {} ({}) heartbeat timeout - marking as disconnected",
+                    replica.name, replica.id
+                );
+                replica.state = ReplicaState::Disconnected;
+            }
 
             // Check lag threshold
             if replica.lag_bytes > self.config.max_lag_bytes {
@@ -435,7 +430,8 @@ mod tests {
             .register_replica("replica-2".to_string(), addr, ReplicationMode::Async)
             .unwrap();
 
-        let result = manager.register_replica("replica-3".to_string(), addr, ReplicationMode::Async);
+        let result =
+            manager.register_replica("replica-3".to_string(), addr, ReplicationMode::Async);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Maximum replica limit"));
     }

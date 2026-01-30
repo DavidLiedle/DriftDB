@@ -27,7 +27,9 @@ impl RateTracker {
 
     fn update(&mut self, current_value: u64) -> f64 {
         let now = SystemTime::now();
-        let elapsed = now.duration_since(self.last_timestamp).unwrap_or(Duration::from_secs(1));
+        let elapsed = now
+            .duration_since(self.last_timestamp)
+            .unwrap_or(Duration::from_secs(1));
         let elapsed_secs = elapsed.as_secs_f64();
 
         if elapsed_secs > 0.0 && current_value >= self.last_value {
@@ -590,7 +592,7 @@ impl MonitoringSystem {
             segment_avg_size_bytes: 0, // Would need segment size tracking in storage layer
             compaction_pending: 0,     // Would need integration with compaction scheduler
             wal_size_bytes,
-            wal_lag_bytes: 0,          // Would need replication lag tracking
+            wal_lag_bytes: 0, // Would need replication lag tracking
             snapshots_count: metrics.snapshots_created.load(Ordering::Relaxed) as usize,
             index_size_bytes: 0, // Would need index size tracking
         }
@@ -605,9 +607,9 @@ impl MonitoringSystem {
 
     fn collect_network_metrics(&self, metrics: &Arc<Metrics>) -> NetworkMetrics {
         // Calculate requests per second from total queries + writes + reads
-        let total_requests = metrics.queries_total.load(Ordering::Relaxed) +
-                           metrics.writes_total.load(Ordering::Relaxed) +
-                           metrics.reads_total.load(Ordering::Relaxed);
+        let total_requests = metrics.queries_total.load(Ordering::Relaxed)
+            + metrics.writes_total.load(Ordering::Relaxed)
+            + metrics.reads_total.load(Ordering::Relaxed);
         let requests_per_second = self.request_rate_tracker.write().update(total_requests);
 
         NetworkMetrics {
@@ -977,7 +979,11 @@ mod tests {
 
         // Rate should be approximately 100 / 0.1 = 1000 per second
         // Allow some tolerance for timing variations
-        assert!(rate > 500.0 && rate < 2000.0, "Rate {} is outside expected range", rate);
+        assert!(
+            rate > 500.0 && rate < 2000.0,
+            "Rate {} is outside expected range",
+            rate
+        );
 
         // Another update
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1003,13 +1009,25 @@ mod tests {
 
         // Check percentiles (returned in milliseconds)
         let p50 = tracker.percentile(50.0);
-        assert!(p50 >= 40.0 && p50 <= 65.0, "p50 {} is outside expected range", p50);
+        assert!(
+            p50 >= 40.0 && p50 <= 65.0,
+            "p50 {} is outside expected range",
+            p50
+        );
 
         let p95 = tracker.percentile(95.0);
-        assert!(p95 >= 85.0 && p95 <= 100.0, "p95 {} is outside expected range", p95);
+        assert!(
+            p95 >= 85.0 && p95 <= 100.0,
+            "p95 {} is outside expected range",
+            p95
+        );
 
         let p99 = tracker.percentile(99.0);
-        assert!(p99 >= 90.0 && p99 <= 100.0, "p99 {} is outside expected range", p99);
+        assert!(
+            p99 >= 90.0 && p99 <= 100.0,
+            "p99 {} is outside expected range",
+            p99
+        );
     }
 
     #[test]
@@ -1023,7 +1041,11 @@ mod tests {
 
         // Should only keep last 5 samples (60ms, 70ms, 80ms, 90ms, 100ms)
         let p50 = tracker.percentile(50.0);
-        assert!(p50 >= 70.0 && p50 <= 85.0, "p50 {} is outside expected range", p50);
+        assert!(
+            p50 >= 70.0 && p50 <= 85.0,
+            "p50 {} is outside expected range",
+            p50
+        );
     }
 
     #[tokio::test]

@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::executor::{QueryExecutor, QueryResult};
-use crate::performance::{PerformanceMonitor, QueryOptimizer, ConnectionPoolOptimizer};
+use crate::performance::{ConnectionPoolOptimizer, PerformanceMonitor, QueryOptimizer};
 use driftdb_core::EngineGuard;
 
 /// High-performance query executor with caching and optimization
@@ -79,7 +79,10 @@ impl OptimizedQueryExecutor {
         };
 
         if let Some(plan) = execution_plan {
-            debug!("Using cached execution plan for query {}: cost={}", sql_hash, plan.estimated_cost);
+            debug!(
+                "Using cached execution plan for query {}: cost={}",
+                sql_hash, plan.estimated_cost
+            );
         }
 
         // Execute the query using a temporary executor
@@ -92,7 +95,10 @@ impl OptimizedQueryExecutor {
 
         match &result {
             Ok(_) => {
-                info!("Query executed successfully in {}ms", execution_time.as_millis());
+                info!(
+                    "Query executed successfully in {}ms",
+                    execution_time.as_millis()
+                );
 
                 // Record performance metrics
                 if let Some(monitor) = &self.performance_monitor {
@@ -106,7 +112,11 @@ impl OptimizedQueryExecutor {
                 }
             }
             Err(e) => {
-                warn!("Query execution failed in {}ms: {}", execution_time.as_millis(), e);
+                warn!(
+                    "Query execution failed in {}ms: {}",
+                    execution_time.as_millis(),
+                    e
+                );
 
                 // Still record the execution time for failed queries
                 if let Some(monitor) = &self.performance_monitor {
@@ -226,9 +236,9 @@ impl OptimizedQueryExecutor {
 
     /// Get performance statistics
     pub fn get_performance_stats(&self) -> Option<Value> {
-        self.performance_monitor.as_ref().map(|monitor| {
-            monitor.get_performance_stats()
-        })
+        self.performance_monitor
+            .as_ref()
+            .map(|monitor| monitor.get_performance_stats())
     }
 
     /// Execute batch of queries with optimization
@@ -242,10 +252,17 @@ impl OptimizedQueryExecutor {
         let mut query_groups = std::collections::HashMap::new();
         for (idx, query) in queries.iter().enumerate() {
             let pattern = Self::extract_query_pattern(query);
-            query_groups.entry(pattern).or_insert(Vec::new()).push((idx, query));
+            query_groups
+                .entry(pattern)
+                .or_insert(Vec::new())
+                .push((idx, query));
         }
 
-        info!("Grouped {} queries into {} patterns", queries.len(), query_groups.len());
+        info!(
+            "Grouped {} queries into {} patterns",
+            queries.len(),
+            query_groups.len()
+        );
 
         // Execute each group
         for (_pattern, group) in query_groups {
@@ -322,12 +339,12 @@ impl OptimizedQueryExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use driftdb_core::Engine;
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_optimized_executor() {
-        use driftdb_core::{EnginePool, connection::PoolConfig, observability::Metrics};
+        use driftdb_core::{connection::PoolConfig, observability::Metrics, EnginePool};
         use std::net::SocketAddr;
 
         let temp_dir = tempdir().unwrap();
@@ -346,12 +363,8 @@ mod tests {
         let monitor = Arc::new(PerformanceMonitor::new(100));
         let optimizer = Arc::new(QueryOptimizer::new());
 
-        let mut executor = OptimizedQueryExecutor::new(
-            engine_guard,
-            Some(monitor),
-            Some(optimizer),
-            None,
-        );
+        let mut executor =
+            OptimizedQueryExecutor::new(engine_guard, Some(monitor), Some(optimizer), None);
 
         // Test basic query execution
         let result = executor.execute_optimized("SELECT 1").await;

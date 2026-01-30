@@ -139,7 +139,7 @@ async fn setup_tables(client: &Client) -> Result<()> {
              id BIGINT PRIMARY KEY, \
              name TEXT, \
              balance BIGINT\
-             )"
+             )",
         )
         .await?;
 

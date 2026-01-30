@@ -12,7 +12,6 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-
 /// Alert severity levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AlertSeverity {
@@ -239,7 +238,8 @@ impl AlertManager {
             threshold: 10.0, // 10 errors per second
             operator: ComparisonOperator::GreaterThan,
             for_duration: Duration::from_secs(60),
-            message: "High error rate detected: {value} errors/sec (threshold: {threshold})".to_string(),
+            message: "High error rate detected: {value} errors/sec (threshold: {threshold})"
+                .to_string(),
             labels: [("type".to_string(), "error_rate".to_string())].into(),
         });
 
@@ -271,7 +271,8 @@ impl AlertManager {
             threshold: 90.0, // 90% utilization
             operator: ComparisonOperator::GreaterThan,
             for_duration: Duration::from_secs(120),
-            message: "Connection pool utilization high: {value}% (threshold: {threshold}%)".to_string(),
+            message: "Connection pool utilization high: {value}% (threshold: {threshold}%)"
+                .to_string(),
             labels: [("type".to_string(), "pool".to_string())].into(),
         });
 
@@ -345,7 +346,8 @@ impl AlertManager {
             threshold: 5.0, // 5 slow queries per minute
             operator: ComparisonOperator::GreaterThan,
             for_duration: Duration::from_secs(300),
-            message: "High slow query rate: {value} queries/min (threshold: {threshold})".to_string(),
+            message: "High slow query rate: {value} queries/min (threshold: {threshold})"
+                .to_string(),
             labels: [("type".to_string(), "query".to_string())].into(),
         });
 

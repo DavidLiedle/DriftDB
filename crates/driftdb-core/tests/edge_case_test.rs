@@ -173,7 +173,10 @@ fn test_nonexistent_table_error() {
         table: "nonexistent_table".to_string(),
         data: json!({"id": "1"}),
     });
-    assert!(result.is_err(), "Inserting into nonexistent table should fail");
+    assert!(
+        result.is_err(),
+        "Inserting into nonexistent table should fail"
+    );
 
     println!("✅ Nonexistent table error test passed");
 }
@@ -221,10 +224,7 @@ fn test_very_long_strings() {
     match result {
         QueryResult::Rows { data } => {
             assert_eq!(data.len(), 1);
-            assert_eq!(
-                data[0].get("text").unwrap().as_str().unwrap().len(),
-                10_000
-            );
+            assert_eq!(data[0].get("text").unwrap().as_str().unwrap().len(), 10_000);
         }
         _ => panic!("Expected Rows result"),
     }
@@ -289,13 +289,13 @@ fn test_special_characters_in_strings() {
 
     // Test various special characters
     let special_texts = vec![
-        ("1", "Hello\nWorld"),           // Newline
-        ("2", "Tab\tSeparated"),         // Tab
-        ("3", "Quote\"Test"),            // Quote
-        ("4", "Apostrophe's"),           // Apostrophe
-        ("5", "Emoji 😀🎉"),             // Unicode emoji
-        ("6", "Chinese 中文"),            // Non-Latin characters
-        ("7", "Backslash\\Test"),        // Backslash
+        ("1", "Hello\nWorld"),    // Newline
+        ("2", "Tab\tSeparated"),  // Tab
+        ("3", "Quote\"Test"),     // Quote
+        ("4", "Apostrophe's"),    // Apostrophe
+        ("5", "Emoji 😀🎉"),      // Unicode emoji
+        ("6", "Chinese 中文"),    // Non-Latin characters
+        ("7", "Backslash\\Test"), // Backslash
     ];
 
     for (id, text) in &special_texts {
@@ -687,9 +687,21 @@ fn test_patch_updates_only_specified_fields() {
     match result {
         QueryResult::Rows { data } => {
             assert_eq!(data.len(), 1);
-            assert_eq!(data[0]["field1"], json!("value1"), "field1 should be unchanged");
-            assert_eq!(data[0]["field2"], json!("updated_value2"), "field2 should be updated");
-            assert_eq!(data[0]["field3"], json!("value3"), "field3 should be unchanged");
+            assert_eq!(
+                data[0]["field1"],
+                json!("value1"),
+                "field1 should be unchanged"
+            );
+            assert_eq!(
+                data[0]["field2"],
+                json!("updated_value2"),
+                "field2 should be updated"
+            );
+            assert_eq!(
+                data[0]["field3"],
+                json!("value3"),
+                "field3 should be unchanged"
+            );
         }
         _ => panic!("Expected Rows result"),
     }

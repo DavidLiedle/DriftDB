@@ -263,8 +263,11 @@ fn bench_index_operations(c: &mut Criterion) {
     });
 
     // Create index
-    sql_bridge::execute_sql(&mut engine, "CREATE INDEX idx_col ON bench_index(indexed_col)")
-        .unwrap();
+    sql_bridge::execute_sql(
+        &mut engine,
+        "CREATE INDEX idx_col ON bench_index(indexed_col)",
+    )
+    .unwrap();
 
     // Benchmark query WITH index
     group.bench_function("with_index", |b| {
@@ -316,7 +319,11 @@ fn bench_transaction_operations(c: &mut Criterion) {
             for i in 0..10 {
                 sql_bridge::execute_sql(
                     &mut engine,
-                    &format!("INSERT INTO bench_tx VALUES ({}, {})", counter + i, counter + i),
+                    &format!(
+                        "INSERT INTO bench_tx VALUES ({}, {})",
+                        counter + i,
+                        counter + i
+                    ),
                 )
                 .ok();
             }

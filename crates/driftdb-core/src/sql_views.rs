@@ -483,13 +483,11 @@ mod tests {
             .create_table_with_columns(
                 "users",
                 "id",
-                vec![
-                    crate::schema::ColumnDef {
-                        name: "name".to_string(),
-                        col_type: "string".to_string(),
-                        index: false,
-                    }
-                ],
+                vec![crate::schema::ColumnDef {
+                    name: "name".to_string(),
+                    col_type: "string".to_string(),
+                    index: false,
+                }],
             )
             .unwrap();
 
@@ -515,13 +513,11 @@ mod tests {
             .create_table_with_columns(
                 "orders",
                 "id",
-                vec![
-                    crate::schema::ColumnDef {
-                        name: "total".to_string(),
-                        col_type: "number".to_string(),
-                        index: false,
-                    }
-                ],
+                vec![crate::schema::ColumnDef {
+                    name: "total".to_string(),
+                    col_type: "number".to_string(),
+                    index: false,
+                }],
             )
             .unwrap();
 

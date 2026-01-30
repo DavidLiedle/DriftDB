@@ -329,12 +329,14 @@ impl TransactionManager {
         let wal_path = wal_dir.join("wal.log");
 
         // Create the WAL directory
-        std::fs::create_dir_all(&wal_dir).map_err(|e| {
-            DriftError::Other(format!("Failed to create WAL directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&wal_dir)
+            .map_err(|e| DriftError::Other(format!("Failed to create WAL directory: {}", e)))?;
 
         // Create WAL
-        let wal = Arc::new(WalManager::new(&wal_path, crate::wal::WalConfig::default())?);
+        let wal = Arc::new(WalManager::new(
+            &wal_path,
+            crate::wal::WalConfig::default(),
+        )?);
 
         Ok(Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),

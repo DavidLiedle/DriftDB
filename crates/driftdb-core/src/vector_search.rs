@@ -654,12 +654,8 @@ fn apply_filter(metadata: &HashMap<String, serde_json::Value>, filter: &Metadata
         .iter()
         .map(|condition| {
             match condition {
-                FilterCondition::Equals { field, value } => {
-                    metadata.get(field) == Some(value)
-                }
-                FilterCondition::NotEquals { field, value } => {
-                    metadata.get(field) != Some(value)
-                }
+                FilterCondition::Equals { field, value } => metadata.get(field) == Some(value),
+                FilterCondition::NotEquals { field, value } => metadata.get(field) != Some(value),
                 FilterCondition::GreaterThan { field, value } => {
                     metadata.get(field).is_some_and(|v| {
                         // Simple comparison for numbers

@@ -272,10 +272,7 @@ impl MvccEngine {
 
         // Add to version store (as pending)
         let mut version_store = self.version_store.write();
-        let table_versions = version_store
-            .tables
-            .entry(table.to_string())
-            .or_default();
+        let table_versions = version_store.tables.entry(table.to_string()).or_default();
 
         let version_chain =
             table_versions

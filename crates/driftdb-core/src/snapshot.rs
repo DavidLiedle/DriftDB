@@ -156,11 +156,11 @@ pub struct SnapshotPolicy {
 impl Default for SnapshotPolicy {
     fn default() -> Self {
         Self {
-            min_writes_threshold: 1_000,       // At least 1K writes
-            max_writes_threshold: 100_000,     // Max 100K writes
-            min_time_between_snapshots: 60,    // At least 1 minute
-            max_time_between_snapshots: 3600,  // Max 1 hour
-            write_rate_multiplier: 1.5,        // Adjust threshold by 1.5x write rate
+            min_writes_threshold: 1_000,      // At least 1K writes
+            max_writes_threshold: 100_000,    // Max 100K writes
+            min_time_between_snapshots: 60,   // At least 1 minute
+            max_time_between_snapshots: 3600, // Max 1 hour
+            write_rate_multiplier: 1.5,       // Adjust threshold by 1.5x write rate
             enable_adaptive: true,
         }
     }
@@ -336,7 +336,8 @@ impl AdaptiveSnapshotManager {
 
         // Calculate threshold: base + (max - base) / (1 + write_rate * multiplier)
         let threshold = base_threshold
-            + (max_threshold - base_threshold) / (1.0 + write_rate * self.policy.write_rate_multiplier);
+            + (max_threshold - base_threshold)
+                / (1.0 + write_rate * self.policy.write_rate_multiplier);
 
         threshold.clamp(base_threshold, max_threshold) as u64
     }

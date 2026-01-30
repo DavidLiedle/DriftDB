@@ -6,12 +6,12 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::{debug, warn};
 
-use super::{RbacManager, Permission};
-use crate::security_audit::{SecurityAuditLogger, AuditEventType, AuditSeverity, AuditOutcome};
+use super::{Permission, RbacManager};
+use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity, SecurityAuditLogger};
 
 /// Check if user has permission to execute a query type
 pub fn check_query_permission(
@@ -45,16 +45,25 @@ pub fn check_query_permission(
         "COMPACT" => Permission::CompactDatabase,
         _ => {
             // Unknown query type - log and allow (fail open for compatibility)
-            debug!("Unknown query type for RBAC: {}, allowing by default", query_type);
+            debug!(
+                "Unknown query type for RBAC: {}, allowing by default",
+                query_type
+            );
             return Ok(());
         }
     };
 
-    debug!("Checking permission {:?} for user '{}'", permission, username);
+    debug!(
+        "Checking permission {:?} for user '{}'",
+        permission, username
+    );
 
     match rbac_manager.require_permission(username, permission) {
         Ok(_) => {
-            debug!("Permission granted: {:?} for user '{}'", permission, username);
+            debug!(
+                "Permission granted: {:?} for user '{}'",
+                permission, username
+            );
             Ok(())
         }
         Err(e) => {
@@ -65,15 +74,18 @@ pub fn check_query_permission(
 
             // Log to audit logger if provided
             if let Some(logger) = audit_logger {
-                let addr: SocketAddr = client_addr.parse().unwrap_or_else(|_| {
-                    "127.0.0.1:0".parse().unwrap()
-                });
+                let addr: SocketAddr = client_addr
+                    .parse()
+                    .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap());
                 logger.log_event(
                     AuditEventType::PermissionDenied,
                     Some(username.to_string()),
                     addr,
                     AuditSeverity::Warning,
-                    format!("Permission denied: {} for {} operation", permission, query_type),
+                    format!(
+                        "Permission denied: {} for {} operation",
+                        permission, query_type
+                    ),
                     serde_json::json!({
                         "permission": format!("{:?}", permission),
                         "operation": query_type,
@@ -94,10 +106,7 @@ pub fn check_query_permission(
 }
 
 /// Check if user has permission to view users list
-pub fn check_view_users_permission(
-    rbac_manager: &Arc<RbacManager>,
-    username: &str,
-) -> Result<()> {
+pub fn check_view_users_permission(rbac_manager: &Arc<RbacManager>, username: &str) -> Result<()> {
     rbac_manager.require_permission(username, Permission::ViewUsers)
 }
 
@@ -126,18 +135,12 @@ pub fn check_view_audit_log_permission(
 }
 
 /// Check if user has permission to grant roles
-pub fn check_grant_role_permission(
-    rbac_manager: &Arc<RbacManager>,
-    username: &str,
-) -> Result<()> {
+pub fn check_grant_role_permission(rbac_manager: &Arc<RbacManager>, username: &str) -> Result<()> {
     rbac_manager.require_permission(username, Permission::GrantRole)
 }
 
 /// Check if user has permission to revoke roles
-pub fn check_revoke_role_permission(
-    rbac_manager: &Arc<RbacManager>,
-    username: &str,
-) -> Result<()> {
+pub fn check_revoke_role_permission(rbac_manager: &Arc<RbacManager>, username: &str) -> Result<()> {
     rbac_manager.require_permission(username, Permission::RevokeRole)
 }
 

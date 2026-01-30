@@ -62,7 +62,10 @@ impl TransactionBuffer {
     /// Add an operation to the buffer
     pub fn add_operation(&mut self, op: BufferedOperation) {
         if !self.is_active {
-            warn!("Attempt to add operation to inactive transaction {}", self.txn_id);
+            warn!(
+                "Attempt to add operation to inactive transaction {}",
+                self.txn_id
+            );
             return;
         }
         debug!("Transaction {} buffering operation: {:?}", self.txn_id, op);
@@ -150,7 +153,11 @@ impl TransactionBufferManager {
             Some(mut buffer) => {
                 let operations = buffer.get_operations().to_vec();
                 buffer.clear();
-                info!("Committed transaction {} with {} operations", txn_id, operations.len());
+                info!(
+                    "Committed transaction {} with {} operations",
+                    txn_id,
+                    operations.len()
+                );
                 Ok(operations)
             }
             None => Err(format!("Transaction {} not found", txn_id)),
@@ -164,7 +171,10 @@ impl TransactionBufferManager {
             Some(mut buffer) => {
                 let op_count = buffer.get_operations().len();
                 buffer.deactivate();
-                info!("Rolled back transaction {} with {} operations", txn_id, op_count);
+                info!(
+                    "Rolled back transaction {} with {} operations",
+                    txn_id, op_count
+                );
                 Ok(())
             }
             None => Err(format!("Transaction {} not found", txn_id)),
@@ -173,7 +183,8 @@ impl TransactionBufferManager {
 
     /// Check if transaction exists and is active
     pub fn is_transaction_active(&self, txn_id: u64) -> bool {
-        self.buffers.read()
+        self.buffers
+            .read()
             .get(&txn_id)
             .map(|b| b.is_active())
             .unwrap_or(false)
@@ -181,13 +192,18 @@ impl TransactionBufferManager {
 
     /// Get transaction buffer for reading
     pub fn get_buffer(&self, txn_id: u64) -> Option<Vec<BufferedOperation>> {
-        self.buffers.read()
+        self.buffers
+            .read()
             .get(&txn_id)
             .map(|b| b.get_operations().to_vec())
     }
 
     /// Set read snapshot for transaction
-    pub fn set_read_snapshot(&self, txn_id: u64, snapshot: HashMap<String, HashMap<String, Value>>) -> Result<(), String> {
+    pub fn set_read_snapshot(
+        &self,
+        txn_id: u64,
+        snapshot: HashMap<String, HashMap<String, Value>>,
+    ) -> Result<(), String> {
         let mut buffers = self.buffers.write();
         match buffers.get_mut(&txn_id) {
             Some(buffer) => {
@@ -209,7 +225,9 @@ impl TransactionBufferManager {
                 BufferedOperation::Insert { table, data } => {
                     executor.insert(&table, data).await?;
                 }
-                BufferedOperation::Update { table, key, data, .. } => {
+                BufferedOperation::Update {
+                    table, key, data, ..
+                } => {
                     executor.update(&table, &key, data).await?;
                 }
                 BufferedOperation::Delete { table, key, .. } => {
@@ -249,9 +267,7 @@ impl TransactionBufferManager {
     /// Get statistics
     pub fn get_stats(&self) -> TransactionBufferStats {
         let buffers = self.buffers.read();
-        let total_operations: usize = buffers.values()
-            .map(|b| b.get_operations().len())
-            .sum();
+        let total_operations: usize = buffers.values().map(|b| b.get_operations().len()).sum();
 
         TransactionBufferStats {
             active_transactions: buffers.len(),

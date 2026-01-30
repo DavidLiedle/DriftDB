@@ -379,10 +379,7 @@ impl SearchManager {
         // Add to table indexes
         {
             let mut table_indexes = self.table_indexes.write();
-            table_indexes
-                .entry(table)
-                .or_default()
-                .push(name.clone());
+            table_indexes.entry(table).or_default().push(name.clone());
         }
 
         // Update statistics
@@ -457,10 +454,7 @@ impl SearchManager {
         // Count term frequencies and positions
         let mut term_counts: HashMap<String, Vec<usize>> = HashMap::new();
         for (pos, term) in terms.iter().enumerate() {
-            term_counts
-                .entry(term.clone())
-                .or_default()
-                .push(pos);
+            term_counts.entry(term.clone()).or_default().push(pos);
         }
 
         // Add to forward index

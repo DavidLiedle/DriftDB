@@ -5,7 +5,9 @@
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
       "Bash(tokei:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cargo --version:*)",
+      "Bash(rustc:*)"
     ],
     "deny": [],
     "ask": []

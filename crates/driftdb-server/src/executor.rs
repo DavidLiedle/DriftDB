@@ -1373,7 +1373,9 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Check if we're in a transaction for DML operations
-        let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
+        let in_transaction = self
+            .transaction_manager
+            .is_in_transaction(&self.session_id)?;
 
         // Handle DML operations with transaction awareness
         if (lower.starts_with("delete from ") || lower.starts_with("delete ")) && in_transaction {
@@ -2011,7 +2013,10 @@ impl<'a> QueryExecutor<'a> {
                 .await
                 .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
 
-            info!("Buffered INSERT for transaction in session {}", self.session_id);
+            info!(
+                "Buffered INSERT for transaction in session {}",
+                self.session_id
+            );
         } else {
             // Not in transaction, apply immediately (acquire lock only when needed)
             let mut engine = self.engine_write()?;
@@ -2111,8 +2116,13 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Check if we're in a transaction
-        let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
-        info!("UPDATE: in_transaction={}, session={}", in_transaction, self.session_id);
+        let in_transaction = self
+            .transaction_manager
+            .is_in_transaction(&self.session_id)?;
+        info!(
+            "UPDATE: in_transaction={}, session={}",
+            in_transaction, self.session_id
+        );
 
         if in_transaction {
             // Buffer UPDATE operations for transaction
@@ -2184,7 +2194,10 @@ impl<'a> QueryExecutor<'a> {
                     .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
             }
 
-            info!("Buffered {} UPDATE operations for transaction in session {}", updated_count, self.session_id);
+            info!(
+                "Buffered {} UPDATE operations for transaction in session {}",
+                updated_count, self.session_id
+            );
             Ok(QueryResult::Update {
                 count: updated_count,
             })
@@ -2269,8 +2282,13 @@ impl<'a> QueryExecutor<'a> {
         };
 
         // Check if we're in a transaction
-        let in_transaction = self.transaction_manager.is_in_transaction(&self.session_id)?;
-        info!("DELETE: in_transaction={}, session={}", in_transaction, self.session_id);
+        let in_transaction = self
+            .transaction_manager
+            .is_in_transaction(&self.session_id)?;
+        info!(
+            "DELETE: in_transaction={}, session={}",
+            in_transaction, self.session_id
+        );
 
         if in_transaction {
             // Buffer DELETE operations for transaction
@@ -2337,7 +2355,10 @@ impl<'a> QueryExecutor<'a> {
                     .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
             }
 
-            info!("Buffered {} DELETE operations for transaction in session {}", deleted_count, self.session_id);
+            info!(
+                "Buffered {} DELETE operations for transaction in session {}",
+                deleted_count, self.session_id
+            );
             Ok(QueryResult::Delete {
                 count: deleted_count,
             })
@@ -3829,8 +3850,7 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<QueryResult> {
         // If this is a correlated subquery, we need to pass the outer row context
         if let (true, Some(row)) = (subquery.is_correlated, outer_row) {
-            self.execute_correlated_subquery(subquery, row)
-                .await
+            self.execute_correlated_subquery(subquery, row).await
         } else {
             // Non-correlated subquery - check cache first
             let cache_key = subquery.sql.clone();
@@ -4861,7 +4881,9 @@ impl<'a> QueryExecutor<'a> {
     /// Get table columns in schema order
     async fn get_table_columns(&self, engine: &Engine, table_name: &str) -> Result<Vec<String>> {
         // Get column names from the engine's schema in the order they were defined
-        engine.get_table_columns(table_name).map_err(|e| anyhow!("{}", e))
+        engine
+            .get_table_columns(table_name)
+            .map_err(|e| anyhow!("{}", e))
     }
 
     /// Use indexes to optimize WHERE clause filtering

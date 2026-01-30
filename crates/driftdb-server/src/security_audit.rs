@@ -270,12 +270,7 @@ impl SecurityAuditLogger {
     }
 
     /// Log authentication success
-    pub fn log_login_success(
-        &self,
-        username: String,
-        client_addr: SocketAddr,
-        session_id: String,
-    ) {
+    pub fn log_login_success(&self, username: String, client_addr: SocketAddr, session_id: String) {
         self.log_event(
             AuditEventType::LoginSuccess,
             Some(username.clone()),
@@ -289,12 +284,7 @@ impl SecurityAuditLogger {
     }
 
     /// Log authentication failure
-    pub fn log_login_failure(
-        &self,
-        username: String,
-        client_addr: SocketAddr,
-        reason: String,
-    ) {
+    pub fn log_login_failure(&self, username: String, client_addr: SocketAddr, reason: String) {
         self.log_event(
             AuditEventType::LoginFailure,
             Some(username.clone()),
@@ -435,11 +425,7 @@ impl SecurityAuditLogger {
         use std::fs::OpenOptions;
         use std::io::Write;
 
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
+        match OpenOptions::new().create(true).append(true).open(log_path) {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(log_line.as_bytes()) {
                     warn!("Failed to write to audit log: {}", e);
@@ -454,12 +440,7 @@ impl SecurityAuditLogger {
     /// Get recent audit entries
     pub fn get_recent_entries(&self, limit: usize) -> Vec<AuditEntry> {
         let entries = self.entries.read();
-        entries
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        entries.iter().rev().take(limit).cloned().collect()
     }
 
     /// Get audit entries within a time range
@@ -515,18 +496,34 @@ impl SecurityAuditLogger {
         }
 
         let total_events = entries.len();
-        let critical_events = entries.iter().filter(|e| e.severity == AuditSeverity::Critical).count();
-        let warning_events = entries.iter().filter(|e| e.severity == AuditSeverity::Warning).count();
-        let failed_logins = entries.iter().filter(|e| e.event_type == AuditEventType::LoginFailure).count();
-        let successful_logins = entries.iter().filter(|e| e.event_type == AuditEventType::LoginSuccess).count();
-        let access_denied_events = entries.iter().filter(|e| e.event_type == AuditEventType::AccessDenied).count();
-        let suspicious_events = entries.iter().filter(|e| e.event_type == AuditEventType::SuspiciousActivity).count();
+        let critical_events = entries
+            .iter()
+            .filter(|e| e.severity == AuditSeverity::Critical)
+            .count();
+        let warning_events = entries
+            .iter()
+            .filter(|e| e.severity == AuditSeverity::Warning)
+            .count();
+        let failed_logins = entries
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::LoginFailure)
+            .count();
+        let successful_logins = entries
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::LoginSuccess)
+            .count();
+        let access_denied_events = entries
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::AccessDenied)
+            .count();
+        let suspicious_events = entries
+            .iter()
+            .filter(|e| e.event_type == AuditEventType::SuspiciousActivity)
+            .count();
 
         // Get unique users
-        let unique_users: std::collections::HashSet<_> = entries
-            .iter()
-            .filter_map(|e| e.username.as_ref())
-            .collect();
+        let unique_users: std::collections::HashSet<_> =
+            entries.iter().filter_map(|e| e.username.as_ref()).collect();
 
         AuditStatistics {
             total_events,
@@ -672,8 +669,13 @@ mod tests {
         let recent = logger.get_recent_entries(10);
 
         // Should have logged suspicious activity
-        let suspicious = recent.iter().any(|e| e.event_type == AuditEventType::SuspiciousActivity);
-        assert!(suspicious, "Should detect suspicious activity after threshold");
+        let suspicious = recent
+            .iter()
+            .any(|e| e.event_type == AuditEventType::SuspiciousActivity);
+        assert!(
+            suspicious,
+            "Should detect suspicious activity after threshold"
+        );
     }
 
     #[test]
@@ -683,8 +685,17 @@ mod tests {
 
         // Log various events
         logger.log_login_success("user1".to_string(), test_addr(), "session1".to_string());
-        logger.log_login_failure("user2".to_string(), test_addr(), "wrong password".to_string());
-        logger.log_access_denied(Some("user3".to_string()), test_addr(), "table1".to_string(), "no permission".to_string());
+        logger.log_login_failure(
+            "user2".to_string(),
+            test_addr(),
+            "wrong password".to_string(),
+        );
+        logger.log_access_denied(
+            Some("user3".to_string()),
+            test_addr(),
+            "table1".to_string(),
+            "no permission".to_string(),
+        );
 
         let stats = logger.get_statistics();
         assert_eq!(stats.total_events, 3);

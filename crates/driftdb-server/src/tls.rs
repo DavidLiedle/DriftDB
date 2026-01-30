@@ -10,9 +10,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio_rustls::{rustls, TlsAcceptor};
 use tokio_rustls::server::TlsStream;
-use tracing::{debug, info, warn, error};
+use tokio_rustls::{rustls, TlsAcceptor};
+use tracing::{debug, error, info, warn};
 
 use crate::errors::internal_error;
 
@@ -134,10 +134,15 @@ impl TlsManager {
             if config.require_tls {
                 let error = internal_error(
                     "TLS required but certificate/key files not found",
-                    Some(&format!("cert: {:?}, key: {:?}", config.cert_path, config.key_path)),
+                    Some(&format!(
+                        "cert: {:?}, key: {:?}",
+                        config.cert_path, config.key_path
+                    )),
                 );
                 error.log();
-                return Err(anyhow!("TLS configuration error: certificate files not found"));
+                return Err(anyhow!(
+                    "TLS configuration error: certificate files not found"
+                ));
             }
             warn!(
                 "TLS certificate files not found at {:?} and {:?}, TLS disabled",
@@ -152,18 +157,29 @@ impl TlsManager {
     /// Create a rustls TLS acceptor from certificate and key files
     async fn create_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
         // Read certificate chain
-        let cert_file = tokio::fs::read(&config.cert_path).await
-            .map_err(|e| anyhow!("Failed to read certificate file {:?}: {}", config.cert_path, e))?;
+        let cert_file = tokio::fs::read(&config.cert_path).await.map_err(|e| {
+            anyhow!(
+                "Failed to read certificate file {:?}: {}",
+                config.cert_path,
+                e
+            )
+        })?;
 
         let mut cert_reader = std::io::Cursor::new(cert_file);
         let cert_chain = rustls_pemfile::certs(&mut cert_reader)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| anyhow!("Failed to parse certificate: {}", e))?
-            .into_iter().collect();
+            .into_iter()
+            .collect();
 
         // Read private key
-        let key_file = tokio::fs::read(&config.key_path).await
-            .map_err(|e| anyhow!("Failed to read private key file {:?}: {}", config.key_path, e))?;
+        let key_file = tokio::fs::read(&config.key_path).await.map_err(|e| {
+            anyhow!(
+                "Failed to read private key file {:?}: {}",
+                config.key_path,
+                e
+            )
+        })?;
 
         let mut key_reader = std::io::Cursor::new(key_file);
         let private_key = rustls_pemfile::private_key(&mut key_reader)
@@ -207,8 +223,18 @@ impl TlsManager {
 
                         // Check for PostgreSQL SSL request:
                         // [4 bytes length = 8][4 bytes SSL code = 80877103]
-                        let length = u32::from_be_bytes([ssl_request[0], ssl_request[1], ssl_request[2], ssl_request[3]]);
-                        let ssl_code = u32::from_be_bytes([ssl_request[4], ssl_request[5], ssl_request[6], ssl_request[7]]);
+                        let length = u32::from_be_bytes([
+                            ssl_request[0],
+                            ssl_request[1],
+                            ssl_request[2],
+                            ssl_request[3],
+                        ]);
+                        let ssl_code = u32::from_be_bytes([
+                            ssl_request[4],
+                            ssl_request[5],
+                            ssl_request[6],
+                            ssl_request[7],
+                        ]);
 
                         if length == 8 && ssl_code == 80877103 {
                             // Client requests SSL - consume the SSL request
@@ -243,7 +269,10 @@ impl TlsManager {
 
                 // Client didn't request SSL
                 if self.config.require_tls {
-                    warn!("Rejecting non-TLS connection from {} (TLS required)", peer_addr);
+                    warn!(
+                        "Rejecting non-TLS connection from {} (TLS required)",
+                        peer_addr
+                    );
                     // Send SSL not supported response
                     use tokio::io::AsyncWriteExt;
                     let mut tcp_stream = tcp_stream;
@@ -251,7 +280,10 @@ impl TlsManager {
                     return Err(anyhow!("TLS required but client did not request SSL"));
                 }
 
-                debug!("Accepting plain connection from {} (TLS available but not requested)", peer_addr);
+                debug!(
+                    "Accepting plain connection from {} (TLS available but not requested)",
+                    peer_addr
+                );
                 // Send SSL not supported response for plain connections
                 use tokio::io::AsyncWriteExt;
                 let mut tcp_stream = tcp_stream;
@@ -265,7 +297,10 @@ impl TlsManager {
                     return Err(anyhow!("TLS required but not configured"));
                 }
 
-                debug!("Accepting plain connection from {} (TLS not configured)", peer_addr);
+                debug!(
+                    "Accepting plain connection from {} (TLS not configured)",
+                    peer_addr
+                );
                 // Still need to handle potential SSL requests even without TLS
                 use tokio::io::AsyncWriteExt;
                 let mut tcp_stream = tcp_stream;
@@ -311,8 +346,12 @@ pub fn generate_self_signed_cert(cert_path: &Path, key_path: &Path) -> Result<()
     let mut params = CertificateParams::default();
 
     // Set distinguished name
-    params.distinguished_name.push(DnType::CommonName, "DriftDB Development Certificate");
-    params.distinguished_name.push(DnType::OrganizationName, "DriftDB");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "DriftDB Development Certificate");
+    params
+        .distinguished_name
+        .push(DnType::OrganizationName, "DriftDB");
     params.distinguished_name.push(DnType::CountryName, "US");
 
     // Set validity period (365 days)
@@ -323,7 +362,9 @@ pub fn generate_self_signed_cert(cert_path: &Path, key_path: &Path) -> Result<()
     params.subject_alt_names = vec![
         SanType::DnsName("localhost".into()),
         SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
-        SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+        SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+            0, 0, 0, 0, 0, 0, 0, 1,
+        ))),
     ];
 
     // Set key usages
@@ -332,9 +373,7 @@ pub fn generate_self_signed_cert(cert_path: &Path, key_path: &Path) -> Result<()
         rcgen::KeyUsagePurpose::KeyEncipherment,
     ];
 
-    params.extended_key_usages = vec![
-        rcgen::ExtendedKeyUsagePurpose::ServerAuth,
-    ];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
 
     // Use ECDSA P-256 for efficiency
     params.alg = &PKCS_ECDSA_P256_SHA256;
@@ -405,7 +444,11 @@ mod tests {
 
         // Generate self-signed certificate
         let result = generate_self_signed_cert(&cert_path, &key_path);
-        assert!(result.is_ok(), "Failed to generate self-signed certificate: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to generate self-signed certificate: {:?}",
+            result.err()
+        );
 
         // Verify files were created
         assert!(cert_path.exists(), "Certificate file was not created");
@@ -413,15 +456,26 @@ mod tests {
 
         // Verify certificate content is not empty
         let cert_content = std::fs::read_to_string(&cert_path).unwrap();
-        assert!(cert_content.contains("BEGIN CERTIFICATE"), "Certificate does not contain BEGIN CERTIFICATE");
-        assert!(cert_content.contains("END CERTIFICATE"), "Certificate does not contain END CERTIFICATE");
+        assert!(
+            cert_content.contains("BEGIN CERTIFICATE"),
+            "Certificate does not contain BEGIN CERTIFICATE"
+        );
+        assert!(
+            cert_content.contains("END CERTIFICATE"),
+            "Certificate does not contain END CERTIFICATE"
+        );
 
         // Verify key content is not empty
         let key_content = std::fs::read_to_string(&key_path).unwrap();
-        assert!(key_content.contains("BEGIN PRIVATE KEY") || key_content.contains("BEGIN RSA PRIVATE KEY"),
-                "Key does not contain BEGIN PRIVATE KEY");
-        assert!(key_content.contains("END PRIVATE KEY") || key_content.contains("END RSA PRIVATE KEY"),
-                "Key does not contain END PRIVATE KEY");
+        assert!(
+            key_content.contains("BEGIN PRIVATE KEY")
+                || key_content.contains("BEGIN RSA PRIVATE KEY"),
+            "Key does not contain BEGIN PRIVATE KEY"
+        );
+        assert!(
+            key_content.contains("END PRIVATE KEY") || key_content.contains("END RSA PRIVATE KEY"),
+            "Key does not contain END PRIVATE KEY"
+        );
     }
 
     #[tokio::test]
@@ -437,10 +491,20 @@ mod tests {
         let config = TlsConfig::new(&cert_path, &key_path);
         let tls_manager = TlsManager::new(config).await;
 
-        assert!(tls_manager.is_ok(), "Failed to create TLS manager: {:?}", tls_manager.err());
+        assert!(
+            tls_manager.is_ok(),
+            "Failed to create TLS manager: {:?}",
+            tls_manager.err()
+        );
         let tls_manager = tls_manager.unwrap();
 
-        assert!(tls_manager.is_tls_available(), "TLS should be available with generated certificates");
-        assert!(!tls_manager.is_tls_required(), "TLS should not be required by default");
+        assert!(
+            tls_manager.is_tls_available(),
+            "TLS should be available with generated certificates"
+        );
+        assert!(
+            !tls_manager.is_tls_required(),
+            "TLS should not be required by default"
+        );
     }
 }

@@ -25,7 +25,9 @@ impl<'a> SqlExecutor<'a> {
     pub fn execute_sql(&mut self, stmt: &TemporalStatement) -> Result<QueryResult> {
         // Try to extract table name from statement for proper column ordering
         let table_name_opt = if let Statement::Query(query) = &stmt.statement {
-            self.extract_query_components(query).ok().map(|(name, _)| name)
+            self.extract_query_components(query)
+                .ok()
+                .map(|(name, _)| name)
         } else {
             None
         };

@@ -27,10 +27,7 @@ async fn test_server_startup_and_shutdown() {
     let (addr, _temp_dir) = start_test_server().await.unwrap();
 
     // Verify server is listening
-    let connect_result = timeout(
-        Duration::from_secs(5),
-        TcpStream::connect(addr)
-    ).await;
+    let connect_result = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await;
 
     // In real test, would verify connection
     assert!(connect_result.is_ok() || true); // Placeholder
@@ -203,7 +200,6 @@ mod performance_benchmarks {
 
 #[cfg(test)]
 mod production_scenarios {
-    
 
     #[tokio::test]
     async fn test_high_load_scenario() {

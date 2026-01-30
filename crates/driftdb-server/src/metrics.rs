@@ -401,7 +401,10 @@ pub fn init_metrics() -> anyhow::Result<()> {
     REGISTRY.register(Box::new(QUERY_ROWS_RETURNED.clone()))?;
     REGISTRY.register(Box::new(QUERY_ROWS_AFFECTED.clone()))?;
 
-    debug!("Metrics initialized successfully - {} metrics registered", 51);
+    debug!(
+        "Metrics initialized successfully - {} metrics registered",
+        51
+    );
     Ok(())
 }
 
@@ -709,16 +712,12 @@ pub fn update_cache_size(cache_type: &str, size_bytes: usize) {
 
 /// Record cache eviction
 pub fn record_cache_eviction(cache_type: &str) {
-    CACHE_EVICTIONS_TOTAL
-        .with_label_values(&[cache_type])
-        .inc();
+    CACHE_EVICTIONS_TOTAL.with_label_values(&[cache_type]).inc();
 }
 
 /// Record index scan
 pub fn record_index_scan(table: &str, index: &str) {
-    INDEX_SCANS_TOTAL
-        .with_label_values(&[table, index])
-        .inc();
+    INDEX_SCANS_TOTAL.with_label_values(&[table, index]).inc();
 }
 
 /// Record table scan
@@ -763,7 +762,7 @@ pub fn record_replica_status(_status_type: &str, count: i64) {
     // Update the active replicas gauge
     // We use a simple gauge without labels for total active count
     POOL_SIZE.set(count as f64); // Temporarily reuse pool size gauge
-    // TODO: Add dedicated ACTIVE_REPLICAS gauge
+                                 // TODO: Add dedicated ACTIVE_REPLICAS gauge
 }
 
 /// Record replication lag in KB (generic version without replica name)
@@ -776,14 +775,14 @@ pub fn record_replication_lag(lag_kb: f64) {
 /// Record replication bytes sent (aggregate version for all replicas)
 pub fn record_replication_bytes_sent_total(bytes: f64) {
     // Aggregate replication bytes across all replicas
-    REPLICATION_BYTES_SENT.with_label_values(&["total"]).inc_by(bytes);
+    REPLICATION_BYTES_SENT
+        .with_label_values(&["total"])
+        .inc_by(bytes);
 }
 
 /// Record rate limit hit
 pub fn record_rate_limit_hit(limit_type: &str) {
-    RATE_LIMIT_HITS_TOTAL
-        .with_label_values(&[limit_type])
-        .inc();
+    RATE_LIMIT_HITS_TOTAL.with_label_values(&[limit_type]).inc();
 }
 
 /// Record rate limit block
@@ -860,11 +859,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_endpoint() {
-        use driftdb_core::RateLimitManager;
-        use crate::slow_query_log::{SlowQueryLogger, SlowQueryConfig};
-        use crate::security_audit::{SecurityAuditLogger, AuditConfig};
-        use crate::security::rbac::RbacManager;
         use crate::protocol::auth::AuthConfig;
+        use crate::security::rbac::RbacManager;
+        use crate::security_audit::{AuditConfig, SecurityAuditLogger};
+        use crate::slow_query_log::{SlowQueryConfig, SlowQueryLogger};
+        use driftdb_core::RateLimitManager;
 
         let _ = init_metrics();
         let temp_dir = TempDir::new().unwrap();
@@ -874,7 +873,8 @@ mod tests {
         // Create metrics and engine pool
         let pool_metrics = Arc::new(driftdb_core::observability::Metrics::new());
         let pool_config = PoolConfig::default();
-        let engine_pool = EnginePool::new(engine.clone(), pool_config, pool_metrics.clone()).unwrap();
+        let engine_pool =
+            EnginePool::new(engine.clone(), pool_config, pool_metrics.clone()).unwrap();
 
         // Create all SessionManager dependencies
         let auth_config = AuthConfig::default();

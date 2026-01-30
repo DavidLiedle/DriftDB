@@ -44,7 +44,9 @@ fn random_json_value(rng: &mut impl Rng, depth: u32) -> Value {
         7 => {
             // Array
             let len = rng.gen_range(0..10);
-            let arr: Vec<Value> = (0..len).map(|_| random_json_value(rng, depth + 1)).collect();
+            let arr: Vec<Value> = (0..len)
+                .map(|_| random_json_value(rng, depth + 1))
+                .collect();
             json!(arr)
         }
         8 => {
@@ -156,7 +158,12 @@ fn test_random_inserts() {
         });
 
         // Inserts should succeed
-        assert!(result.is_ok(), "Insert failed for record {}: {:?}", i, result);
+        assert!(
+            result.is_ok(),
+            "Insert failed for record {}: {:?}",
+            i,
+            result
+        );
     }
 
     // Verify we can query the data
@@ -172,7 +179,10 @@ fn test_random_inserts() {
     match result {
         QueryResult::Rows { data } => {
             assert_eq!(data.len(), 100);
-            println!("✅ Random inserts fuzz test passed - {} records", data.len());
+            println!(
+                "✅ Random inserts fuzz test passed - {} records",
+                data.len()
+            );
         }
         _ => panic!("Expected Rows result"),
     }
@@ -268,10 +278,7 @@ fn test_random_updates() {
         let id = rng.gen_range(0..30);
         let mut patch = serde_json::Map::new();
         patch.insert("id".to_string(), json!(id));
-        patch.insert(
-            "counter".to_string(),
-            json!(rng.gen_range(0..1000)),
-        );
+        patch.insert("counter".to_string(), json!(rng.gen_range(0..1000)));
         patch.insert(
             "status".to_string(),
             json!(format!("status_{}", rng.gen_range(0..10))),
@@ -714,12 +721,18 @@ fn test_concurrent_random_operations() {
 
                             // Should handle concurrent access gracefully
                             if result.is_err() {
-                                println!("Thread {} insert {} failed (expected in concurrent scenario)", thread_id, i);
+                                println!(
+                                    "Thread {} insert {} failed (expected in concurrent scenario)",
+                                    thread_id, i
+                                );
                             }
                         }
                     }
                     Err(e) => {
-                        println!("Thread {} could not acquire database lock (expected): {}", thread_id, e);
+                        println!(
+                            "Thread {} could not acquire database lock (expected): {}",
+                            thread_id, e
+                        );
                     }
                 }
             })

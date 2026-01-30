@@ -867,10 +867,7 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     });
 
     // Check if WHERE clause contains subqueries
-    let has_subqueries = select
-        .selection
-        .as_ref()
-        .is_some_and(contains_subquery);
+    let has_subqueries = select.selection.as_ref().is_some_and(contains_subquery);
 
     // Check if this might be a correlated subquery
     let is_correlated = OUTER_ROW_CONTEXT.with(|context| context.borrow().is_some());

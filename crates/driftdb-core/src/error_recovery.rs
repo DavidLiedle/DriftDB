@@ -345,17 +345,35 @@ impl RecoveryManager {
                 debug!("Replaying insert: {}.{}", table, row_id);
                 // In a real implementation, this would call engine.insert()
                 // For now, log the replay - actual engine integration required
-                debug!("Would insert row {} into table {} with data: {:?}", row_id, table, data);
+                debug!(
+                    "Would insert row {} into table {} with data: {:?}",
+                    row_id, table, data
+                );
             }
-            WalOperation::Update { table, row_id, old_data, new_data } => {
+            WalOperation::Update {
+                table,
+                row_id,
+                old_data,
+                new_data,
+            } => {
                 debug!("Replaying update: {}.{}", table, row_id);
                 // In a real implementation, this would call engine.update()
-                debug!("Would update row {} in table {} from {:?} to {:?}", row_id, table, old_data, new_data);
+                debug!(
+                    "Would update row {} in table {} from {:?} to {:?}",
+                    row_id, table, old_data, new_data
+                );
             }
-            WalOperation::Delete { table, row_id, data } => {
+            WalOperation::Delete {
+                table,
+                row_id,
+                data,
+            } => {
                 debug!("Replaying delete: {}.{}", table, row_id);
                 // In a real implementation, this would call engine.delete()
-                debug!("Would delete row {} from table {} (data: {:?})", row_id, table, data);
+                debug!(
+                    "Would delete row {} from table {} (data: {:?})",
+                    row_id, table, data
+                );
             }
             WalOperation::CreateTable { table, schema } => {
                 debug!("Replaying create table: {}", table);
@@ -485,7 +503,10 @@ impl RecoveryManager {
         let seq_check = self.verify_sequence_continuity().await?;
         operations.extend(seq_check);
 
-        info!("Data consistency verification completed: {} issues found", operations.len());
+        info!(
+            "Data consistency verification completed: {} issues found",
+            operations.len()
+        );
         Ok(operations)
     }
 
@@ -597,7 +618,8 @@ impl RecoveryManager {
              1. Stop the database\n\
              2. Use BackupManager::list_backups() to find latest backup\n\
              3. Use BackupManager::restore_from_backup() to restore\n\
-             4. Restart the database - WAL replay will handle remaining operations".to_string(),
+             4. Restart the database - WAL replay will handle remaining operations"
+                .to_string(),
         ))
     }
 

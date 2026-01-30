@@ -11,11 +11,11 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use tracing::{debug, warn, info};
+use tracing::{debug, info, warn};
 
 /// All possible permissions in the system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -407,7 +407,11 @@ impl RbacManager {
             }
         }
 
-        Err(anyhow!("User '{}' does not have role '{}'", username, role_name))
+        Err(anyhow!(
+            "User '{}' does not have role '{}'",
+            username,
+            role_name
+        ))
     }
 
     /// Get all roles assigned to a user
@@ -431,13 +435,18 @@ impl RbacManager {
 
         for role in user_roles {
             if role.has_permission(permission) {
-                debug!("User '{}' has permission {:?} via role '{}'",
-                    username, permission, role.name);
+                debug!(
+                    "User '{}' has permission {:?} via role '{}'",
+                    username, permission, role.name
+                );
                 return true;
             }
         }
 
-        debug!("User '{}' does NOT have permission {:?}", username, permission);
+        debug!(
+            "User '{}' does NOT have permission {:?}",
+            username, permission
+        );
         false
     }
 
@@ -446,7 +455,10 @@ impl RbacManager {
         if self.has_permission(username, permission) {
             Ok(())
         } else {
-            warn!("Permission denied for user '{}': missing {:?}", username, permission);
+            warn!(
+                "Permission denied for user '{}': missing {:?}",
+                username, permission
+            );
             Err(anyhow!(
                 "Permission denied: user '{}' does not have '{}' permission",
                 username,
@@ -529,7 +541,11 @@ impl RbacManager {
     }
 
     /// Remove permission from a custom role
-    pub fn remove_permission_from_role(&self, role_name: &str, permission: Permission) -> Result<()> {
+    pub fn remove_permission_from_role(
+        &self,
+        role_name: &str,
+        permission: Permission,
+    ) -> Result<()> {
         let mut roles = self.roles.write();
 
         if let Some(role) = roles.get_mut(role_name) {
@@ -538,7 +554,10 @@ impl RbacManager {
             }
 
             role.permissions.remove(&permission);
-            info!("Removed permission {:?} from role '{}'", permission, role_name);
+            info!(
+                "Removed permission {:?} from role '{}'",
+                permission, role_name
+            );
             Ok(())
         } else {
             Err(anyhow!("Role '{}' does not exist", role_name))
@@ -640,7 +659,8 @@ mod tests {
             "analyst".to_string(),
             perms,
             "Data analyst role".to_string(),
-        ).unwrap();
+        )
+        .unwrap();
 
         rbac.grant_role("charlie", "analyst").unwrap();
         assert!(rbac.has_permission("charlie", Permission::Select));
@@ -666,7 +686,9 @@ mod tests {
         assert!(rbac.require_permission("dave", Permission::Select).is_ok());
 
         // Should fail
-        assert!(rbac.require_permission("dave", Permission::DropUser).is_err());
+        assert!(rbac
+            .require_permission("dave", Permission::DropUser)
+            .is_err());
     }
 
     #[test]
@@ -686,18 +708,17 @@ mod tests {
         let rbac = RbacManager::new();
 
         let perms = HashSet::new();
-        rbac.create_custom_role(
-            "tester".to_string(),
-            perms,
-            "Test role".to_string(),
-        ).unwrap();
+        rbac.create_custom_role("tester".to_string(), perms, "Test role".to_string())
+            .unwrap();
 
-        rbac.add_permission_to_role("tester", Permission::Select).unwrap();
+        rbac.add_permission_to_role("tester", Permission::Select)
+            .unwrap();
         rbac.grant_role("frank", "tester").unwrap();
 
         assert!(rbac.has_permission("frank", Permission::Select));
 
-        rbac.remove_permission_from_role("tester", Permission::Select).unwrap();
+        rbac.remove_permission_from_role("tester", Permission::Select)
+            .unwrap();
         assert!(!rbac.has_permission("frank", Permission::Select));
     }
 

@@ -537,7 +537,9 @@ impl Cache {
                 // Check hot segment first
                 if let Some(ref mut hot) = self.segment_hot {
                     if let Some(entry) = hot.get_mut(key) {
-                        return Some(unsafe { std::mem::transmute::<&mut CacheEntry, &mut CacheEntry>(entry) });
+                        return Some(unsafe {
+                            std::mem::transmute::<&mut CacheEntry, &mut CacheEntry>(entry)
+                        });
                     }
                 }
 
@@ -668,9 +670,7 @@ impl InvalidationManager {
         let mut deps = self.table_dependencies.write();
 
         for table in tables {
-            deps.entry(table)
-                .or_default()
-                .insert(key.clone());
+            deps.entry(table).or_default().insert(key.clone());
         }
 
         Ok(())

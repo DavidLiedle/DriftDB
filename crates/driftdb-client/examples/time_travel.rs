@@ -117,7 +117,12 @@ async fn main() -> Result<()> {
     for (idx, row) in rows.iter().enumerate() {
         let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let price = row.get("price").and_then(|v| v.as_i64()).unwrap_or(0);
-        println!("  Version {}: {} - ${:.2}", idx + 1, name, price as f64 / 100.0);
+        println!(
+            "  Version {}: {} - ${:.2}",
+            idx + 1,
+            name,
+            price as f64 / 100.0
+        );
     }
 
     println!("\n✨ Time-travel example completed!");

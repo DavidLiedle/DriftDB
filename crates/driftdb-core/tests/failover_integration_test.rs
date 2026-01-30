@@ -21,7 +21,7 @@ async fn create_test_manager(
         node_id: node_id.to_string(),
         peers,
         health_check_interval_ms: 100, // Fast for testing
-        failure_threshold: 2,           // Quick failure detection
+        failure_threshold: 2,          // Quick failure detection
         health_check_timeout_ms: 500,
         failover_timeout_ms: 5000,
         auto_failover_enabled: true,
@@ -115,11 +115,8 @@ async fn test_failover_event_emission() {
 
 #[tokio::test]
 async fn test_manual_node_fencing() {
-    let (manager, mut event_rx) = create_test_manager(
-        "node1",
-        vec!["node2:5432".to_string()],
-    )
-    .await;
+    let (manager, mut event_rx) =
+        create_test_manager("node1", vec!["node2:5432".to_string()]).await;
 
     let initial_token = manager.current_fencing_token();
 
@@ -191,11 +188,8 @@ async fn test_stale_fencing_token_rejection() {
 
 #[tokio::test]
 async fn test_failover_manager_start_and_shutdown() {
-    let (mut manager, _event_rx) = create_test_manager(
-        "node1",
-        vec!["node2:5432".to_string()],
-    )
-    .await;
+    let (mut manager, _event_rx) =
+        create_test_manager("node1", vec!["node2:5432".to_string()]).await;
 
     // Create and attach Raft node
     let raft_node = create_test_raft_node("node1");
@@ -331,7 +325,10 @@ async fn test_network_partition_healing() {
     assert_eq!(manager1.current_fencing_token(), partition_token);
 
     // Both nodes now in sync
-    assert_eq!(manager1.current_fencing_token(), manager2.current_fencing_token());
+    assert_eq!(
+        manager1.current_fencing_token(),
+        manager2.current_fencing_token()
+    );
 }
 
 /// Test concurrent node failures

@@ -190,17 +190,19 @@ async fn check_disk_space() -> anyhow::Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use driftdb_core::Engine;
     use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_liveness_check() {
-        use driftdb_core::{EnginePool, RateLimitManager, observability::Metrics, connection::PoolConfig};
-        use crate::slow_query_log::{SlowQueryLogger, SlowQueryConfig};
-        use crate::security_audit::{SecurityAuditLogger, AuditConfig};
-        use crate::security::rbac::RbacManager;
         use crate::protocol::auth::AuthConfig;
+        use crate::security::rbac::RbacManager;
+        use crate::security_audit::{AuditConfig, SecurityAuditLogger};
+        use crate::slow_query_log::{SlowQueryConfig, SlowQueryLogger};
+        use driftdb_core::{
+            connection::PoolConfig, observability::Metrics, EnginePool, RateLimitManager,
+        };
 
         let temp_dir = TempDir::new().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
@@ -208,7 +210,8 @@ mod tests {
 
         // Create all required dependencies
         let metrics = Arc::new(Metrics::new());
-        let engine_pool = EnginePool::new(engine.clone(), PoolConfig::default(), metrics.clone()).unwrap();
+        let engine_pool =
+            EnginePool::new(engine.clone(), PoolConfig::default(), metrics.clone()).unwrap();
         let auth_config = AuthConfig::default();
         let rate_limit_manager = Arc::new(RateLimitManager::new(Default::default(), metrics));
         let slow_query_logger = Arc::new(SlowQueryLogger::new(SlowQueryConfig::default()));
@@ -231,11 +234,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_readiness_check() {
-        use driftdb_core::{EnginePool, RateLimitManager, observability::Metrics, connection::PoolConfig};
-        use crate::slow_query_log::{SlowQueryLogger, SlowQueryConfig};
-        use crate::security_audit::{SecurityAuditLogger, AuditConfig};
-        use crate::security::rbac::RbacManager;
         use crate::protocol::auth::AuthConfig;
+        use crate::security::rbac::RbacManager;
+        use crate::security_audit::{AuditConfig, SecurityAuditLogger};
+        use crate::slow_query_log::{SlowQueryConfig, SlowQueryLogger};
+        use driftdb_core::{
+            connection::PoolConfig, observability::Metrics, EnginePool, RateLimitManager,
+        };
 
         let temp_dir = TempDir::new().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
@@ -243,7 +248,8 @@ mod tests {
 
         // Create all required dependencies
         let metrics = Arc::new(Metrics::new());
-        let engine_pool = EnginePool::new(engine.clone(), PoolConfig::default(), metrics.clone()).unwrap();
+        let engine_pool =
+            EnginePool::new(engine.clone(), PoolConfig::default(), metrics.clone()).unwrap();
         let auth_config = AuthConfig::default();
         let rate_limit_manager = Arc::new(RateLimitManager::new(Default::default(), metrics));
         let slow_query_logger = Arc::new(SlowQueryLogger::new(SlowQueryConfig::default()));

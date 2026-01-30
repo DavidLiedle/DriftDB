@@ -571,7 +571,8 @@ impl AuditSystem {
             ExportFormat::Syslog => {
                 // Syslog format export not yet implemented
                 return Err(DriftError::InvalidQuery(
-                    "Syslog export format is not yet implemented. Use JSON or CSV format instead.".to_string()
+                    "Syslog export format is not yet implemented. Use JSON or CSV format instead."
+                        .to_string(),
                 ));
             }
         }

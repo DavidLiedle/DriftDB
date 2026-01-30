@@ -2,7 +2,7 @@
 
 **Experimental PostgreSQL-Compatible Time-Travel Database (v0.9.0-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
 
-⚠️ **ALPHA SOFTWARE - NOT FOR PRODUCTION USE**: This version contains experimental implementations of enterprise features. The codebase now compiles cleanly with minimal warnings (reduced from 335 to 17). Many advanced features remain as architectural designs requiring implementation.
+⚠️ **ALPHA SOFTWARE - NOT FOR PRODUCTION USE**: This version contains experimental implementations of enterprise features. The codebase compiles cleanly with zero warnings and includes comprehensive CI with security auditing. Many advanced features remain as architectural designs requiring implementation.
 
 ## 🎮 Try the Interactive Demo
 
@@ -153,11 +153,18 @@ make build
 cargo install driftdb-cli driftdb-server
 ```
 
-### 60-second demo
+### 60-Second Demo
 
 ```bash
 # Run the full demo (creates sample data and runs queries)
 make demo
+
+# Demo includes:
+# - Database initialization
+# - Table creation with 10,000 sample orders
+# - SELECT queries with WHERE clauses
+# - Time-travel queries (AS OF @seq:N)
+# - Snapshot and compaction operations
 ```
 
 ### PostgreSQL-Compatible Server
@@ -181,20 +188,31 @@ The server supports:
 - Authentication (cleartext and MD5)
 - Integration with existing PostgreSQL tools and ORMs
 
-### Manual CLI usage
+### Manual CLI Usage
+
+```bash
+# Initialize database
+driftdb init ./mydata
+
+# Check version
+driftdb --version
+
+# Execute SQL directly
+driftdb sql -d ./mydata -e "CREATE TABLE users (id INTEGER, email VARCHAR, status VARCHAR, PRIMARY KEY (id))"
+
+# Or use interactive SQL file
+driftdb sql -d ./mydata -f queries.sql
+```
 
 ```sql
--- Initialize and connect to database
-driftdb init ./mydata
-driftdb sql ./mydata
-
--- Create a temporal table (SQL:2011)
+-- Create a temporal table
 CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
-    email VARCHAR(255),
-    status VARCHAR(20),
-    created_at TIMESTAMP
-) WITH SYSTEM VERSIONING;
+    id INTEGER,
+    email VARCHAR,
+    status VARCHAR,
+    created_at VARCHAR,
+    PRIMARY KEY (id)
+);
 
 -- Insert data
 INSERT INTO users VALUES (1, 'alice@example.com', 'active', CURRENT_TIMESTAMP);
@@ -286,71 +304,76 @@ WHERE action = 'DELETE';
 ### Creating Temporal Tables
 
 ```sql
--- Create table with system versioning
-CREATE TABLE orders (pk=id, INDEX(status, customer_id))
+-- Create table with system versioning (standard SQL syntax)
+CREATE TABLE orders (
+    id VARCHAR PRIMARY KEY,
+    status VARCHAR,
+    customer_id VARCHAR,
+    amount INTEGER
+);
 
--- Insert full document
-INSERT INTO orders {"id": "order1", "status": "pending", "amount": 100}
+-- Insert data
+INSERT INTO orders VALUES ('order1', 'pending', 'cust1', 100);
 
--- Partial update
-PATCH orders KEY "order1" SET {"status": "paid"}
+-- Update with conditions
+UPDATE orders SET status = 'paid' WHERE id = 'order1';
 
--- Soft delete (data remains for audit)
-SOFT DELETE FROM orders KEY "order1"
+-- Delete (soft delete preserves history for time-travel)
+DELETE FROM orders WHERE id = 'order1';
 ```
 
 ### Transactions
 ```sql
 -- Start a transaction
-BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
 -- Multiple operations in transaction
-INSERT INTO orders {"id": "order2", "amount": 200}
-PATCH orders KEY "order1" SET {"status": "shipped"}
+INSERT INTO orders VALUES ('order2', 'pending', 'cust2', 200);
+UPDATE orders SET status = 'shipped' WHERE id = 'order1';
 
 -- Commit or rollback
-COMMIT
+COMMIT;
 -- or
-ROLLBACK
+ROLLBACK;
 ```
 
 ### Time Travel Queries
 ```sql
 -- Query historical state by timestamp
-SELECT * FROM orders WHERE status="paid" AS OF "2025-01-01T00:00:00Z"
+SELECT * FROM orders WHERE status = 'paid' AS OF '2025-01-01T00:00:00Z';
 
 -- Query by sequence number
-SELECT * FROM orders WHERE customer_id="cust1" AS OF "@seq:1000"
+SELECT * FROM orders WHERE customer_id = 'cust1' AS OF @seq:1000;
 
--- Show complete history of a record
-SHOW DRIFT orders KEY "order1"
+-- Show complete history of a record (CLI command)
+driftdb drift -d ./data --table orders --key "order1"
 ```
 
 ### Schema Migrations
 ```sql
 -- Add a new column with default value
-ALTER TABLE orders ADD COLUMN priority DEFAULT "normal"
+ALTER TABLE orders ADD COLUMN priority VARCHAR DEFAULT 'normal';
 
 -- Add an index
-CREATE INDEX ON orders(created_at)
+CREATE INDEX idx_orders_created ON orders(created_at);
 
--- Drop a column (requires downtime)
-ALTER TABLE orders DROP COLUMN legacy_field
+-- Drop a column
+ALTER TABLE orders DROP COLUMN legacy_field;
 ```
 
 ### Maintenance
-```sql
--- Create snapshot for performance
-SNAPSHOT orders
+```bash
+# Create snapshot for performance
+driftdb snapshot -d ./data --table orders
 
--- Compact storage
-COMPACT orders
+# Compact storage
+driftdb compact -d ./data --table orders
 
--- Backup database
-BACKUP TO './backups/2024-01-15'
+# Check database integrity
+driftdb doctor -d ./data
 
--- Show table statistics
-ANALYZE TABLE orders
+# Show table statistics
+driftdb analyze -d ./data --table orders
 ```
 
 ## Architecture

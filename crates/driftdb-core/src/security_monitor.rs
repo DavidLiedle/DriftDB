@@ -864,10 +864,7 @@ impl ThreatDetector {
     }
 
     fn record_failed_login(&mut self, ip: &str, timestamp: SystemTime) {
-        let attempts = self
-            .login_attempts
-            .entry(ip.to_string())
-            .or_default();
+        let attempts = self.login_attempts.entry(ip.to_string()).or_default();
         attempts.push_back(timestamp);
 
         // Keep only recent attempts (within the window)

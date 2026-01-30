@@ -68,15 +68,18 @@ impl PerformanceMonitor {
             .unwrap()
             .as_millis() as u64;
 
-        let metrics = self.query_times.entry(query_hash).or_insert_with(|| {
-            QueryMetrics {
+        let metrics = self
+            .query_times
+            .entry(query_hash)
+            .or_insert_with(|| QueryMetrics {
                 min_duration_ms: AtomicU64::new(u64::MAX),
                 ..Default::default()
-            }
-        });
+            });
 
         metrics.total_executions.fetch_add(1, Ordering::Relaxed);
-        metrics.total_duration_ms.fetch_add(duration_ms, Ordering::Relaxed);
+        metrics
+            .total_duration_ms
+            .fetch_add(duration_ms, Ordering::Relaxed);
         metrics.last_execution.store(now_ms, Ordering::Relaxed);
 
         // Update min duration
@@ -199,7 +202,10 @@ impl PerformanceMonitor {
         // Estimate cache sizes (simplified)
         stats.query_cache_bytes = self.query_times.len() as u64 * 1024; // Rough estimate
 
-        debug!("Updated memory stats: heap_used={}MB", stats.heap_used_bytes / 1_048_576);
+        debug!(
+            "Updated memory stats: heap_used={}MB",
+            stats.heap_used_bytes / 1_048_576
+        );
     }
 }
 
@@ -239,7 +245,8 @@ impl QueryOptimizer {
         vec![
             QueryRewriteRule {
                 pattern: r"SELECT \* FROM (\w+) WHERE (.+) LIMIT 1".to_string(),
-                replacement: "SELECT * FROM $1 WHERE $2 LIMIT 1 -- optimized for single row".to_string(),
+                replacement: "SELECT * FROM $1 WHERE $2 LIMIT 1 -- optimized for single row"
+                    .to_string(),
                 description: "Single row optimization".to_string(),
             },
             QueryRewriteRule {
@@ -293,12 +300,13 @@ impl QueryOptimizer {
     pub fn cleanup_cache(&self, max_age: Duration) {
         let cutoff = Instant::now() - max_age;
 
-        self.execution_plan_cache.retain(|_, plan| {
-            plan.last_used > cutoff
-        });
+        self.execution_plan_cache
+            .retain(|_, plan| plan.last_used > cutoff);
 
-        info!("Cleaned up query execution plan cache, {} entries remain",
-              self.execution_plan_cache.len());
+        info!(
+            "Cleaned up query execution plan cache, {} entries remain",
+            self.execution_plan_cache.len()
+        );
     }
 }
 
@@ -354,9 +362,15 @@ impl ConnectionPoolOptimizer {
         let params = self.sizing_params.read();
 
         let recommendations = if health.avg_wait_time_ms > 100.0 {
-            vec!["Consider increasing pool size", "Check for connection leaks"]
+            vec![
+                "Consider increasing pool size",
+                "Check for connection leaks",
+            ]
         } else if health.current_load_factor < 0.2 {
-            vec!["Consider decreasing pool size", "Review connection timeout settings"]
+            vec![
+                "Consider decreasing pool size",
+                "Review connection timeout settings",
+            ]
         } else {
             vec!["Pool performance is optimal"]
         };
@@ -404,7 +418,12 @@ mod tests {
         monitor.record_query_execution("INSERT_USER".to_string(), Duration::from_millis(25));
 
         let stats = monitor.get_performance_stats();
-        assert!(stats["query_performance"]["total_unique_queries"].as_u64().unwrap() == 2);
+        assert!(
+            stats["query_performance"]["total_unique_queries"]
+                .as_u64()
+                .unwrap()
+                == 2
+        );
     }
 
     #[test]

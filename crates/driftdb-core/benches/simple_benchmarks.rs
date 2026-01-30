@@ -2,7 +2,7 @@
 //!
 //! These benchmarks test core operations with the current API
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use driftdb_core::{Engine, Query};
 use serde_json::json;
 use tempfile::TempDir;
@@ -14,19 +14,22 @@ fn setup_engine_with_data(rt: &Runtime, rows: usize) -> (Engine, TempDir) {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create table with simple API - primary key is "id", and we can index "status"
-    engine.create_table(
-        "bench_table",
-        "id",
-        vec!["status".to_string()],
-    ).unwrap();
+    engine
+        .create_table("bench_table", "id", vec!["status".to_string()])
+        .unwrap();
 
     // Insert data
     for i in 0..rows {
-        engine.insert_record("bench_table", json!({
-            "id": format!("key_{}", i),
-            "value": i * 10,
-            "status": if i % 2 == 0 { "active" } else { "inactive" }
-        })).unwrap();
+        engine
+            .insert_record(
+                "bench_table",
+                json!({
+                    "id": format!("key_{}", i),
+                    "value": i * 10,
+                    "status": if i % 2 == 0 { "active" } else { "inactive" }
+                }),
+            )
+            .unwrap();
     }
 
     (engine, temp_dir)
@@ -43,20 +46,23 @@ fn bench_insert(c: &mut Criterion) {
                     let _guard = rt.enter();
                     let temp_dir = TempDir::new().unwrap();
                     let mut engine = Engine::init(temp_dir.path()).unwrap();
-                    engine.create_table(
-                        "bench_table",
-                        "id",
-                        vec![],
-                    ).unwrap();
+                    engine.create_table("bench_table", "id", vec![]).unwrap();
                     (engine, temp_dir)
                 },
                 |(mut engine, _temp)| {
                     let _guard = rt.enter();
                     for i in 0..size {
-                        black_box(engine.insert_record("bench_table", json!({
-                            "id": format!("key_{}", i),
-                            "value": i
-                        })).unwrap());
+                        black_box(
+                            engine
+                                .insert_record(
+                                    "bench_table",
+                                    json!({
+                                        "id": format!("key_{}", i),
+                                        "value": i
+                                    }),
+                                )
+                                .unwrap(),
+                        );
                     }
                 },
                 criterion::BatchSize::SmallInput,
@@ -82,7 +88,7 @@ fn bench_select(c: &mut Criterion) {
                     let _guard = rt.enter();
                     let query = Query::Select {
                         table: "bench_table".to_string(),
-                        conditions: vec![],  // Simplified - no WHERE clause for now
+                        conditions: vec![], // Simplified - no WHERE clause for now
                         as_of: None,
                         limit: None,
                     };
@@ -123,11 +129,15 @@ fn bench_update(c: &mut Criterion) {
             || setup_engine_with_data(&rt, 100),
             |(mut engine, _temp)| {
                 let _guard = rt.enter();
-                black_box(engine.update_record(
-                    "bench_table",
-                    json!({"id": "key_50"}),
-                    json!({"value": 999})
-                ).unwrap());
+                black_box(
+                    engine
+                        .update_record(
+                            "bench_table",
+                            json!({"id": "key_50"}),
+                            json!({"value": 999}),
+                        )
+                        .unwrap(),
+                );
             },
             criterion::BatchSize::SmallInput,
         );
@@ -145,10 +155,11 @@ fn bench_delete(c: &mut Criterion) {
             || setup_engine_with_data(&rt, 100),
             |(mut engine, _temp)| {
                 let _guard = rt.enter();
-                black_box(engine.delete_record(
-                    "bench_table",
-                    json!({"id": "key_50"})
-                ).unwrap());
+                black_box(
+                    engine
+                        .delete_record("bench_table", json!({"id": "key_50"}))
+                        .unwrap(),
+                );
             },
             criterion::BatchSize::SmallInput,
         );
@@ -167,11 +178,13 @@ fn bench_time_travel(c: &mut Criterion) {
 
         // Do some updates to create history
         for i in 0..50 {
-            engine.update_record(
-                "bench_table",
-                json!({"id": format!("key_{}", i)}),
-                json!({"value": i * 100})
-            ).unwrap();
+            engine
+                .update_record(
+                    "bench_table",
+                    json!({"id": format!("key_{}", i)}),
+                    json!({"value": i * 100}),
+                )
+                .unwrap();
         }
 
         b.iter(|| {

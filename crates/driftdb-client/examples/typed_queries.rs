@@ -53,9 +53,7 @@ async fn main() -> Result<()> {
     // === Example 1: Query users with type safety ===
     println!("📋 Example 1: Typed user queries\n");
 
-    let users: Vec<User> = client
-        .query_as("SELECT * FROM users ORDER BY id")
-        .await?;
+    let users: Vec<User> = client.query_as("SELECT * FROM users ORDER BY id").await?;
 
     println!("Found {} users:", users.len());
     for user in &users {
@@ -88,7 +86,7 @@ async fn main() -> Result<()> {
             "SELECT user_id, COUNT(*) as total_orders, SUM(amount) as total_amount \
              FROM orders \
              GROUP BY user_id \
-             ORDER BY total_amount DESC"
+             ORDER BY total_amount DESC",
         )
         .await?;
 
@@ -115,9 +113,7 @@ async fn main() -> Result<()> {
         .await?;
 
     // Query current state
-    let users_now: Vec<User> = client
-        .query_as("SELECT * FROM users ORDER BY id")
-        .await?;
+    let users_now: Vec<User> = client.query_as("SELECT * FROM users ORDER BY id").await?;
 
     let active_now = users_now.iter().filter(|u| u.active).count();
     println!("Active users now: {}", active_now);
@@ -155,7 +151,7 @@ async fn setup_tables(client: &Client) -> Result<()> {
              username TEXT, \
              email TEXT, \
              active BOOLEAN\
-             )"
+             )",
         )
         .await?;
 
@@ -168,7 +164,7 @@ async fn setup_tables(client: &Client) -> Result<()> {
              product TEXT, \
              amount BIGINT, \
              status TEXT\
-             )"
+             )",
         )
         .await?;
 

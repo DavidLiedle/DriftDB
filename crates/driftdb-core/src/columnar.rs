@@ -966,10 +966,7 @@ mod tests {
         let mut row = Row::new();
         row.insert("id".to_string(), Some(Value::Int64(id)));
         row.insert("name".to_string(), Some(Value::String(name.to_string())));
-        row.insert(
-            "score".to_string(),
-            Some(Value::Float64(score.to_bits())),
-        );
+        row.insert("score".to_string(), Some(Value::Float64(score.to_bits())));
         row
     }
 
@@ -1164,13 +1161,14 @@ mod tests {
         let mut row = Row::new();
         row.insert("id".to_string(), Some(Value::Int64(1)));
         row.insert("name".to_string(), None); // Null value
-        row.insert("score".to_string(), Some(Value::Float64(95.0_f64.to_bits())));
+        row.insert(
+            "score".to_string(),
+            Some(Value::Float64(95.0_f64.to_bits())),
+        );
 
         storage.write_batch(vec![row]).unwrap();
 
-        let result = storage
-            .scan(vec!["name".to_string()], None)
-            .unwrap();
+        let result = storage.scan(vec!["name".to_string()], None).unwrap();
         assert!(result.columns.get("name").unwrap()[0].is_none());
     }
 
@@ -1186,7 +1184,11 @@ mod tests {
         // Write 1000 rows
         let mut rows = Vec::new();
         for i in 1..=1000 {
-            rows.push(create_test_row(i, &format!("user_{}", i % 10), 80.0 + (i % 20) as f64));
+            rows.push(create_test_row(
+                i,
+                &format!("user_{}", i % 10),
+                80.0 + (i % 20) as f64,
+            ));
         }
 
         storage.write_batch(rows).unwrap();
@@ -1224,7 +1226,16 @@ mod tests {
         }
 
         // Should be 0 in storage (not flushed)
-        assert_eq!(storage_arc.read().unwrap().metadata.read().unwrap().row_count, 0);
+        assert_eq!(
+            storage_arc
+                .read()
+                .unwrap()
+                .metadata
+                .read()
+                .unwrap()
+                .row_count,
+            0
+        );
 
         // Write third row (should auto-flush)
         writer
@@ -1232,7 +1243,16 @@ mod tests {
             .unwrap();
 
         // Now should have 3 rows
-        assert_eq!(storage_arc.read().unwrap().metadata.read().unwrap().row_count, 3);
+        assert_eq!(
+            storage_arc
+                .read()
+                .unwrap()
+                .metadata
+                .read()
+                .unwrap()
+                .row_count,
+            3
+        );
     }
 
     #[test]
@@ -1264,7 +1284,10 @@ mod tests {
                 1 => "pending",
                 _ => "inactive",
             };
-            row.insert("status".to_string(), Some(Value::String(status.to_string())));
+            row.insert(
+                "status".to_string(),
+                Some(Value::String(status.to_string())),
+            );
             rows.push(row);
         }
 

@@ -13,16 +13,11 @@ pub mod stream;
 
 use std::sync::Arc;
 
-pub use replica::{
-    ReplicaManager, ReplicaManagerConfig,
-};
-pub use stream::{
-    ReplicationMessage, StreamingConfig, WalStreamer,
-};
+pub use replica::{ReplicaManager, ReplicaManagerConfig};
+pub use stream::{ReplicationMessage, StreamingConfig, WalStreamer};
 
 use tokio::sync::RwLock;
 use tracing::info;
-
 
 /// Main replication coordinator
 pub struct ReplicationCoordinator {
@@ -49,7 +44,10 @@ impl ReplicationCoordinator {
             streaming_config,
         )));
 
-        info!("Initialized replication coordinator with system_id={}", system_id);
+        info!(
+            "Initialized replication coordinator with system_id={}",
+            system_id
+        );
 
         Self {
             replica_manager,
@@ -103,11 +101,7 @@ impl ReplicationCoordinator {
         let total_bytes_sent: u64 = replicas.iter().map(|r| r.bytes_sent).sum();
         let total_entries_sent: u64 = replicas.iter().map(|r| r.entries_sent).sum();
 
-        let max_lag = replicas
-            .iter()
-            .map(|r| r.lag_bytes)
-            .max()
-            .unwrap_or(0);
+        let max_lag = replicas.iter().map(|r| r.lag_bytes).max().unwrap_or(0);
 
         ReplicationStats {
             total_replicas,

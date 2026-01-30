@@ -110,7 +110,9 @@ async fn get_alert_history(
 }
 
 /// GET /api/alerts/rules - List all alert rules
-async fn list_rules(State(_state): State<AlertRouteState>) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn list_rules(
+    State(_state): State<AlertRouteState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     // Note: This would require adding a method to AlertManager to get rules
     // For now, return a placeholder
     Ok(Json(json!({

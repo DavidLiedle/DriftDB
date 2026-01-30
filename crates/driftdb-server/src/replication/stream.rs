@@ -22,10 +22,7 @@ const WAL_CHANNEL_SIZE: usize = 10000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReplicationMessage {
     /// Start replication from a specific LSN
-    StartReplication {
-        start_lsn: u64,
-        timeline: u64,
-    },
+    StartReplication { start_lsn: u64, timeline: u64 },
     /// WAL data chunk
     WalData {
         start_lsn: u64,
@@ -53,10 +50,7 @@ pub enum ReplicationMessage {
         current_lsn: u64,
     },
     /// Hot standby feedback (for conflict resolution)
-    HotStandbyFeedback {
-        timestamp: u64,
-        oldest_xid: u64,
-    },
+    HotStandbyFeedback { timestamp: u64, oldest_xid: u64 },
     /// Error message
     Error { message: String },
 }
@@ -434,7 +428,10 @@ mod tests {
         let deserialized = deserialize_message(&serialized).unwrap();
 
         match deserialized {
-            ReplicationMessage::StartReplication { start_lsn, timeline } => {
+            ReplicationMessage::StartReplication {
+                start_lsn,
+                timeline,
+            } => {
                 assert_eq!(start_lsn, 100);
                 assert_eq!(timeline, 1);
             }
@@ -465,9 +462,7 @@ mod tests {
         streamer.broadcast_entry(entry).await.unwrap();
 
         // Handle status update
-        streamer
-            .handle_status_update(replica_id, 90, 85, 85)
-            .await;
+        streamer.handle_status_update(replica_id, 90, 85, 85).await;
 
         let replica = replica_manager.get_replica(replica_id).unwrap();
         assert_eq!(replica.last_received_lsn, 90);

@@ -26,7 +26,9 @@ use crate::mvcc::IsolationLevel as MVCCIsolationLevel;
 use crate::observability::Metrics;
 use crate::procedures::{ProcedureDefinition, ProcedureManager, ProcedureResult};
 use crate::query::{Query, QueryResult};
-use crate::query_cancellation::{CancellationConfig, QueryCancellationManager, QueryExecutionGuard};
+use crate::query_cancellation::{
+    CancellationConfig, QueryCancellationManager, QueryExecutionGuard,
+};
 use crate::query_performance::{OptimizationConfig, QueryPerformanceOptimizer};
 use crate::raft::RaftNode;
 use crate::replication::{NodeRole, ReplicationConfig, ReplicationCoordinator};
@@ -111,7 +113,8 @@ impl Engine {
         ));
 
         // Create query cancellation manager with default config
-        let query_cancellation = Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
+        let query_cancellation =
+            Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
 
         // Create query optimizer
         let query_optimizer = Arc::new(crate::query::optimizer::QueryOptimizer::new());
@@ -121,7 +124,9 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
-            transaction_manager: Arc::new(RwLock::new(TransactionManager::new_with_path(&base_path)?)),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new_with_path(
+                &base_path,
+            )?)),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             view_manager: Arc::new(ViewManager::new()),
             search_manager: Arc::new(SearchManager::new()),
@@ -206,7 +211,8 @@ impl Engine {
         ));
 
         // Create query cancellation manager with default config
-        let query_cancellation = Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
+        let query_cancellation =
+            Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
 
         // Create query optimizer
         let query_optimizer = Arc::new(crate::query::optimizer::QueryOptimizer::new());
@@ -216,7 +222,9 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
-            transaction_manager: Arc::new(RwLock::new(TransactionManager::new_with_path(&base_path)?)),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new_with_path(
+                &base_path,
+            )?)),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             sequence_manager: Arc::new(SequenceManager::new()),
             view_manager: Arc::new(ViewManager::new()),
@@ -857,8 +865,7 @@ impl Engine {
         metadata.insert("query_type".to_string(), "select".to_string());
 
         let cancellation_token = self.query_cancellation.register_query(
-            query_str,
-            None, // Use default timeout
+            query_str, None, // Use default timeout
             metadata,
         )?;
 

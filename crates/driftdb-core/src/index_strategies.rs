@@ -352,9 +352,7 @@ impl HashIndex {
     pub fn insert(&self, key: Value, record_id: u64) -> Result<()> {
         let key_str = serde_json::to_string(&key)?;
         let mut data = self.data.write();
-        data.entry(key_str)
-            .or_default()
-            .insert(record_id);
+        data.entry(key_str).or_default().insert(record_id);
         self.stats.write().inserts += 1;
         Ok(())
     }
@@ -667,10 +665,7 @@ impl LSMTree {
         // Insert into memtable
         let mut memtable = self.memtable.write();
         let ordered_key = OrderedValue::from(key);
-        memtable
-            .entry(ordered_key)
-            .or_default()
-            .push(record_id);
+        memtable.entry(ordered_key).or_default().push(record_id);
 
         // Check if memtable is full and needs flushing
         if memtable.len() > 10000 {

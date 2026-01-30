@@ -571,7 +571,10 @@ impl BackupManager {
 
         // Skip only if the source table directory doesn't exist at all
         if !src_table_dir.exists() {
-            debug!("Source table directory does not exist for table {}", table_info.name);
+            debug!(
+                "Source table directory does not exist for table {}",
+                table_info.name
+            );
             return Ok(());
         }
 

@@ -6,7 +6,7 @@ use axum::{extract::State, response::Json, routing::get, Router};
 use serde_json::{json, Value};
 use tracing::info;
 
-use crate::performance::{PerformanceMonitor, QueryOptimizer, ConnectionPoolOptimizer};
+use crate::performance::{ConnectionPoolOptimizer, PerformanceMonitor, QueryOptimizer};
 
 /// State for performance monitoring endpoints
 #[derive(Clone)]
@@ -37,15 +37,16 @@ pub fn create_performance_routes(state: PerformanceState) -> Router {
         .route("/performance/queries", get(get_query_performance))
         .route("/performance/connections", get(get_connection_performance))
         .route("/performance/memory", get(get_memory_performance))
-        .route("/performance/optimization", get(get_optimization_suggestions))
+        .route(
+            "/performance/optimization",
+            get(get_optimization_suggestions),
+        )
         .route("/performance/cache", get(get_cache_stats))
         .with_state(state)
 }
 
 /// Get overall performance overview
-async fn get_performance_overview(
-    State(state): State<PerformanceState>,
-) -> Json<Value> {
+async fn get_performance_overview(State(state): State<PerformanceState>) -> Json<Value> {
     info!("Performance overview requested");
 
     let mut overview = json!({
@@ -74,9 +75,7 @@ async fn get_performance_overview(
 }
 
 /// Get detailed query performance metrics
-async fn get_query_performance(
-    State(state): State<PerformanceState>,
-) -> Json<Value> {
+async fn get_query_performance(State(state): State<PerformanceState>) -> Json<Value> {
     info!("Query performance metrics requested");
 
     if let Some(monitor) = &state.monitor {
@@ -91,9 +90,7 @@ async fn get_query_performance(
 }
 
 /// Get connection pool performance metrics
-async fn get_connection_performance(
-    State(state): State<PerformanceState>,
-) -> Json<Value> {
+async fn get_connection_performance(State(state): State<PerformanceState>) -> Json<Value> {
     info!("Connection performance metrics requested");
 
     let mut response = json!({});
@@ -119,9 +116,7 @@ async fn get_connection_performance(
 }
 
 /// Get memory performance metrics
-async fn get_memory_performance(
-    State(state): State<PerformanceState>,
-) -> Json<Value> {
+async fn get_memory_performance(State(state): State<PerformanceState>) -> Json<Value> {
     info!("Memory performance metrics requested");
 
     if let Some(monitor) = &state.monitor {
@@ -142,9 +137,7 @@ async fn get_memory_performance(
 }
 
 /// Get optimization suggestions
-async fn get_optimization_suggestions(
-    State(state): State<PerformanceState>,
-) -> Json<Value> {
+async fn get_optimization_suggestions(State(state): State<PerformanceState>) -> Json<Value> {
     info!("Optimization suggestions requested");
 
     let mut suggestions = Vec::new();
@@ -219,9 +212,7 @@ async fn get_optimization_suggestions(
 }
 
 /// Get cache statistics and hit rates
-async fn get_cache_stats(
-    State(state): State<PerformanceState>,
-) -> Json<Value> {
+async fn get_cache_stats(State(state): State<PerformanceState>) -> Json<Value> {
     info!("Cache statistics requested");
 
     let mut cache_stats = json!({
@@ -250,7 +241,10 @@ fn analyze_memory_performance(stats: &Value) -> Vec<String> {
         let cache_mb = memory["query_cache_mb"].as_f64().unwrap_or(0.0);
 
         if heap_mb > 2000.0 {
-            recommendations.push("Consider reducing connection pool size or implementing connection recycling".to_string());
+            recommendations.push(
+                "Consider reducing connection pool size or implementing connection recycling"
+                    .to_string(),
+            );
         }
 
         if cache_mb > 100.0 {

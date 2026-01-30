@@ -2,11 +2,11 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
-use std::collections::VecDeque;
-use parking_lot::RwLock;
 use axum::{extract::State, response::Json, routing::get, Router};
+use parking_lot::RwLock;
 use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::sync::Arc;
 use tracing::info;
 
 use crate::errors::{DriftDbError, ErrorSeverity};
@@ -50,11 +50,7 @@ impl ErrorMonitor {
             errors.pop_front();
         }
 
-        info!(
-            "Recorded error: {} (severity: {})",
-            error,
-            error.severity()
-        );
+        info!("Recorded error: {} (severity: {})", error, error.severity());
     }
 
     /// Get recent errors for monitoring dashboard
@@ -62,7 +58,8 @@ impl ErrorMonitor {
         let errors = self.recent_errors.read();
         let limit = limit.unwrap_or(100).min(errors.len());
 
-        errors.iter()
+        errors
+            .iter()
             .rev() // Most recent first
             .take(limit)
             .cloned()
@@ -107,9 +104,7 @@ pub fn monitoring_routes(error_monitor: Arc<ErrorMonitor>) -> Router {
 }
 
 /// Get recent errors endpoint
-async fn get_recent_errors(
-    State(monitor): State<Arc<ErrorMonitor>>,
-) -> Json<Value> {
+async fn get_recent_errors(State(monitor): State<Arc<ErrorMonitor>>) -> Json<Value> {
     let errors = monitor.get_recent_errors(Some(50));
 
     Json(json!({
@@ -124,9 +119,7 @@ async fn get_recent_errors(
 }
 
 /// Get error statistics endpoint
-async fn get_error_stats(
-    State(monitor): State<Arc<ErrorMonitor>>,
-) -> Json<Value> {
+async fn get_error_stats(State(monitor): State<Arc<ErrorMonitor>>) -> Json<Value> {
     let stats = monitor.get_error_stats();
 
     Json(json!({
@@ -150,9 +143,7 @@ async fn get_error_stats(
 }
 
 /// Health check based on error patterns
-async fn get_error_health(
-    State(monitor): State<Arc<ErrorMonitor>>,
-) -> Json<Value> {
+async fn get_error_health(State(monitor): State<Arc<ErrorMonitor>>) -> Json<Value> {
     let stats = monitor.get_error_stats();
     let recent_errors = monitor.get_recent_errors(Some(10));
 

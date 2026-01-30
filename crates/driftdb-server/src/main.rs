@@ -37,7 +37,7 @@ use tracing::{debug, error, info, warn};
 
 use driftdb_core::{Engine, EnginePool, PoolConfig, RateLimitConfig, RateLimitManager};
 use parking_lot::RwLock as SyncRwLock;
-use performance::{PerformanceMonitor, QueryOptimizer, ConnectionPoolOptimizer};
+use performance::{ConnectionPoolOptimizer, PerformanceMonitor, QueryOptimizer};
 use security_audit::{AuditConfig, SecurityAuditLogger};
 use session::SessionManager;
 use slow_query_log::{SlowQueryConfig, SlowQueryLogger};
@@ -149,7 +149,11 @@ struct Args {
     tls_required: bool,
 
     /// Generate self-signed certificate for development/testing (if cert files don't exist)
-    #[arg(long, env = "DRIFTDB_TLS_GENERATE_SELF_SIGNED", default_value = "false")]
+    #[arg(
+        long,
+        env = "DRIFTDB_TLS_GENERATE_SELF_SIGNED",
+        default_value = "false"
+    )]
     tls_generate_self_signed: bool,
 
     /// Enable performance monitoring and optimization
@@ -177,7 +181,11 @@ struct Args {
     slow_query_log_stdout: bool,
 
     /// Path to slow query log file
-    #[arg(long, env = "DRIFTDB_SLOW_QUERY_LOG_PATH", default_value = "./logs/slow_queries.log")]
+    #[arg(
+        long,
+        env = "DRIFTDB_SLOW_QUERY_LOG_PATH",
+        default_value = "./logs/slow_queries.log"
+    )]
     slow_query_log_path: String,
 
     /// Enable security audit logging
@@ -189,11 +197,19 @@ struct Args {
     audit_max_entries: usize,
 
     /// Path to security audit log file
-    #[arg(long, env = "DRIFTDB_AUDIT_LOG_PATH", default_value = "./logs/security_audit.log")]
+    #[arg(
+        long,
+        env = "DRIFTDB_AUDIT_LOG_PATH",
+        default_value = "./logs/security_audit.log"
+    )]
     audit_log_path: String,
 
     /// Enable detection of suspicious activity patterns
-    #[arg(long, env = "DRIFTDB_AUDIT_SUSPICIOUS_DETECTION", default_value = "true")]
+    #[arg(
+        long,
+        env = "DRIFTDB_AUDIT_SUSPICIOUS_DETECTION",
+        default_value = "true"
+    )]
     audit_suspicious_detection: bool,
 
     /// Threshold for suspicious failed login attempts
@@ -407,8 +423,8 @@ async fn main() -> Result<()> {
                 } else {
                     info!("Self-signed certificate generated successfully");
                     // Continue with TLS initialization
-                    let tls_config = TlsConfig::new(cert_path, key_path)
-                        .require_tls(args.tls_required);
+                    let tls_config =
+                        TlsConfig::new(cert_path, key_path).require_tls(args.tls_required);
 
                     match TlsManager::new(tls_config).await {
                         Ok(manager) => {
@@ -431,8 +447,7 @@ async fn main() -> Result<()> {
                 }
             } else {
                 // Use existing certificates
-                let tls_config = TlsConfig::new(cert_path, key_path)
-                    .require_tls(args.tls_required);
+                let tls_config = TlsConfig::new(cert_path, key_path).require_tls(args.tls_required);
 
                 match TlsManager::new(tls_config).await {
                     Ok(manager) => {
@@ -456,7 +471,9 @@ async fn main() -> Result<()> {
         } else {
             error!("TLS enabled but certificate/key paths not provided");
             if args.tls_required {
-                return Err(anyhow::anyhow!("TLS certificate/key paths required when TLS is enabled"));
+                return Err(anyhow::anyhow!(
+                    "TLS certificate/key paths required when TLS is enabled"
+                ));
             } else {
                 warn!("Continuing without TLS support");
                 None
@@ -468,21 +485,22 @@ async fn main() -> Result<()> {
     };
 
     // Initialize performance monitoring if enabled
-    let (performance_monitor, query_optimizer, pool_optimizer) = if args.enable_performance_monitoring {
-        let perf_monitor = Arc::new(PerformanceMonitor::new(args.max_concurrent_requests));
-        let query_opt = Arc::new(QueryOptimizer::new());
-        let pool_opt = Arc::new(ConnectionPoolOptimizer::new());
+    let (performance_monitor, query_optimizer, pool_optimizer) =
+        if args.enable_performance_monitoring {
+            let perf_monitor = Arc::new(PerformanceMonitor::new(args.max_concurrent_requests));
+            let query_opt = Arc::new(QueryOptimizer::new());
+            let pool_opt = Arc::new(ConnectionPoolOptimizer::new());
 
-        info!(
-            "Performance monitoring enabled: max_concurrent_requests={}, query_cache_size={}",
-            args.max_concurrent_requests, args.query_cache_size
-        );
+            info!(
+                "Performance monitoring enabled: max_concurrent_requests={}, query_cache_size={}",
+                args.max_concurrent_requests, args.query_cache_size
+            );
 
-        (Some(perf_monitor), Some(query_opt), Some(pool_opt))
-    } else {
-        info!("Performance monitoring disabled");
-        (None, None, None)
-    };
+            (Some(perf_monitor), Some(query_opt), Some(pool_opt))
+        } else {
+            info!("Performance monitoring disabled");
+            (None, None, None)
+        };
 
     // Start pool health checks, metrics updates, and rate limit cleanup
     let pool_tasks = {
@@ -550,7 +568,10 @@ async fn main() -> Result<()> {
 
         Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(eval_interval);
-            info!("Starting alert evaluation loop with interval: {:?}", eval_interval);
+            info!(
+                "Starting alert evaluation loop with interval: {:?}",
+                eval_interval
+            );
 
             loop {
                 interval.tick().await;
@@ -600,7 +621,8 @@ async fn main() -> Result<()> {
         let pg_addr = args.listen;
 
         tokio::spawn(async move {
-            let result = start_postgres_server(pg_addr, session_manager_clone, tls_manager_clone).await;
+            let result =
+                start_postgres_server(pg_addr, session_manager_clone, tls_manager_clone).await;
 
             if let Err(e) = result {
                 error!("PostgreSQL server error: {}", e);
@@ -755,18 +777,16 @@ async fn start_postgres_server(
                 tokio::spawn(async move {
                     // Handle TLS negotiation if enabled
                     let secure_stream = match &tls_mgr {
-                        Some(tls) => {
-                            match tls.accept_connection(tcp_stream).await {
-                                Ok(stream) => stream,
-                                Err(e) => {
-                                    error!("TLS handshake failed for {}: {}", client_addr, e);
-                                    if !metrics::REGISTRY.gather().is_empty() {
-                                        metrics::record_error("tls", "handshake");
-                                    }
-                                    return;
+                        Some(tls) => match tls.accept_connection(tcp_stream).await {
+                            Ok(stream) => stream,
+                            Err(e) => {
+                                error!("TLS handshake failed for {}: {}", client_addr, e);
+                                if !metrics::REGISTRY.gather().is_empty() {
+                                    metrics::record_error("tls", "handshake");
                                 }
+                                return;
                             }
-                        }
+                        },
                         None => {
                             // No TLS configured - handle as plain connection
                             use crate::tls::SecureStream;
@@ -774,7 +794,9 @@ async fn start_postgres_server(
                         }
                     };
 
-                    let result = session_mgr.handle_secure_connection(secure_stream, client_addr).await;
+                    let result = session_mgr
+                        .handle_secure_connection(secure_stream, client_addr)
+                        .await;
 
                     if !metrics::REGISTRY.gather().is_empty() {
                         metrics::record_connection_closed();

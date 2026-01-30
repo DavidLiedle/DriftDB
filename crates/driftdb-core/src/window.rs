@@ -234,10 +234,7 @@ impl WindowExecutor {
             }
 
             let key = PartitionKey::from_values(&key_values);
-            partitions
-                .entry(key)
-                .or_default()
-                .push((idx, row.clone()));
+            partitions.entry(key).or_default().push((idx, row.clone()));
         }
 
         // Convert to Partition structs

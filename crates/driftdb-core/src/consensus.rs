@@ -328,10 +328,9 @@ impl ConsensusEngine {
         log: &Arc<RwLock<Vec<LogEntry>>>,
         transport: &Arc<dyn Transport>,
     ) {
-        if config.pre_vote_enabled
-            && !Self::conduct_pre_vote(config, log, transport).await {
-                return;
-            }
+        if config.pre_vote_enabled && !Self::conduct_pre_vote(config, log, transport).await {
+            return;
+        }
 
         *state.write().unwrap() = ConsensusState::Candidate;
 

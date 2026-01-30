@@ -794,7 +794,12 @@ impl PlanAnalyzer {
     fn recommend_indexes(&self, node: &PlanNode) -> Vec<IndexRecommendation> {
         let mut recommendations = vec![];
 
-        if let PlanOperation::TableScan { table, filter: Some(filter_str), .. } = &node.operation {
+        if let PlanOperation::TableScan {
+            table,
+            filter: Some(filter_str),
+            ..
+        } = &node.operation
+        {
             recommendations.push(IndexRecommendation {
                 table: table.clone(),
                 columns: vec![filter_str.clone()],

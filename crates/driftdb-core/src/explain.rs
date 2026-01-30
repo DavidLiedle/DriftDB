@@ -13,8 +13,7 @@ use crate::cost_optimizer::{Cost, PlanNode};
 use crate::errors::Result;
 
 /// EXPLAIN output format
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExplainFormat {
     /// Human-readable text format
     #[default]
@@ -26,7 +25,6 @@ pub enum ExplainFormat {
     /// Tree-structured format
     Tree,
 }
-
 
 /// EXPLAIN options
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,7 +134,10 @@ impl ExplainPlan {
 
         if let Some(exec_time) = self.execution_time_ms {
             output.push_str(&format!("Execution Time: {:.3} ms\n", exec_time));
-            output.push_str(&format!("Total Time: {:.3} ms\n", self.planning_time_ms + exec_time));
+            output.push_str(&format!(
+                "Total Time: {:.3} ms\n",
+                self.planning_time_ms + exec_time
+            ));
         }
 
         if options.costs {
@@ -320,11 +321,7 @@ impl ExplainPlan {
                     let key_strs: Vec<String> = keys
                         .iter()
                         .map(|k| {
-                            format!(
-                                "{} {}",
-                                k.column,
-                                if k.ascending { "ASC" } else { "DESC" }
-                            )
+                            format!("{} {}", k.column, if k.ascending { "ASC" } else { "DESC" })
                         })
                         .collect();
                     output.push_str(&format!("{}  Sort Key: {}\n", indent, key_strs.join(", ")));
@@ -351,7 +348,11 @@ impl ExplainPlan {
 
                 if options.verbose {
                     if !group_by.is_empty() {
-                        output.push_str(&format!("{}  Group By: {}\n", indent, group_by.join(", ")));
+                        output.push_str(&format!(
+                            "{}  Group By: {}\n",
+                            indent,
+                            group_by.join(", ")
+                        ));
                     }
                     if !aggregates.is_empty() {
                         let agg_strs: Vec<String> =
@@ -507,7 +508,7 @@ impl ExplainExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cost_optimizer::{Predicate, ComparisonOp, PredicateValue};
+    use crate::cost_optimizer::{ComparisonOp, Predicate, PredicateValue};
 
     #[test]
     fn test_explain_table_scan() {
@@ -596,14 +597,12 @@ mod tests {
                 predicates: vec![],
                 cost: Cost::seq_scan(100.0, 10000.0),
             }),
-            predicates: vec![
-                Predicate {
-                    column: "age".to_string(),
-                    op: ComparisonOp::Gt,
-                    value: PredicateValue::Constant(serde_json::json!(18)),
-                    selectivity: 0.5,
-                },
-            ],
+            predicates: vec![Predicate {
+                column: "age".to_string(),
+                op: ComparisonOp::Gt,
+                value: PredicateValue::Constant(serde_json::json!(18)),
+                selectivity: 0.5,
+            }],
             cost: Cost::seq_scan(100.0, 5000.0),
         };
 

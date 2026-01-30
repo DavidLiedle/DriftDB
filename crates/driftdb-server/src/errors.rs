@@ -5,11 +5,11 @@
 
 #![allow(dead_code)]
 
-use std::fmt;
 use anyhow::Result;
-use thiserror::Error;
-use tracing::{error, warn, info};
 use serde_json::json;
+use std::fmt;
+use thiserror::Error;
+use tracing::{error, info, warn};
 
 /// DriftDB server error types with context and structured logging
 #[derive(Error, Debug)]
@@ -81,7 +81,11 @@ impl DriftDbError {
     /// Log error with appropriate level and structured data
     pub fn log(&self) {
         match self {
-            DriftDbError::SqlExecution { message, query, session_id } => {
+            DriftDbError::SqlExecution {
+                message,
+                query,
+                session_id,
+            } => {
                 error!(
                     error = message,
                     query = query,
@@ -89,7 +93,11 @@ impl DriftDbError {
                     "SQL execution failed"
                 );
             }
-            DriftDbError::Authentication { reason, client_addr, username } => {
+            DriftDbError::Authentication {
+                reason,
+                client_addr,
+                username,
+            } => {
                 warn!(
                     reason = reason,
                     client_addr = client_addr,
@@ -97,7 +105,11 @@ impl DriftDbError {
                     "Authentication failed"
                 );
             }
-            DriftDbError::Connection { message, client_addr, connection_count } => {
+            DriftDbError::Connection {
+                message,
+                client_addr,
+                connection_count,
+            } => {
                 warn!(
                     message = message,
                     client_addr = client_addr,
@@ -105,7 +117,11 @@ impl DriftDbError {
                     "Connection error"
                 );
             }
-            DriftDbError::Transaction { message, session_id, transaction_id } => {
+            DriftDbError::Transaction {
+                message,
+                session_id,
+                transaction_id,
+            } => {
                 error!(
                     message = message,
                     session_id = session_id,
@@ -113,7 +129,12 @@ impl DriftDbError {
                     "Transaction error"
                 );
             }
-            DriftDbError::RateLimit { limit_type, client_addr, current_rate, limit } => {
+            DriftDbError::RateLimit {
+                limit_type,
+                client_addr,
+                current_rate,
+                limit,
+            } => {
                 warn!(
                     limit_type = limit_type,
                     client_addr = client_addr,
@@ -122,7 +143,11 @@ impl DriftDbError {
                     "Rate limit exceeded"
                 );
             }
-            DriftDbError::ResourceExhaustion { resource, current, limit } => {
+            DriftDbError::ResourceExhaustion {
+                resource,
+                current,
+                limit,
+            } => {
                 error!(
                     resource = resource,
                     current = current,
@@ -130,14 +155,21 @@ impl DriftDbError {
                     "Resource exhaustion"
                 );
             }
-            DriftDbError::Protocol { message, client_addr } => {
+            DriftDbError::Protocol {
+                message,
+                client_addr,
+            } => {
                 error!(
                     message = message,
                     client_addr = client_addr,
                     "Protocol error"
                 );
             }
-            DriftDbError::Security { violation, client_addr, query } => {
+            DriftDbError::Security {
+                violation,
+                client_addr,
+                query,
+            } => {
                 error!(
                     violation = violation,
                     client_addr = client_addr,
@@ -173,68 +205,109 @@ impl DriftDbError {
     /// Convert to structured JSON for external monitoring
     pub fn to_structured_json(&self) -> serde_json::Value {
         let (error_type, details) = match self {
-            DriftDbError::SqlExecution { message, query, session_id } => {
-                ("sql_execution", json!({
+            DriftDbError::SqlExecution {
+                message,
+                query,
+                session_id,
+            } => (
+                "sql_execution",
+                json!({
                     "message": message,
                     "query": query,
                     "session_id": session_id
-                }))
-            }
-            DriftDbError::Authentication { reason, client_addr, username } => {
-                ("authentication", json!({
+                }),
+            ),
+            DriftDbError::Authentication {
+                reason,
+                client_addr,
+                username,
+            } => (
+                "authentication",
+                json!({
                     "reason": reason,
                     "client_addr": client_addr,
                     "username": username
-                }))
-            }
-            DriftDbError::Connection { message, client_addr, connection_count } => {
-                ("connection", json!({
+                }),
+            ),
+            DriftDbError::Connection {
+                message,
+                client_addr,
+                connection_count,
+            } => (
+                "connection",
+                json!({
                     "message": message,
                     "client_addr": client_addr,
                     "connection_count": connection_count
-                }))
-            }
-            DriftDbError::Transaction { message, session_id, transaction_id } => {
-                ("transaction", json!({
+                }),
+            ),
+            DriftDbError::Transaction {
+                message,
+                session_id,
+                transaction_id,
+            } => (
+                "transaction",
+                json!({
                     "message": message,
                     "session_id": session_id,
                     "transaction_id": transaction_id
-                }))
-            }
-            DriftDbError::RateLimit { limit_type, client_addr, current_rate, limit } => {
-                ("rate_limit", json!({
+                }),
+            ),
+            DriftDbError::RateLimit {
+                limit_type,
+                client_addr,
+                current_rate,
+                limit,
+            } => (
+                "rate_limit",
+                json!({
                     "limit_type": limit_type,
                     "client_addr": client_addr,
                     "current_rate": current_rate,
                     "limit": limit
-                }))
-            }
-            DriftDbError::ResourceExhaustion { resource, current, limit } => {
-                ("resource_exhaustion", json!({
+                }),
+            ),
+            DriftDbError::ResourceExhaustion {
+                resource,
+                current,
+                limit,
+            } => (
+                "resource_exhaustion",
+                json!({
                     "resource": resource,
                     "current": current,
                     "limit": limit
-                }))
-            }
-            DriftDbError::Protocol { message, client_addr } => {
-                ("protocol", json!({
+                }),
+            ),
+            DriftDbError::Protocol {
+                message,
+                client_addr,
+            } => (
+                "protocol",
+                json!({
                     "message": message,
                     "client_addr": client_addr
-                }))
-            }
-            DriftDbError::Security { violation, client_addr, query } => {
-                ("security", json!({
+                }),
+            ),
+            DriftDbError::Security {
+                violation,
+                client_addr,
+                query,
+            } => (
+                "security",
+                json!({
                     "violation": violation,
                     "client_addr": client_addr,
                     "query": query
-                }))
-            }
-            DriftDbError::Internal { message, context } => {
-                ("internal", json!({
+                }),
+            ),
+            DriftDbError::Internal { message, context } => (
+                "internal",
+                json!({
                     "message": message,
                     "context": context
-                }))
-            }
+                }),
+            ),
         };
 
         json!({
@@ -273,7 +346,11 @@ impl ErrorRecovery {
     /// Attempt to recover from connection errors
     pub async fn recover_connection_error(error: &DriftDbError) -> Result<()> {
         match error {
-            DriftDbError::Connection { message, client_addr, .. } => {
+            DriftDbError::Connection {
+                message,
+                client_addr,
+                ..
+            } => {
                 info!(
                     "Attempting connection recovery for {}: {}",
                     client_addr, message
@@ -289,7 +366,11 @@ impl ErrorRecovery {
     /// Handle resource exhaustion by cleaning up resources
     pub async fn recover_resource_exhaustion(error: &DriftDbError) -> Result<()> {
         match error {
-            DriftDbError::ResourceExhaustion { resource, current, limit } => {
+            DriftDbError::ResourceExhaustion {
+                resource,
+                current,
+                limit,
+            } => {
                 error!(
                     "Resource exhaustion detected: {} ({}/{})",
                     resource, current, limit
@@ -305,11 +386,12 @@ impl ErrorRecovery {
     /// Handle security violations with appropriate responses
     pub async fn handle_security_violation(error: &DriftDbError) -> Result<()> {
         match error {
-            DriftDbError::Security { violation, client_addr, .. } => {
-                error!(
-                    "Security violation from {}: {}",
-                    client_addr, violation
-                );
+            DriftDbError::Security {
+                violation,
+                client_addr,
+                ..
+            } => {
+                error!("Security violation from {}: {}", client_addr, violation);
                 // Could implement IP blocking, rate limiting increases, etc.
                 Ok(())
             }

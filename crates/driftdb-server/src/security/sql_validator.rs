@@ -1,6 +1,6 @@
+use crate::errors::security_error;
 use anyhow::{anyhow, Result};
 use tracing::{debug, warn};
-use crate::errors::security_error;
 
 /// SQL validation module to prevent injection attacks
 /// Uses a smarter approach that detects actual injection patterns
@@ -161,26 +161,26 @@ impl SqlValidator {
             // Check for common injection patterns with UNION
             let suspicious_patterns = [
                 "UNION ALL SELECT",
-                "UNION SELECT",  // Added general UNION SELECT
+                "UNION SELECT", // Added general UNION SELECT
                 "UNION ALL",
                 "UNION DISTINCT",
-                " UNION ",  // UNION with spaces (common in injections)
+                " UNION ", // UNION with spaces (common in injections)
                 "'UNION",
                 "\"UNION",
                 ")UNION",
                 "UNION(",
-                "UNION/*",  // UNION with comment
-                "UNION--",  // UNION with comment
-                "UNION#",   // UNION with comment
+                "UNION/*", // UNION with comment
+                "UNION--", // UNION with comment
+                "UNION#",  // UNION with comment
                 "UNION SELECT NULL",
                 "UNION SELECT 1",
                 "UNION SELECT @@VERSION",
                 "UNION SELECT USER()",
                 "UNION SELECT DATABASE()",
                 "UNION SELECT SCHEMA_NAME",
-                "UNION SELECT PASSWORD",  // Common target
+                "UNION SELECT PASSWORD",    // Common target
                 "UNION SELECT TABLE_NAME",  // Information schema access
-                "UNION SELECT COLUMN_NAME",  // Information schema access
+                "UNION SELECT COLUMN_NAME", // Information schema access
             ];
 
             for pattern in suspicious_patterns {

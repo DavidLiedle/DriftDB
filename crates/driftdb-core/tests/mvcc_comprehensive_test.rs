@@ -17,16 +17,12 @@ fn test_snapshot_isolation_basic() {
     };
 
     // Transaction 1: Read initial value
-    let txn1 = manager
-        .begin_transaction(IsolationLevel::Snapshot)
-        .unwrap();
+    let txn1 = manager.begin_transaction(IsolationLevel::Snapshot).unwrap();
     let value1 = manager.read(&txn1, record_id.clone()).unwrap();
     assert_eq!(value1, None); // No value yet
 
     // Transaction 2: Write a value and commit
-    let txn2 = manager
-        .begin_transaction(IsolationLevel::Snapshot)
-        .unwrap();
+    let txn2 = manager.begin_transaction(IsolationLevel::Snapshot).unwrap();
     manager
         .write(&txn2, record_id.clone(), json!({"name": "Alice"}))
         .unwrap();
@@ -37,9 +33,7 @@ fn test_snapshot_isolation_basic() {
     assert_eq!(value1_after, None);
 
     // New transaction should see the write
-    let txn3 = manager
-        .begin_transaction(IsolationLevel::Snapshot)
-        .unwrap();
+    let txn3 = manager.begin_transaction(IsolationLevel::Snapshot).unwrap();
     let value3 = manager.read(&txn3, record_id.clone()).unwrap();
     assert_eq!(value3, Some(json!({"name": "Alice"})));
 }
@@ -58,7 +52,11 @@ fn test_read_committed_isolation() {
         .begin_transaction(IsolationLevel::ReadCommitted)
         .unwrap();
     manager
-        .write(&txn1, record_id.clone(), json!({"name": "Alice", "age": 30}))
+        .write(
+            &txn1,
+            record_id.clone(),
+            json!({"name": "Alice", "age": 30}),
+        )
         .unwrap();
     manager.commit(txn1).unwrap();
 
@@ -84,23 +82,16 @@ fn test_write_write_conflict_detection() {
     };
 
     // Transaction 1: Write
-    let txn1 = manager
-        .begin_transaction(IsolationLevel::Snapshot)
-        .unwrap();
+    let txn1 = manager.begin_transaction(IsolationLevel::Snapshot).unwrap();
     manager
         .write(&txn1, record_id.clone(), json!({"balance": 100}))
         .unwrap();
 
     // Transaction 2: Try to write same record - should conflict
-    let txn2 = manager
-        .begin_transaction(IsolationLevel::Snapshot)
-        .unwrap();
+    let txn2 = manager.begin_transaction(IsolationLevel::Snapshot).unwrap();
     let result = manager.write(&txn2, record_id.clone(), json!({"balance": 200}));
     assert!(result.is_err(), "Expected write conflict");
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Write conflict"));
+    assert!(result.unwrap_err().to_string().contains("Write conflict"));
 }
 
 #[test]
@@ -306,9 +297,7 @@ fn test_mvcc_stats() {
     let _txn1 = manager
         .begin_transaction(IsolationLevel::ReadCommitted)
         .unwrap();
-    let _txn2 = manager
-        .begin_transaction(IsolationLevel::Snapshot)
-        .unwrap();
+    let _txn2 = manager.begin_transaction(IsolationLevel::Snapshot).unwrap();
 
     let stats = manager.get_stats();
     assert_eq!(stats.active_transactions, 2);

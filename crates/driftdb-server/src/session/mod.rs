@@ -18,7 +18,7 @@ use tracing::{debug, error, info, warn};
 use self::prepared::PreparedStatementManager;
 use crate::executor::QueryExecutor;
 use crate::protocol::{self, Message, TransactionStatus};
-use crate::security::{SqlValidator, RbacManager};
+use crate::security::{RbacManager, SqlValidator};
 use crate::security_audit::SecurityAuditLogger;
 use crate::slow_query_log::SlowQueryLogger;
 use crate::tls::SecureStream;
@@ -86,9 +86,9 @@ impl SessionManager {
             info!("Secure TLS connection established with {}", peer_addr);
 
             // Log successful TLS connection to audit log
-            use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+            use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity};
             self.audit_logger.log_event(
-                AuditEventType::LoginSuccess,  // Reusing LoginSuccess for connection events
+                AuditEventType::LoginSuccess, // Reusing LoginSuccess for connection events
                 None,
                 peer_addr,
                 AuditSeverity::Info,
@@ -101,10 +101,13 @@ impl SessionManager {
                 None,
             );
         } else {
-            warn!("Unencrypted connection from {} (TLS not requested by client)", peer_addr);
+            warn!(
+                "Unencrypted connection from {} (TLS not requested by client)",
+                peer_addr
+            );
 
             // Log unencrypted connection to audit log as warning
-            use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+            use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity};
             self.audit_logger.log_event(
                 AuditEventType::SuspiciousActivity,
                 None,
@@ -122,7 +125,8 @@ impl SessionManager {
         }
 
         // Handle the same way as regular connections but with SecureStream
-        self.handle_connection_internal(stream, peer_addr, is_encrypted).await
+        self.handle_connection_internal(stream, peer_addr, is_encrypted)
+            .await
     }
 
     pub async fn handle_connection(
@@ -132,7 +136,8 @@ impl SessionManager {
     ) -> Result<()> {
         // Wrap TcpStream in SecureStream::Plain for unified handling
         let secure_stream = SecureStream::Plain(stream);
-        self.handle_connection_internal(secure_stream, addr, false).await
+        self.handle_connection_internal(secure_stream, addr, false)
+            .await
     }
 
     async fn handle_connection_internal(
@@ -500,7 +505,11 @@ impl Session {
         Ok(())
     }
 
-    async fn handle_password(&mut self, stream: &mut SecureStream, password: String) -> Result<bool> {
+    async fn handle_password(
+        &mut self,
+        stream: &mut SecureStream,
+        password: String,
+    ) -> Result<bool> {
         let username = self
             .username
             .as_ref()
@@ -591,7 +600,7 @@ impl Session {
             warn!("Query rate limit exceeded for {}: {}", self.addr, sql);
 
             // Log rate limit exceeded audit event
-            use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+            use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity};
             self.audit_logger.log_event(
                 AuditEventType::SuspiciousActivity,
                 self.username.clone(),
@@ -676,7 +685,9 @@ impl Session {
                     sql.to_string(),
                     duration,
                     self.addr.to_string(),
-                    self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                    self.username
+                        .clone()
+                        .unwrap_or_else(|| "anonymous".to_string()),
                     self.database.clone(),
                     rows_affected,
                     None,
@@ -701,7 +712,9 @@ impl Session {
                     sql.to_string(),
                     duration,
                     self.addr.to_string(),
-                    self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                    self.username
+                        .clone()
+                        .unwrap_or_else(|| "anonymous".to_string()),
                     self.database.clone(),
                     None,
                     Some(format!("error: {}", e)),
@@ -795,13 +808,16 @@ impl Session {
             .create_user(new_username.to_string(), password, is_superuser)?;
 
         // Log user creation audit event
-        use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+        use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity};
         self.audit_logger.log_event(
             AuditEventType::UserCreated,
             Some(current_username.clone()),
             self.addr,
             AuditSeverity::Info,
-            format!("User '{}' created with superuser={}", new_username, is_superuser),
+            format!(
+                "User '{}' created with superuser={}",
+                new_username, is_superuser
+            ),
             serde_json::json!({
                 "new_user": new_username,
                 "is_superuser": is_superuser,
@@ -835,7 +851,7 @@ impl Session {
         self.auth_db.drop_user(target_username)?;
 
         // Log user deletion audit event
-        use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+        use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity};
         self.audit_logger.log_event(
             AuditEventType::UserDeleted,
             Some(current_username.clone()),
@@ -890,7 +906,7 @@ impl Session {
             .change_password(target_username, new_password)?;
 
         // Log password change audit event
-        use crate::security_audit::{AuditEventType, AuditSeverity, AuditOutcome};
+        use crate::security_audit::{AuditEventType, AuditOutcome, AuditSeverity};
         self.audit_logger.log_event(
             AuditEventType::PasswordChanged,
             Some(current_user.to_string()),
@@ -1316,7 +1332,9 @@ impl Session {
 
                         // Log slow query if it exceeds threshold
                         let rows_affected = match &result {
-                            crate::executor::QueryResult::Select { rows, .. } => Some(rows.len() as u64),
+                            crate::executor::QueryResult::Select { rows, .. } => {
+                                Some(rows.len() as u64)
+                            }
                             crate::executor::QueryResult::Insert { count } => Some(*count as u64),
                             crate::executor::QueryResult::Update { count } => Some(*count as u64),
                             crate::executor::QueryResult::Delete { count } => Some(*count as u64),
@@ -1327,7 +1345,9 @@ impl Session {
                             sql.to_string(),
                             duration,
                             self.addr.to_string(),
-                            self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                            self.username
+                                .clone()
+                                .unwrap_or_else(|| "anonymous".to_string()),
                             self.database.clone(),
                             rows_affected,
                             Some(format!("prepared_statement={}", portal_name)),
@@ -1352,7 +1372,9 @@ impl Session {
                             sql.to_string(),
                             duration,
                             self.addr.to_string(),
-                            self.username.clone().unwrap_or_else(|| "anonymous".to_string()),
+                            self.username
+                                .clone()
+                                .unwrap_or_else(|| "anonymous".to_string()),
                             self.database.clone(),
                             None,
                             Some(format!("prepared_statement={}, error: {}", portal_name, e)),
@@ -1487,19 +1509,19 @@ impl Session {
                 if n.is_i64() {
                     let val = n.as_i64().unwrap();
                     if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
-                        protocol::DataType::Int4  // 32-bit integer
+                        protocol::DataType::Int4 // 32-bit integer
                     } else {
-                        protocol::DataType::Int8  // 64-bit integer
+                        protocol::DataType::Int8 // 64-bit integer
                     }
                 } else if n.is_f64() {
-                    protocol::DataType::Float8  // Double precision
+                    protocol::DataType::Float8 // Double precision
                 } else {
-                    protocol::DataType::Text  // Fallback
+                    protocol::DataType::Text // Fallback
                 }
             }
             Value::String(_) => protocol::DataType::Text,
             Value::Array(_) | Value::Object(_) => protocol::DataType::Json,
-            Value::Null => protocol::DataType::Text,  // Default for NULL values
+            Value::Null => protocol::DataType::Text, // Default for NULL values
         }
     }
 
@@ -1515,7 +1537,8 @@ impl Session {
             .enumerate()
             .map(|(col_idx, _)| {
                 // Sample the first few non-null values to infer type
-                for row in rows.iter().take(5) {  // Sample up to 5 rows
+                for row in rows.iter().take(5) {
+                    // Sample up to 5 rows
                     if col_idx < row.len() && !row[col_idx].is_null() {
                         return Self::infer_postgres_type(&row[col_idx]);
                     }

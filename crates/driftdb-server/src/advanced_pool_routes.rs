@@ -36,9 +36,7 @@ pub fn create_advanced_pool_routes(state: AdvancedPoolState) -> Router {
 }
 
 /// Get comprehensive pool analytics
-async fn get_pool_analytics(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_pool_analytics(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Advanced pool analytics requested");
 
     if let Some(pool_manager) = &state.pool_manager {
@@ -53,9 +51,7 @@ async fn get_pool_analytics(
 }
 
 /// Get connection affinity statistics
-async fn get_connection_affinity(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_connection_affinity(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Connection affinity stats requested");
 
     if let Some(pool_manager) = &state.pool_manager {
@@ -70,9 +66,7 @@ async fn get_connection_affinity(
 }
 
 /// Get detailed pool health metrics
-async fn get_pool_health(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_pool_health(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Pool health metrics requested");
 
     if let Some(pool_manager) = &state.pool_manager {
@@ -87,9 +81,7 @@ async fn get_pool_health(
 }
 
 /// Get load balancing statistics
-async fn get_load_balancing_stats(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_load_balancing_stats(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Load balancing stats requested");
 
     if let Some(pool_manager) = &state.pool_manager {
@@ -104,9 +96,7 @@ async fn get_load_balancing_stats(
 }
 
 /// Get pool optimization recommendations
-async fn get_pool_optimization(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_pool_optimization(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Pool optimization recommendations requested");
 
     if let Some(pool_manager) = &state.pool_manager {
@@ -121,9 +111,7 @@ async fn get_pool_optimization(
 }
 
 /// Get health prediction analytics
-async fn get_health_predictions(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_health_predictions(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Health predictions requested");
 
     if let Some(pool_manager) = &state.pool_manager {
@@ -138,9 +126,7 @@ async fn get_health_predictions(
 }
 
 /// Get resource usage analytics
-async fn get_resource_usage(
-    State(state): State<AdvancedPoolState>,
-) -> Json<Value> {
+async fn get_resource_usage(State(state): State<AdvancedPoolState>) -> Json<Value> {
     info!("Resource usage analytics requested");
 
     if let Some(pool_manager) = &state.pool_manager {

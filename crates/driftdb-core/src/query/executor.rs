@@ -148,7 +148,10 @@ impl Engine {
 
                 // Create backup directory
                 std::fs::create_dir_all(&destination).map_err(|e| {
-                    crate::errors::DriftError::Other(format!("Failed to create backup directory: {}", e))
+                    crate::errors::DriftError::Other(format!(
+                        "Failed to create backup directory: {}",
+                        e
+                    ))
                 })?;
 
                 // Call the private backup_table_full method via a new public wrapper
@@ -157,7 +160,10 @@ impl Engine {
                 let dst_table_dir = PathBuf::from(&destination).join("tables").join(&table);
 
                 std::fs::create_dir_all(&dst_table_dir).map_err(|e| {
-                    crate::errors::DriftError::Other(format!("Failed to create table backup directory: {}", e))
+                    crate::errors::DriftError::Other(format!(
+                        "Failed to create table backup directory: {}",
+                        e
+                    ))
                 })?;
 
                 // Copy all table files
@@ -192,7 +198,10 @@ impl Engine {
                 std::fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
                 Ok(QueryResult::Success {
-                    message: format!("Table '{}' backed up to '{}' ({} files)", table, destination, files_copied),
+                    message: format!(
+                        "Table '{}' backed up to '{}' ({} files)",
+                        table, destination, files_copied
+                    ),
                 })
             }
             Query::RestoreDatabase {
@@ -236,7 +245,10 @@ impl Engine {
                     if let Some(backup_table) = metadata.get("table").and_then(|t| t.as_str()) {
                         if backup_table != table {
                             return Ok(QueryResult::Error {
-                                message: format!("Backup is for table '{}', but trying to restore '{}'", backup_table, table),
+                                message: format!(
+                                    "Backup is for table '{}', but trying to restore '{}'",
+                                    backup_table, table
+                                ),
                             });
                         }
                     }
@@ -268,7 +280,8 @@ impl Engine {
                     let schema_file = src_table_dir.join("schema.json");
                     if !schema_file.exists() {
                         return Ok(QueryResult::Error {
-                            message: "Backup verification failed: schema.json not found".to_string(),
+                            message: "Backup verification failed: schema.json not found"
+                                .to_string(),
                         });
                     }
                 }
@@ -363,7 +376,9 @@ impl Engine {
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
         // Use query optimizer to create execution plan
-        let _plan = self.query_optimizer.optimize_select(table, &conditions, &as_of, limit)?;
+        let _plan = self
+            .query_optimizer
+            .optimize_select(table, &conditions, &as_of, limit)?;
         // Note: In a production system, we would use the plan to guide execution
         // For now, we use the plan for cost estimation and proceed with standard execution
 
