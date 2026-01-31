@@ -145,9 +145,17 @@ psql -h localhost -p 5433 -d driftdb -U driftdb
 
 ### Manual Installation
 
+If you don't have rust on your system, you can run the following commands in a docker container using the official rust image: 
+
+```bash
+docker run -it rust:1.89 /bin/bash
+```
+
+Building the app:
+
 ```bash
 # Clone and build from source
-git clone https://github.com/driftdb/driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
 cd driftdb
 make build
 
