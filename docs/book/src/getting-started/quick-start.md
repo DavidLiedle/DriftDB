@@ -95,14 +95,14 @@ Every operation has a sequence number. Query at any point:
 SELECT MAX(__sequence) FROM products;
 
 -- Query as of sequence 2 (after first 2 inserts)
-SELECT * FROM products AS OF @seq:2;
+SELECT * FROM products FOR SYSTEM_TIME AS OF @SEQ:2;
 ```
 
 ### Query by Timestamp
 
 ```sql
 -- See data as it was at 10:07 (only 2 products existed)
-SELECT * FROM products AS OF '2025-10-25 10:07:00';
+SELECT * FROM products FOR SYSTEM_TIME AS OF '2025-10-25 10:07:00';
 ```
 
 ### Track Changes Over Time
@@ -112,7 +112,7 @@ SELECT * FROM products AS OF '2025-10-25 10:07:00';
 UPDATE products SET price = 899.99 WHERE id = 'p1';
 
 -- Query before the update
-SELECT * FROM products AS OF @seq:3;
+SELECT * FROM products FOR SYSTEM_TIME AS OF @SEQ:3;
 
 -- Query after the update
 SELECT * FROM products;
@@ -164,14 +164,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Common Operations
 
-### Soft Delete (Preserves History)
+### Delete (Preserves History)
 
 ```sql
--- Mark as deleted (data still preserved)
-SOFT DELETE FROM products WHERE id = 'p1';
-
--- Query including soft-deleted records
-SELECT * FROM products INCLUDING DELETED;
+-- Delete a row (data still preserved in audit log)
+DELETE FROM products WHERE id = 'p1';
 ```
 
 ### Create a Snapshot
@@ -179,15 +176,15 @@ SELECT * FROM products INCLUDING DELETED;
 Snapshots speed up time-travel queries:
 
 ```sql
--- Create a snapshot at current state
-SNAPSHOT products;
+-- Create a snapshot at current state (PostgreSQL convention)
+CHECKPOINT TABLE products;
 ```
 
 ### Compact Old Data
 
 ```sql
--- Compact segments older than 7 days
-COMPACT products BEFORE '2025-10-18';
+-- Remove old event segments to reclaim space
+VACUUM products;
 ```
 
 ## Configuration

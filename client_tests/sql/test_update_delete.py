@@ -104,7 +104,7 @@ send_query(sock, "SELECT * FROM products")
 
 # Test time travel (see deleted data)
 print("\n⏰ Time travel (viewing deleted data):")
-send_query(sock, "SELECT * FROM products AS OF @seq:1")
+send_query(sock, "SELECT * FROM products FOR SYSTEM_TIME AS OF @SEQ:1")
 
 print("\n✅ Test complete!")
 

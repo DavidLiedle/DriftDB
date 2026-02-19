@@ -2,124 +2,84 @@
 
 **An append-only database with time-travel capabilities**
 
-DriftDB is a production-ready, high-performance database built in Rust that combines the simplicity of append-only architecture with powerful time-travel query capabilities. Perfect for audit logs, analytics, and applications that need historical data access.
+DriftDB is an experimental database written in Rust that combines append-only storage with
+SQL:2011 temporal queries. It is designed for workloads where full audit history matters —
+audit logs, event sourcing, debugging, and analytics over historical snapshots.
 
-## ✨ Key Features
-
-### 🕐 **Time-Travel Queries**
-Query your database at any point in time. Perfect for auditing, analytics, and debugging.
-
-```sql
--- Query data as it existed yesterday
-SELECT * FROM users AS OF '2025-10-24 12:00:00';
-
--- Query at specific sequence number
-SELECT * FROM orders AS OF @seq:1000;
-```
-
-### 📝 **Append-Only Architecture**
-All changes are preserved, never overwritten. Built-in audit trail with zero configuration.
-
-### ⚡ **High Performance**
-- **10K+ QPS** on modest hardware
-- Sub-millisecond queries with proper indexes
-- Efficient snapshots and compression
-- Zero-copy operations where possible
-
-### 🔒 **Production-Ready Security**
-- **Encryption at rest** (AES-256-GCM)
-- **TLS support** for data in transit
-- **RBAC & Row-Level Security**
-- **Rate limiting** and connection pooling
-- **SQL injection prevention**
-
-### 💪 **ACID Transactions**
-Full ACID compliance with multiple isolation levels:
-- Read Uncommitted
-- Read Committed
-- Repeatable Read
-- Serializable
-
-### 📊 **Rich Observability**
-- **40+ Prometheus metrics**
-- Structured logging with `tracing`
-- Health check endpoints
-- Query timeout & cancellation
-- Grafana dashboard templates
-
-### 🚀 **Easy to Deploy**
-```bash
-# Docker
-docker run -p 5432:5432 driftdb/driftdb
-
-# Or use cargo
-cargo install driftdb
-driftdb --data-dir ./data
-```
-
-## 🎯 Use Cases
-
-### Audit Logs & Compliance
-Perfect for storing immutable audit trails with full history preservation.
-
-### Analytics & Business Intelligence
-Time-travel queries make it easy to analyze trends and compare historical states.
-
-### Event Sourcing
-Native support for event sourcing patterns with efficient replay.
-
-### Debugging & Forensics
-Query your database state at the exact moment an issue occurred.
-
-## 📈 Status
-
-- **Production Ready**: 98% complete
-- **Test Coverage**: Comprehensive (WAL, backup, replication)
-- **Security**: Professionally audited
-- **Performance**: Validated under load
-
-## 🚀 Quick Start
-
-Get started in 60 seconds:
-
-```bash
-# Install
-cargo install driftdb
-
-# Start server
-driftdb --data-dir ./mydata
-
-# Connect and query
-driftdb-cli
-```
-
-```sql
--- Create a table
-CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT, email TEXT);
-
--- Insert data
-INSERT INTO users VALUES ('1', 'Alice', 'alice@example.com');
-INSERT INTO users VALUES ('2', 'Bob', 'bob@example.com');
-
--- Query current state
-SELECT * FROM users;
-
--- Query historical state
-SELECT * FROM users AS OF @seq:1;
-```
-
-[Continue to Quick Start →](./getting-started/quick-start.md)
-
-## 🔗 Links
-
-- **GitHub**: [github.com/davidliedle/DriftDB](https://github.com/davidliedle/DriftDB)
-- **Crates.io**: [crates.io/crates/driftdb](https://crates.io/crates/driftdb)
-- **Discussions**: [GitHub Discussions](https://github.com/davidliedle/DriftDB/discussions)
-
-## 📜 License
-
-DriftDB is open source under the MIT License.
+> **Status: Alpha.** The core engine and SQL interface work. Several higher-level features
+> are partially implemented. See [STATUS.md](../../STATUS.md) for details.
 
 ---
 
-**Ready to get started?** Head over to the [Quick Start](./getting-started/quick-start.md) guide!
+## Key Concepts
+
+### Time-Travel Queries
+
+Query your data at any past point in time using SQL:2011 temporal syntax:
+
+```sql
+-- As of a specific sequence number (reliable — sequences are immutable)
+SELECT * FROM orders FOR SYSTEM_TIME AS OF @SEQ:1000;
+
+-- As of a timestamp
+SELECT * FROM users FOR SYSTEM_TIME AS OF '2025-10-24 12:00:00';
+
+-- Full history for a row
+SELECT * FROM users FOR SYSTEM_TIME ALL WHERE id = 'u1';
+```
+
+### Append-Only Architecture
+
+Every INSERT, UPDATE, and DELETE is stored as an immutable event. Nothing is ever
+overwritten. This gives you a built-in audit trail with zero extra configuration.
+
+### PostgreSQL Wire Protocol
+
+DriftDB speaks the PostgreSQL wire protocol on port 5433, so standard PostgreSQL
+clients (`psql`, JDBC, etc.) can connect to it directly.
+
+---
+
+## What Actually Works
+
+- Basic SQL: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`
+- Time-travel queries by sequence number and timestamp
+- Full drift history per row (`FOR SYSTEM_TIME ALL`)
+- Subqueries, CTEs, JOINs, `GROUP BY`, `ORDER BY`
+- `VACUUM` (compact) and `CHECKPOINT TABLE` (snapshot)
+- ACID transactions with `BEGIN` / `COMMIT` / `ROLLBACK`
+- B-tree secondary indexes
+
+## Known Limitations
+
+- Table creation uses `pk=id` syntax instead of standard `PRIMARY KEY (id)`
+- No fsync after WAL writes — recent commits may be lost on crash
+- Replication framework exists but has no real consensus or failover
+- Most monitoring metrics are hardcoded placeholder values
+- Temporal JOINs not supported
+
+---
+
+## Quick Start
+
+```bash
+# Build from source (requires Rust 1.70+)
+cargo build --release
+
+# Start the server
+./target/release/driftdb-server --data-path ./data
+
+# Or use the CLI directly
+./target/release/driftdb init ./data
+./target/release/driftdb sql --data ./data \
+  -e 'CREATE TABLE users (pk=id, INDEX(name))'
+```
+
+[Continue to the Quick Start guide →](./getting-started/quick-start.md)
+
+---
+
+## Links
+
+- **GitHub**: [github.com/davidliedle/DriftDB](https://github.com/davidliedle/DriftDB)
+- **License**: MIT

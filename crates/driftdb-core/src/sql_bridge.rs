@@ -73,8 +73,43 @@ pub fn execute_sql_with_params(
 
 /// Execute SQL query (legacy - use execute_sql_with_params for safety)
 pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
+    let trimmed = sql.trim();
+    let upper = trimmed.to_uppercase();
+
+    // PostgreSQL convention: VACUUM table_name → Compact
+    if upper.starts_with("VACUUM ") {
+        let table = trimmed["VACUUM ".len()..]
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| DriftError::InvalidQuery("VACUUM requires a table name".into()))?
+            .to_string();
+        return engine
+            .execute_query(Query::Compact { table })
+            .map_err(|e| DriftError::InvalidQuery(e.to_string()));
+    }
+
+    // PostgreSQL convention: CHECKPOINT TABLE table_name → Snapshot
+    if upper.starts_with("CHECKPOINT TABLE ") {
+        let table = trimmed["CHECKPOINT TABLE ".len()..]
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| {
+                DriftError::InvalidQuery("CHECKPOINT TABLE requires a table name".into())
+            })?
+            .to_string();
+        return engine
+            .execute_query(Query::Snapshot { table })
+            .map_err(|e| DriftError::InvalidQuery(e.to_string()));
+    }
+
+    // SQL:2011: FOR SYSTEM_TIME ALL → drift history
+    if upper.contains(" FOR SYSTEM_TIME ALL") {
+        return execute_for_system_time_all(engine, trimmed);
+    }
+
     let dialect = GenericDialect {};
-    let ast = Parser::parse_sql(&dialect, sql).map_err(|e| DriftError::Parse(e.to_string()))?;
+    let ast =
+        Parser::parse_sql(&dialect, trimmed).map_err(|e| DriftError::Parse(e.to_string()))?;
 
     if ast.is_empty() {
         return Err(DriftError::InvalidQuery("Empty SQL statement".to_string()));
@@ -4209,5 +4244,91 @@ fn extract_column_from_function_args(args: &FunctionArguments) -> Result<String>
         _ => Err(DriftError::InvalidQuery(
             "Function arguments required".to_string(),
         )),
+    }
+}
+
+/// Handle `SELECT ... FROM <table> FOR SYSTEM_TIME ALL [WHERE <pk> = <val>]`
+///
+/// Returns drift history for a single row (if WHERE matches) or all rows.
+fn execute_for_system_time_all(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
+    let upper = sql.to_uppercase();
+
+    // Extract table name: between FROM and FOR SYSTEM_TIME ALL
+    let from_pos = upper
+        .find(" FROM ")
+        .ok_or_else(|| DriftError::InvalidQuery("FOR SYSTEM_TIME ALL requires FROM clause".into()))?;
+    let fst_pos = upper
+        .find(" FOR SYSTEM_TIME ALL")
+        .ok_or_else(|| DriftError::InvalidQuery("FOR SYSTEM_TIME ALL marker not found".into()))?;
+
+    // Use original-case sql for the table name to preserve case
+    let table = sql[from_pos + 6..fst_pos].trim().to_string();
+
+    // Check for optional WHERE clause after FOR SYSTEM_TIME ALL
+    let after_fst = sql[fst_pos + 20..].trim();
+    let pk_filter = if after_fst.to_uppercase().strip_prefix("WHERE ").is_some() {
+        // Parse simple equality: <col> = '<val>' or <col> = <num>
+        let where_part = &after_fst[after_fst.to_uppercase().find("WHERE ").unwrap() + 6..];
+        parse_pk_equality(where_part)
+    } else {
+        None
+    };
+
+    if let Some(pk_val) = pk_filter {
+        engine
+            .execute_query(Query::ShowDrift {
+                table,
+                primary_key: pk_val,
+            })
+            .map_err(|e| DriftError::InvalidQuery(e.to_string()))
+    } else {
+        // No WHERE filter — return history for all rows
+        let pk_col = engine
+            .get_table_primary_key(&table)
+            .map_err(|e| DriftError::InvalidQuery(e.to_string()))?;
+
+        let rows = match engine.execute_query(Query::Select {
+            table: table.clone(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })? {
+            QueryResult::Rows { data } => data,
+            _ => vec![],
+        };
+
+        let mut all_events: Vec<Value> = Vec::new();
+        for row in rows {
+            if let Some(pk_val) = row.get(&pk_col).cloned() {
+                if let QueryResult::DriftHistory { events } =
+                    engine.execute_query(Query::ShowDrift {
+                        table: table.clone(),
+                        primary_key: pk_val,
+                    })?
+                {
+                    all_events.extend(events);
+                }
+            }
+        }
+        Ok(QueryResult::DriftHistory { events: all_events })
+    }
+}
+
+/// Parse a simple `col = 'val'` or `col = num` equality clause and return the value part.
+/// Returns `None` if the clause is not a simple single equality.
+fn parse_pk_equality(where_clause: &str) -> Option<Value> {
+    // Find the '=' sign
+    let eq_pos = where_clause.find('=')?;
+    let value_part = where_clause[eq_pos + 1..].trim();
+
+    if value_part.starts_with('\'') && value_part.ends_with('\'') {
+        // String value: strip quotes
+        let inner = &value_part[1..value_part.len() - 1];
+        Some(Value::String(inner.to_string()))
+    } else if let Ok(n) = value_part.parse::<f64>() {
+        Some(serde_json::json!(n))
+    } else {
+        // Bare word — treat as string
+        Some(Value::String(value_part.to_string()))
     }
 }

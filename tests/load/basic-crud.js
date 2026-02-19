@@ -4,8 +4,8 @@
  * Tests basic database operations under load:
  * - INSERT operations
  * - SELECT queries
- * - UPDATE/PATCH operations
- * - SOFT DELETE operations
+ * - UPDATE operations
+ * - DELETE operations
  *
  * Run with: k6 run basic-crud.js
  */
@@ -134,12 +134,12 @@ export default function () {
 
   sleep(0.1);
 
-  // 3. UPDATE operation (PATCH)
+  // 3. UPDATE operation
   {
     const start = Date.now();
     const newAge = randomIntBetween(18, 80);
     const result = executeQuery(
-      'PATCH load_test_users SET age = ? WHERE id = ?',
+      'UPDATE load_test_users SET age = ? WHERE id = ?',
       [newAge, user.id]
     );
     const duration = Date.now() - start;
@@ -155,11 +155,11 @@ export default function () {
 
   sleep(0.1);
 
-  // 4. SOFT DELETE operation (every 5th user)
+  // 4. DELETE operation (every 5th user)
   if (user.id % 5 === 0) {
     const start = Date.now();
     const result = executeQuery(
-      'SOFT DELETE FROM load_test_users WHERE id = ?',
+      'DELETE FROM load_test_users WHERE id = ?',
       [user.id]
     );
     const duration = Date.now() - start;

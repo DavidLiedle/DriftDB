@@ -39,7 +39,7 @@ INSERT INTO events (id, data) VALUES (1, 'original');
 UPDATE events SET data = 'modified' WHERE id = 1;
 
 -- Query historical state!
-SELECT * FROM events AS OF @seq:1;  -- Shows 'original'
+SELECT * FROM events FOR SYSTEM_TIME AS OF @SEQ:1;  -- Shows 'original'
 SELECT * FROM events;                -- Shows 'modified'
 ```
 
@@ -58,7 +58,7 @@ SELECT * FROM events;                -- Shows 'modified'
 - **Set operations**: UNION, INTERSECT, EXCEPT
 - **Multi-row INSERT**: INSERT INTO ... VALUES (row1), (row2), ...
 - **Foreign key constraints**: Referential integrity enforcement
-- **Time-travel queries**: `AS OF` for querying historical states
+- **Time-travel queries**: `FOR SYSTEM_TIME AS OF` for querying historical states
 
 ### Core Database Engine
 - **Event sourcing**: Every change is an immutable event with full history
@@ -165,7 +165,7 @@ make demo
 # - Database initialization
 # - Table creation with 10,000 sample orders
 # - SELECT queries with WHERE clauses
-# - Time-travel queries (AS OF @seq:N)
+# - Time-travel queries (FOR SYSTEM_TIME AS OF @SEQ:N)
 # - Snapshot and compaction operations
 ```
 
@@ -342,10 +342,10 @@ ROLLBACK;
 ### Time Travel Queries
 ```sql
 -- Query historical state by timestamp
-SELECT * FROM orders WHERE status = 'paid' AS OF '2025-01-01T00:00:00Z';
+SELECT * FROM orders FOR SYSTEM_TIME AS OF '2025-01-01T00:00:00Z' WHERE status = 'paid';
 
 -- Query by sequence number
-SELECT * FROM orders WHERE customer_id = 'cust1' AS OF @seq:1000;
+SELECT * FROM orders FOR SYSTEM_TIME AS OF @SEQ:1000 WHERE customer_id = 'cust1';
 
 -- Show complete history of a record (CLI command)
 driftdb drift -d ./data --table orders --key "order1"
@@ -628,7 +628,7 @@ Single delete:      6.5 ms
 
 **Time Travel Queries:**
 ```
-Historical query:  131 µs  (AS OF @seq:N)
+Historical query:  131 µs  (FOR SYSTEM_TIME AS OF @SEQ:N)
 ```
 
 **Throughput:**
@@ -671,7 +671,7 @@ DriftDB is currently in **alpha** stage with significant recent improvements but
 
 **Current Status:**
 - Core functionality implemented and working well
-- Time travel queries fully functional with `AS OF @seq:N`
+- Time travel queries fully functional with `FOR SYSTEM_TIME AS OF @SEQ:N`
 - PostgreSQL wire protocol fully implemented
 - SQL support for SELECT, INSERT, UPDATE, DELETE with WHERE clauses
 - Replication framework in place (tests fixed)
@@ -741,7 +741,7 @@ DriftDB is currently in **alpha** stage with significant recent improvements but
 - ✅ Soft deletes preserve history
 
 ### v0.5.0 (Time Travel & Fixes - Complete)
-- ✅ Time travel queries with AS OF @seq:N
+- ✅ Time travel queries with FOR SYSTEM_TIME AS OF @SEQ:N
 - ✅ Fixed replication integration tests
 - ✅ Corrected WAL implementation
 - ✅ Updated documentation accuracy

@@ -68,7 +68,7 @@ Quick navigation to all DriftDB documentation, organized by purpose.
 - **Document**: [IMPLEMENTATION_STATUS.md § Time-Travel](IMPLEMENTATION_STATUS.md#time-travel-queries-unique-feature)
 - **Example**:
   ```sql
-  SELECT * FROM users AS OF @seq:1000
+  SELECT * FROM users FOR SYSTEM_TIME AS OF @SEQ:1000
   SELECT * FROM orders FOR SYSTEM_TIME AS OF '2024-01-15T10:00:00Z'
   ```
 

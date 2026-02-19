@@ -111,7 +111,7 @@ pub enum JoinType {
 #[derive(Debug, Clone)]
 enum TemporalClause {
     AsOf(TemporalPoint),
-    // Future: Between, FromTo, All
+    All,
 }
 
 /// A point in time for temporal queries
@@ -2189,8 +2189,6 @@ impl<'a> QueryExecutor<'a> {
             .or_else(|| remaining.find(" limit "))
             .or_else(|| remaining.find(" FOR SYSTEM_TIME "))
             .or_else(|| remaining.find(" for system_time "))
-            .or_else(|| remaining.find(" AS OF "))
-            .or_else(|| remaining.find(" as of "))
             .unwrap_or(remaining.len());
 
         let from_part = remaining[..from_end].trim();
@@ -2352,8 +2350,15 @@ impl<'a> QueryExecutor<'a> {
             None
         };
 
-        // Parse temporal clause (FOR SYSTEM_TIME AS OF)
+        // Parse temporal clause (FOR SYSTEM_TIME AS OF / FOR SYSTEM_TIME ALL)
         let temporal_clause = self.parse_temporal_clause(after_from)?;
+
+        // Handle FOR SYSTEM_TIME ALL — returns full drift history
+        if matches!(temporal_clause, Some(TemporalClause::All)) {
+            return self
+                .execute_system_time_all(&from_clause, after_from)
+                .await;
+        }
 
         // Apply temporal filtering to the data if specified
         if temporal_clause.is_some() {
@@ -5104,6 +5109,11 @@ impl<'a> QueryExecutor<'a> {
     fn parse_temporal_clause(&self, sql_part: &str) -> Result<Option<TemporalClause>> {
         let lower = sql_part.to_lowercase();
 
+        // Look for FOR SYSTEM_TIME ALL (must check before AS OF since it's a prefix match)
+        if lower.contains(" for system_time all") {
+            return Ok(Some(TemporalClause::All));
+        }
+
         // Look for FOR SYSTEM_TIME AS OF
         if let Some(pos) = lower.find(" for system_time as of ") {
             let temporal_start = pos + 23; // Length of " for system_time as of "
@@ -5129,37 +5139,21 @@ impl<'a> QueryExecutor<'a> {
             return Ok(Some(TemporalClause::AsOf(point)));
         }
 
-        // Look for simpler AS OF syntax (legacy DriftDB)
-        if let Some(pos) = lower.find(" as of ") {
-            let temporal_start = pos + 7; // Length of " as of "
-            let remaining = &sql_part[temporal_start..];
-
-            // Find the end of the temporal clause
-            let temporal_end = remaining
-                .find(" WHERE ")
-                .or_else(|| remaining.find(" where "))
-                .or_else(|| remaining.find(" GROUP BY "))
-                .or_else(|| remaining.find(" group by "))
-                .or_else(|| remaining.find(" ORDER BY "))
-                .or_else(|| remaining.find(" order by "))
-                .or_else(|| remaining.find(" LIMIT "))
-                .or_else(|| remaining.find(" limit "))
-                .unwrap_or(remaining.len());
-
-            let temporal_value = remaining[..temporal_end].trim();
-            debug!("Parsing temporal value (legacy): {}", temporal_value);
-
-            // Parse the temporal point
-            let point = self.parse_temporal_point(temporal_value)?;
-            return Ok(Some(TemporalClause::AsOf(point)));
-        }
-
         Ok(None)
     }
 
     /// Parse a temporal point (timestamp or sequence number)
     fn parse_temporal_point(&self, value: &str) -> Result<TemporalPoint> {
         let trimmed = value.trim();
+
+        // Check for @SEQ:N / @seq:N (DriftDB sequence number extension)
+        if let Some(rest) = trimmed.to_uppercase().strip_prefix("@SEQ:") {
+            let seq = rest
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| anyhow!("Invalid sequence number: {}", rest))?;
+            return Ok(TemporalPoint::Sequence(seq));
+        }
 
         // Check for CURRENT_TIMESTAMP
         if trimmed.to_uppercase() == "CURRENT_TIMESTAMP" {
@@ -5193,6 +5187,84 @@ impl<'a> QueryExecutor<'a> {
             "Invalid temporal point: {}. Expected CURRENT_TIMESTAMP, sequence number, or timestamp",
             value
         ))
+    }
+
+    /// Execute `FOR SYSTEM_TIME ALL` — returns full drift history for a table.
+    ///
+    /// If `after_from` contains a WHERE clause with a simple pk equality, returns
+    /// history for that single row only; otherwise returns history for all rows.
+    async fn execute_system_time_all(
+        &self,
+        from_clause: &FromClause,
+        after_from: &str,
+    ) -> Result<QueryResult> {
+        let table_name = match from_clause {
+            FromClause::Single(t) => t.name.clone(),
+            _ => return Err(anyhow!("FOR SYSTEM_TIME ALL only supports single tables")),
+        };
+
+        // Try to extract a simple pk equality from the WHERE clause
+        let pk_val = if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
+            let where_clause = &after_from[where_pos + 7..];
+            // Find the end of WHERE (stop at GROUP BY / ORDER BY / LIMIT)
+            let where_end = where_clause
+                .to_lowercase()
+                .find(" group by ")
+                .or_else(|| where_clause.to_lowercase().find(" order by "))
+                .or_else(|| where_clause.to_lowercase().find(" limit "))
+                .unwrap_or(where_clause.len());
+            let condition = where_clause[..where_end].trim();
+            parse_simple_equality_value(condition)
+        } else {
+            None
+        };
+
+        use driftdb_core::query::Query as CoreQuery;
+
+        let events: Vec<Value> = if let Some(pk) = pk_val {
+            let mut engine = self.engine_write()?;
+            match engine.execute_query(CoreQuery::ShowDrift {
+                table: table_name,
+                primary_key: pk,
+            })? {
+                driftdb_core::query::QueryResult::DriftHistory { events } => events,
+                _ => vec![],
+            }
+        } else {
+            // All rows
+            let mut engine = self.engine_write()?;
+            let pk_col = engine
+                .get_table_primary_key(&table_name)
+                .map_err(|e| anyhow!("{}", e))?;
+            let rows = match engine.execute_query(CoreQuery::Select {
+                table: table_name.clone(),
+                conditions: vec![],
+                as_of: None,
+                limit: None,
+            })? {
+                driftdb_core::query::QueryResult::Rows { data } => data,
+                _ => vec![],
+            };
+            let mut all_events: Vec<Value> = Vec::new();
+            for row in rows {
+                if let Some(pk) = row.get(&pk_col).cloned() {
+                    if let driftdb_core::query::QueryResult::DriftHistory { events } =
+                        engine.execute_query(CoreQuery::ShowDrift {
+                            table: table_name.clone(),
+                            primary_key: pk,
+                        })?
+                    {
+                        all_events.extend(events);
+                    }
+                }
+            }
+            all_events
+        };
+
+        Ok(QueryResult::Select {
+            columns: vec!["event".to_string()],
+            rows: events.into_iter().map(|e| vec![e]).collect(),
+        })
     }
 
     /// Execute JOIN with temporal support
@@ -5246,7 +5318,9 @@ impl<'a> QueryExecutor<'a> {
                             }
                         }
                     }
-                    None => engine
+                    // All is handled before execute_temporal_join is called;
+                    // this arm is a defensive fallback that returns current data.
+                    Some(TemporalClause::All) | None => engine
                         .get_table_data(&table_ref.name)
                         .map_err(|e| anyhow!("Failed to get table data: {}", e))?,
                 };
@@ -6530,6 +6604,26 @@ impl<'a> QueryExecutor<'a> {
     /// Check if we're in a transaction
     fn in_transaction(&self) -> bool {
         self.transaction_manager.has_transaction(&self.session_id)
+    }
+}
+
+/// Parse a simple `col = 'val'` or `col = num` equality clause.
+/// Returns only the value part (ignores the column name).
+/// Returns `None` if the clause cannot be parsed as a simple single equality.
+fn parse_simple_equality_value(condition: &str) -> Option<Value> {
+    let eq_pos = condition.find('=')?;
+    let value_part = condition[eq_pos + 1..].trim();
+
+    if value_part.starts_with('\'') && value_part.ends_with('\'') {
+        let inner = &value_part[1..value_part.len() - 1];
+        Some(Value::String(inner.to_string()))
+    } else if let Ok(n) = value_part.parse::<f64>() {
+        Some(serde_json::json!(n))
+    } else if !value_part.is_empty() {
+        // Bare word — treat as string
+        Some(Value::String(value_part.to_string()))
+    } else {
+        None
     }
 }
 

@@ -277,7 +277,7 @@ class Client:
             QueryResult with historical data
         """
         # Add AS OF clause
-        time_travel_sql = f"{sql} AS OF @seq:{sequence}"
+        time_travel_sql = f"{sql} FOR SYSTEM_TIME AS OF @SEQ:{sequence}"
         return await self.query(time_travel_sql, params)
 
     async def query_at_time(
@@ -300,7 +300,7 @@ class Client:
         if isinstance(timestamp, datetime):
             timestamp = timestamp.isoformat()
 
-        time_travel_sql = f"{sql} AS OF '{timestamp}'"
+        time_travel_sql = f"{sql} FOR SYSTEM_TIME AS OF '{timestamp}'"
         return await self.query(time_travel_sql, params)
 
     async def execute(self, sql: str, params: Optional[List[Any]] = None) -> int:

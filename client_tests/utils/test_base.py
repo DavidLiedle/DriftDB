@@ -147,13 +147,13 @@ class DriftDBTestCase(unittest.TestCase):
     # Time travel helpers
     def query_as_of_sequence(self, table: str, sequence: int) -> List:
         """Query table as of specific sequence number"""
-        query = f"SELECT * FROM {table} AS OF @seq:{sequence}"
+        query = f"SELECT * FROM {table} FOR SYSTEM_TIME AS OF @SEQ:{sequence}"
         return self.execute_query(query)
 
     def query_as_of_timestamp(self, table: str, timestamp: datetime) -> List:
         """Query table as of specific timestamp"""
         ts_str = timestamp.isoformat() + 'Z'
-        query = f"SELECT * FROM {table} AS OF '{ts_str}'"
+        query = f"SELECT * FROM {table} FOR SYSTEM_TIME AS OF '{ts_str}'"
         return self.execute_query(query)
 
     def wait_and_insert(self, table: str, data: Tuple, wait_seconds: float = 0.1):

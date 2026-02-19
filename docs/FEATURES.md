@@ -83,7 +83,7 @@
   - Common Table Expressions (CTEs with WITH clause)
   - CASE WHEN expressions
   - Set operations: UNION, INTERSECT, EXCEPT
-  - Time-travel queries with AS OF
+  - Time-travel queries with FOR SYSTEM_TIME AS OF
 
 - ✅ **Views**
   - CREATE VIEW with complex queries
@@ -162,7 +162,7 @@ If you want to use DriftDB right now, you can reliably use:
    - INSERT with VALUES clause
    - SELECT with WHERE conditions
    - JOINs: INNER JOIN, LEFT JOIN, CROSS JOIN
-   - Time-travel queries with AS OF
+   - Time-travel queries with FOR SYSTEM_TIME AS OF
    - Soft deletes preserving history
 
 2. **Storage Features**

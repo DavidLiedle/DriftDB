@@ -29,9 +29,9 @@ echo "📋 Current state of products:"
 
 echo
 echo "🔄 Updating prices (Black Friday sale - 20% off)..."
-./target/release/driftdb sql --data demo_data -e 'PATCH products KEY "p1" SET {"price": 799}'
-./target/release/driftdb sql --data demo_data -e 'PATCH products KEY "p2" SET {"price": 20}'
-./target/release/driftdb sql --data demo_data -e 'PATCH products KEY "p3" SET {"price": 4}'
+./target/release/driftdb sql --data demo_data -e "UPDATE products SET price = 799 WHERE id = 'p1'"
+./target/release/driftdb sql --data demo_data -e "UPDATE products SET price = 20 WHERE id = 'p2'"
+./target/release/driftdb sql --data demo_data -e "UPDATE products SET price = 4 WHERE id = 'p3'"
 
 echo
 echo "📋 Products after price update:"
@@ -39,19 +39,19 @@ echo "📋 Products after price update:"
 
 echo
 echo "📦 Stock update - items sold..."
-./target/release/driftdb sql --data demo_data -e 'PATCH products KEY "p1" SET {"stock": 7}'
-./target/release/driftdb sql --data demo_data -e 'PATCH products KEY "p2" SET {"stock": 35}'
+./target/release/driftdb sql --data demo_data -e "UPDATE products SET stock = 7 WHERE id = 'p1'"
+./target/release/driftdb sql --data demo_data -e "UPDATE products SET stock = 35 WHERE id = 'p2'"
 
 echo
 echo "⏰ TIME TRAVEL DEMO"
 echo "==================="
 echo
 echo "🕐 Query products at sequence 3 (before any updates):"
-./target/release/driftdb sql --data demo_data -e 'SELECT * FROM products AS OF @seq:3'
+./target/release/driftdb sql --data demo_data -e 'SELECT * FROM products FOR SYSTEM_TIME AS OF @SEQ:3'
 
 echo
 echo "🕑 Query products at sequence 6 (after price update, before stock update):"
-./target/release/driftdb sql --data demo_data -e 'SELECT * FROM products AS OF @seq:6'
+./target/release/driftdb sql --data demo_data -e 'SELECT * FROM products FOR SYSTEM_TIME AS OF @SEQ:6'
 
 echo
 echo "🕒 Current state (after all updates):"
@@ -65,8 +65,8 @@ echo
 echo "Key Features Demonstrated:"
 echo "✅ Create tables with indexes"
 echo "✅ Insert JSON documents"
-echo "✅ Update specific fields with PATCH"
-echo "✅ Time-travel queries with AS OF @seq:N"
+echo "✅ Update specific fields with SQL UPDATE"
+echo "✅ Time-travel queries with FOR SYSTEM_TIME AS OF @SEQ:N"
 echo "✅ Full audit trail - nothing is lost!"
 echo
 echo "DriftDB: Your database with a time machine! 🚀"

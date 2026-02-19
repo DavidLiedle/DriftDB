@@ -7,7 +7,7 @@ Comprehensive load testing for DriftDB using [k6](https://k6.io/), a modern open
 This suite tests DriftDB's performance under various workload scenarios:
 
 - **basic-crud.js**: Basic CRUD operations (INSERT, SELECT, UPDATE, DELETE)
-- **time-travel.js**: Time-travel query performance (AS OF @seq:N, AS OF timestamp)
+- **time-travel.js**: Time-travel query performance (FOR SYSTEM_TIME AS OF @SEQ:N, FOR SYSTEM_TIME AS OF timestamp)
 - **realistic-workload.js**: Production-like mixed workload with realistic traffic patterns
 
 ## Prerequisites

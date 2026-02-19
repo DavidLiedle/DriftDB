@@ -335,7 +335,7 @@ export class Client {
     sequence: number,
     params: QueryParams = []
   ): Promise<QueryResult> {
-    const timeTravelSql = `${sql} AS OF @seq:${sequence}`;
+    const timeTravelSql = `${sql} FOR SYSTEM_TIME AS OF @SEQ:${sequence}`;
     return await this.query(timeTravelSql, params);
   }
 
@@ -353,7 +353,7 @@ export class Client {
     params: QueryParams = []
   ): Promise<QueryResult> {
     const ts = timestamp instanceof Date ? timestamp.toISOString() : timestamp;
-    const timeTravelSql = `${sql} AS OF '${ts}'`;
+    const timeTravelSql = `${sql} FOR SYSTEM_TIME AS OF '${ts}'`;
     return await this.query(timeTravelSql, params);
   }
 

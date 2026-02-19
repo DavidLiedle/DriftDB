@@ -1346,10 +1346,6 @@ fn determine_query_type(sql: &str) -> String {
         "DROP"
     } else if sql_upper.starts_with("ALTER") {
         "ALTER"
-    } else if sql_upper.starts_with("PATCH") {
-        "PATCH"
-    } else if sql_upper.starts_with("SOFT DELETE") {
-        "SOFT_DELETE"
     } else {
         "OTHER"
     }

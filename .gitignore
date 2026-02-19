@@ -32,6 +32,9 @@ demo-data/
 *~
 .DS_Store
 
+# mdBook build output
+docs/book/book/
+
 # Environment
 .env
 .env.local

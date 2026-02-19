@@ -1,11 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use driftdb_core::{Engine, Query, QueryResult};
-use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use time::OffsetDateTime;
 use tracing_subscriber::EnvFilter;
 
 mod backup;
@@ -230,63 +228,77 @@ fn main() -> Result<()> {
             limit,
             json: output_json,
         } => {
-            let engine = Engine::open(&data).context("Failed to open database")?;
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let conditions = if let Some(where_clause) = r#where {
-                parse_where_clause(&where_clause)?
-            } else {
-                vec![]
-            };
+            let mut sql = format!("SELECT * FROM {}", table);
+            if let Some(where_clause) = r#where {
+                sql += &format!(" WHERE {}", where_clause);
+            }
+            if let Some(as_of_str) = as_of {
+                let temporal = parse_as_of_to_temporal(&as_of_str)?;
+                sql += &format!(" {}", temporal);
+            }
+            if let Some(n) = limit {
+                sql += &format!(" LIMIT {}", n);
+            }
 
-            let as_of = parse_as_of(as_of.as_deref())?;
-
-            let query = Query::Select {
-                table: table.clone(),
-                conditions,
-                as_of,
-                limit,
-            };
-
-            let mut engine_mut = engine;
-            let result = engine_mut
-                .execute_query(query)
+            let result = driftdb_core::sql_bridge::execute_sql(&mut engine, &sql)
                 .context("Failed to execute select")?;
 
-            if let QueryResult::Rows { data } = result {
-                if output_json {
-                    println!("{}", serde_json::to_string_pretty(&data)?);
-                } else {
-                    for row in data {
-                        println!("{}", serde_json::to_string_pretty(&row)?);
+            match result {
+                QueryResult::Rows { data } => {
+                    if output_json {
+                        println!("{}", serde_json::to_string_pretty(&data)?);
+                    } else {
+                        for row in data {
+                            println!("{}", serde_json::to_string_pretty(&row)?);
+                        }
                     }
                 }
+                QueryResult::DriftHistory { events } => {
+                    for event in events {
+                        println!("{}", serde_json::to_string_pretty(&event)?);
+                    }
+                }
+                QueryResult::Success { message } => println!("{}", message),
+                _ => {}
             }
         }
         Commands::Drift { data, table, key } => {
             let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let primary_key = parse_key_value(&key)?;
+            let pk_col = engine
+                .get_table_primary_key(&table)
+                .context("Failed to get primary key")?;
+            // Escape single quotes in the key value
+            let escaped = key.replace('\'', "''");
+            let sql = format!(
+                "SELECT * FROM {} FOR SYSTEM_TIME ALL WHERE {} = '{}'",
+                table, pk_col, escaped
+            );
 
-            let query = Query::ShowDrift { table, primary_key };
-
-            let result = engine
-                .execute_query(query)
+            let result = driftdb_core::sql_bridge::execute_sql(&mut engine, &sql)
                 .context("Failed to get drift history")?;
 
-            if let QueryResult::DriftHistory { events } = result {
-                for event in events {
-                    println!("{}", serde_json::to_string_pretty(&event)?);
+            match result {
+                QueryResult::DriftHistory { events } => {
+                    for event in events {
+                        println!("{}", serde_json::to_string_pretty(&event)?);
+                    }
                 }
+                QueryResult::Rows { data } => {
+                    for row in data {
+                        println!("{}", serde_json::to_string_pretty(&row)?);
+                    }
+                }
+                _ => {}
             }
         }
         Commands::Snapshot { data, table } => {
             let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let query = Query::Snapshot {
-                table: table.clone(),
-            };
-            let result = engine
-                .execute_query(query)
+            let sql = format!("CHECKPOINT TABLE {}", table);
+            let result = driftdb_core::sql_bridge::execute_sql(&mut engine, &sql)
                 .context("Failed to create snapshot")?;
 
             if let QueryResult::Success { message } = result {
@@ -296,11 +308,8 @@ fn main() -> Result<()> {
         Commands::Compact { data, table } => {
             let mut engine = Engine::open(&data).context("Failed to open database")?;
 
-            let query = Query::Compact {
-                table: table.clone(),
-            };
-            let result = engine
-                .execute_query(query)
+            let sql = format!("VACUUM {}", table);
+            let result = driftdb_core::sql_bridge::execute_sql(&mut engine, &sql)
                 .context("Failed to compact table")?;
 
             if let QueryResult::Success { message } = result {
@@ -421,51 +430,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn parse_where_clause(clause: &str) -> Result<Vec<driftdb_core::query::WhereCondition>> {
-    let mut conditions = Vec::new();
-
-    for part in clause.split(" AND ") {
-        if let Some((column, value)) = part.split_once('=') {
-            let column = column.trim().to_string();
-            let value_str = value.trim().trim_matches('"');
-            let value = if let Ok(num) = value_str.parse::<f64>() {
-                json!(num)
-            } else {
-                json!(value_str)
-            };
-
-            conditions.push(driftdb_core::query::WhereCondition {
-                column,
-                operator: "=".to_string(),
-                value,
-            });
-        }
+/// Convert a CLI `--as-of` string to a `FOR SYSTEM_TIME AS OF ...` temporal clause.
+///
+/// Accepted formats:
+/// - `@seq:N` → `FOR SYSTEM_TIME AS OF @SEQ:N`
+/// - `@now` → (omitted — queries latest data)
+/// - ISO8601 timestamp → `FOR SYSTEM_TIME AS OF 'timestamp'`
+fn parse_as_of_to_temporal(as_of: &str) -> Result<String> {
+    if as_of == "@now" {
+        // @now means latest — no temporal clause needed; caller should not append anything
+        return Ok(String::new());
     }
-
-    Ok(conditions)
-}
-
-fn parse_as_of(as_of: Option<&str>) -> Result<Option<driftdb_core::query::AsOf>> {
-    match as_of {
-        None => Ok(None),
-        Some("@now") => Ok(Some(driftdb_core::query::AsOf::Now)),
-        Some(s) if s.starts_with("@seq:") => {
-            let seq = s[5..].parse::<u64>().context("Invalid sequence number")?;
-            Ok(Some(driftdb_core::query::AsOf::Sequence(seq)))
-        }
-        Some(s) => {
-            let timestamp =
-                OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-                    .context("Invalid timestamp format")?;
-            Ok(Some(driftdb_core::query::AsOf::Timestamp(timestamp)))
-        }
+    if let Some(rest) = as_of.strip_prefix("@seq:") {
+        let seq: u64 = rest.parse().context("Invalid sequence number")?;
+        return Ok(format!("FOR SYSTEM_TIME AS OF @SEQ:{}", seq));
     }
-}
-
-fn parse_key_value(key: &str) -> Result<serde_json::Value> {
-    if let Ok(num) = key.parse::<f64>() {
-        Ok(json!(num))
-    } else {
-        Ok(json!(key))
-    }
+    // Assume ISO8601 timestamp
+    Ok(format!("FOR SYSTEM_TIME AS OF '{}'", as_of))
 }

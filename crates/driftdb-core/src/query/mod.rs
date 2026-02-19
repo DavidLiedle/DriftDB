@@ -1,6 +1,5 @@
 pub mod executor;
 pub mod optimizer;
-pub mod parser;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

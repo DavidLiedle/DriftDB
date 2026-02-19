@@ -19,14 +19,8 @@ User and administrator guides:
 - [CONFIGURATION.md](guides/CONFIGURATION.md) - Configuration reference
 - [IMPLEMENTATION_SUMMARY.md](guides/IMPLEMENTATION_SUMMARY.md) - Summary of key implementations
 
-### 📊 `/status/`
-Project status and tracking:
-- [CURRENT_STATUS.md](status/CURRENT_STATUS.md) - Current project status
-- [DEVELOPMENT_STATUS.md](status/DEVELOPMENT_STATUS.md) - Development progress tracking
-- [KNOWN_ISSUES.md](status/KNOWN_ISSUES.md) - Known issues and limitations
-- [TODOS.md](status/TODOS.md) - TODO list and future work
-- [HONEST_README.md](status/HONEST_README.md) - Honest assessment of project state
-- [SESSION_SUMMARY.md](status/SESSION_SUMMARY.md) - Development session summaries
+### 📊 Project Status
+- [STATUS.md](STATUS.md) - Current status, known issues, and working command reference
 
 ## Quick Links
 
@@ -36,8 +30,7 @@ Project status and tracking:
 - For administration, see [ADMIN_GUIDE.md](guides/ADMIN_GUIDE.md)
 
 ### Development
-- For current status, see [CURRENT_STATUS.md](status/CURRENT_STATUS.md)
-- For known issues, see [KNOWN_ISSUES.md](status/KNOWN_ISSUES.md)
+- For current status and known issues, see [STATUS.md](STATUS.md)
 - For architecture details, see [ARCHITECTURAL_REVIEW.md](architecture/ARCHITECTURAL_REVIEW.md)
 
 ### Contributing

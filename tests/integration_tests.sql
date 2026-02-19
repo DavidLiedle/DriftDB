@@ -102,8 +102,8 @@ SELECT
 FROM test_orders
 GROUP BY user_id;
 
--- Test 10: Time-travel queries (DriftDB specific)
-SELECT * FROM test_users AS OF @seq:1;
+-- Test 10: Time-travel queries (SQL:2011 FOR SYSTEM_TIME)
+SELECT * FROM test_users FOR SYSTEM_TIME AS OF @SEQ:1;
 
 -- Cleanup
 DROP TABLE test_orders;

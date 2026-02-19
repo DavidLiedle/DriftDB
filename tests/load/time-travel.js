@@ -2,8 +2,8 @@
  * DriftDB Load Test: Time-Travel Queries
  *
  * Tests DriftDB's unique time-travel query capabilities under load:
- * - AS OF @seq:N queries (sequence-based time travel)
- * - AS OF timestamp queries (timestamp-based time travel)
+ * - FOR SYSTEM_TIME AS OF @SEQ:N queries (sequence-based time travel)
+ * - FOR SYSTEM_TIME AS OF timestamp queries (timestamp-based time travel)
  * - Historical data reconstruction
  * - Snapshot performance
  *
@@ -102,7 +102,7 @@ export function setup() {
   for (let version = 2; version <= 5; version++) {
     for (let i = 1; i <= 100; i++) {
       const result = executeQuery(
-        'PATCH time_travel_test SET value = ?, version = ? WHERE id = ?',
+        'UPDATE time_travel_test SET value = ?, version = ? WHERE id = ?',
         [`version_${version}_${i}`, version, i]
       );
 
@@ -153,7 +153,7 @@ export default function (data) {
 
     const start = Date.now();
     const result = executeQuery(
-      `SELECT * FROM time_travel_test AS OF @seq:${targetSeq} WHERE id = ?`,
+      `SELECT * FROM time_travel_test FOR SYSTEM_TIME AS OF @SEQ:${targetSeq} WHERE id = ?`,
       [recordId]
     );
     const duration = Date.now() - start;
@@ -177,7 +177,7 @@ export default function (data) {
 
     const start = Date.now();
     const result = executeQuery(
-      `SELECT * FROM time_travel_test AS OF '${targetTs}' WHERE id = ?`,
+      `SELECT * FROM time_travel_test FOR SYSTEM_TIME AS OF '${targetTs}' WHERE id = ?`,
       [recordId]
     );
     const duration = Date.now() - start;
@@ -201,7 +201,7 @@ export default function (data) {
 
     const start = Date.now();
     const result = executeQuery(
-      `SELECT * FROM time_travel_test AS OF @seq:${targetSeq} ORDER BY id`
+      `SELECT * FROM time_travel_test FOR SYSTEM_TIME AS OF @SEQ:${targetSeq} ORDER BY id`
     );
     const duration = Date.now() - start;
 

@@ -83,10 +83,8 @@ DriftDB is an append-only database with time-travel capabilities, structured as 
 - Soft deletes preserve data for audit trails
 
 ### Time Travel Implementation
-Queries can specify `AS OF` clauses to query historical states:
-- `@seq:N`: Query as of sequence number N
-- ISO timestamp: Query as of specific time
-- Implemented by loading nearest snapshot + replaying events
+Queries can specify temporal clauses to query historical states.
+Implemented by loading nearest snapshot + replaying events.
 
 ### Safety Features
 - CRC32 verification on every frame
@@ -96,17 +94,25 @@ Queries can specify `AS OF` clauses to query historical states:
 
 ## SQL Query Language
 
-The CLI implements a SQL-like query language with custom extensions for interacting with DriftDB. The parser is in `crates/driftdb-core/src/query/parser.rs` and uses nom parser combinators to execute queries against the core engine.
+Both the CLI (`driftdb sql`) and the PostgreSQL-protocol server use the same SQL:2011 interface.
+The custom DSL (`PATCH`, `SOFT DELETE`, `AS OF @seq:N`) has been removed.
 
-**Note**: DriftDB uses custom temporal syntax (`AS OF @seq:N`, `AS OF "timestamp"`) rather than SQL:2011's standard `FOR SYSTEM_TIME` syntax. The query language is SQL-inspired but not fully SQL:2011 compliant.
+**Temporal syntax:**
+- `FOR SYSTEM_TIME AS OF 'timestamp'`  -- query as of a point in time
+- `FOR SYSTEM_TIME AS OF @SEQ:N`       -- DriftDB extension: query by sequence number
+- `FOR SYSTEM_TIME ALL`                -- full drift history (all events)
+
+**Maintenance operations (PostgreSQL convention):**
+- `VACUUM <table>`            -- compact a table (remove old event segments)
+- `CHECKPOINT TABLE <table>`  -- create a materialized snapshot
 
 Supported operations:
 - `CREATE TABLE` with primary key and indexes
 - `INSERT INTO` with JSON documents
-- `PATCH` for partial updates
-- `SOFT DELETE` for audit-preserving deletes
+- `UPDATE ... SET ... WHERE` for partial updates
+- `DELETE FROM ... WHERE` for audit-preserving soft deletes
 - `SELECT` with WHERE conditions and time travel
-- `SNAPSHOT` and `COMPACT` for maintenance
+- `VACUUM` and `CHECKPOINT TABLE` for maintenance
 
 ## Testing Approach
 

@@ -94,7 +94,7 @@ def test_sql_execution():
         # Test 6: Time-travel query (DriftDB specific)
         print("\n6. Testing time-travel query...")
         try:
-            cursor.execute("SELECT * FROM users AS OF @seq:1")
+            cursor.execute("SELECT * FROM users FOR SYSTEM_TIME AS OF @SEQ:1")
             historical = cursor.fetchall()
             print(f"✓ Historical query returned {len(historical)} records")
         except psycopg2.Error as e:

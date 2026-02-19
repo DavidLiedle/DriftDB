@@ -22,13 +22,13 @@ pub enum TimeTravel {
 }
 
 impl TimeTravel {
-    /// Convert to SQL AS OF clause
+    /// Convert to SQL:2011 FOR SYSTEM_TIME clause
     pub fn to_sql(&self) -> String {
         match self {
-            TimeTravel::Sequence(seq) => format!("AS OF @seq:{}", seq),
-            TimeTravel::Timestamp(ts) => format!("AS OF TIMESTAMP '{}'", ts),
+            TimeTravel::Sequence(seq) => format!("FOR SYSTEM_TIME AS OF @SEQ:{}", seq),
+            TimeTravel::Timestamp(ts) => format!("FOR SYSTEM_TIME AS OF '{}'", ts),
             TimeTravel::Between { start, end } => {
-                format!("FOR SYSTEM_TIME BETWEEN @seq:{} AND @seq:{}", start, end)
+                format!("FOR SYSTEM_TIME BETWEEN @SEQ:{} AND @SEQ:{}", start, end)
             }
             TimeTravel::All => "FOR SYSTEM_TIME ALL".to_string(),
         }
@@ -147,14 +147,17 @@ mod tests {
 
     #[test]
     fn test_time_travel_to_sql() {
-        assert_eq!(TimeTravel::Sequence(42).to_sql(), "AS OF @seq:42");
+        assert_eq!(
+            TimeTravel::Sequence(42).to_sql(),
+            "FOR SYSTEM_TIME AS OF @SEQ:42"
+        );
         assert_eq!(
             TimeTravel::Timestamp("2025-01-01T00:00:00Z".to_string()).to_sql(),
-            "AS OF TIMESTAMP '2025-01-01T00:00:00Z'"
+            "FOR SYSTEM_TIME AS OF '2025-01-01T00:00:00Z'"
         );
         assert_eq!(
             TimeTravel::Between { start: 10, end: 20 }.to_sql(),
-            "FOR SYSTEM_TIME BETWEEN @seq:10 AND @seq:20"
+            "FOR SYSTEM_TIME BETWEEN @SEQ:10 AND @SEQ:20"
         );
         assert_eq!(TimeTravel::All.to_sql(), "FOR SYSTEM_TIME ALL");
     }

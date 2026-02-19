@@ -67,7 +67,7 @@ def main():
     # Query state at sequence 1 (after first insert)
     print("\n8. State at sequence 1 (after first insert):")
     try:
-        cur.execute("SELECT * FROM history_test AS OF @seq:1")
+        cur.execute("SELECT * FROM history_test FOR SYSTEM_TIME AS OF @SEQ:1")
         for row in cur.fetchall():
             print(f"   {row}")
     except Exception as e:
@@ -76,7 +76,7 @@ def main():
     # Query state at sequence 3 (after all inserts)
     print("\n9. State at sequence 3 (after all inserts):")
     try:
-        cur.execute("SELECT * FROM history_test AS OF @seq:3")
+        cur.execute("SELECT * FROM history_test FOR SYSTEM_TIME AS OF @SEQ:3")
         for row in cur.fetchall():
             print(f"   {row}")
     except Exception as e:
@@ -85,7 +85,7 @@ def main():
     # Query state at sequence 5 (after updates)
     print("\n10. State at sequence 5 (after updates):")
     try:
-        cur.execute("SELECT * FROM history_test AS OF @seq:5")
+        cur.execute("SELECT * FROM history_test FOR SYSTEM_TIME AS OF @SEQ:5")
         for row in cur.fetchall():
             print(f"   {row}")
     except Exception as e:
@@ -94,7 +94,7 @@ def main():
     # Time travel with WHERE clause
     print("\n11. Time travel with WHERE clause (active records at seq 3):")
     try:
-        cur.execute("SELECT * FROM history_test WHERE status = 'active' AS OF @seq:3")
+        cur.execute("SELECT * FROM history_test FOR SYSTEM_TIME AS OF @SEQ:3 WHERE status = 'active'")
         for row in cur.fetchall():
             print(f"   {row}")
     except Exception as e:
@@ -103,7 +103,7 @@ def main():
     # Time travel with WHERE clause (inactive records at seq 5)
     print("\n12. Time travel with WHERE clause (inactive records at seq 5):")
     try:
-        cur.execute("SELECT * FROM history_test WHERE status = 'inactive' AS OF @seq:5")
+        cur.execute("SELECT * FROM history_test FOR SYSTEM_TIME AS OF @SEQ:5 WHERE status = 'inactive'")
         for row in cur.fetchall():
             print(f"   {row}")
     except Exception as e:

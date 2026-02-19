@@ -5,7 +5,7 @@
  * - 60% read operations (SELECT)
  * - 25% write operations (INSERT/UPDATE)
  * - 10% time-travel queries (audit/analytics)
- * - 5% delete operations (SOFT DELETE)
+ * - 5% delete operations (DELETE)
  * - Transactions for multi-step operations
  * - Variable think time between operations
  *
@@ -297,7 +297,7 @@ function executeWriteWorkload(data) {
 
       const start = Date.now();
       const result = executeQuery(
-        'PATCH users SET status = ?, updated_at = ? WHERE id = ?',
+        'UPDATE users SET status = ?, updated_at = ? WHERE id = ?',
         [newStatus, new Date().toISOString(), userId]
       );
       const duration = Date.now() - start;
@@ -329,7 +329,7 @@ function executeTimeTravelWorkload(data) {
 
     const start = Date.now();
     const result = executeQuery(
-      `SELECT * FROM users AS OF '${historicalDate.toISOString()}' WHERE id = ?`,
+      `SELECT * FROM users FOR SYSTEM_TIME AS OF '${historicalDate.toISOString()}' WHERE id = ?`,
       [userId]
     );
     const duration = Date.now() - start;
@@ -351,7 +351,7 @@ function executeDeleteWorkload(data) {
 
     const start = Date.now();
     const result = executeQuery(
-      'SOFT DELETE FROM users WHERE id = ?',
+      'DELETE FROM users WHERE id = ?',
       [userId]
     );
     const duration = Date.now() - start;

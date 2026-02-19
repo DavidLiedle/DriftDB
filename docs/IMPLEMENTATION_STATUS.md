@@ -184,12 +184,12 @@ This document provides an **accurate, verified** status of all DriftDB features 
 
 ### Time-Travel Queries (Unique Feature!)
 
-- ✅ **AS OF @seq:N** - Query historical state by sequence
+- ✅ **FOR SYSTEM_TIME AS OF @SEQ:N** - Query historical state by sequence
   ```sql
-  SELECT * FROM users AS OF @seq:1000
+  SELECT * FROM users FOR SYSTEM_TIME AS OF @SEQ:1000
   ```
 
-- ✅ **AS OF timestamp** - Query by timestamp (SQL:2011)
+- ✅ **FOR SYSTEM_TIME AS OF timestamp** - Query by timestamp (SQL:2011)
   ```sql
   SELECT * FROM users FOR SYSTEM_TIME AS OF '2024-01-15T10:00:00Z'
   ```

@@ -360,11 +360,8 @@ await client.execute(
   ['newemail@example.com', 1]
 );
 
-// Delete (soft delete preserves history)
-await client.execute('SOFT DELETE FROM users WHERE id = ?', [1]);
-
-// Query including deleted records
-const allUsers = await client.query('SELECT * FROM users INCLUDING DELETED');
+// Delete (history is preserved in the audit log)
+await client.execute('DELETE FROM users WHERE id = ?', [1]);
 ```
 
 ### Audit Log / Time Travel
