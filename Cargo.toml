@@ -3,7 +3,7 @@ members = ["crates/driftdb-core", "crates/driftdb-cli", "crates/driftdb-admin", 
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0-alpha"
+version = "0.11.0-alpha"
 authors = ["DriftDB Contributors"]
 edition = "2021"
 license = "MIT"

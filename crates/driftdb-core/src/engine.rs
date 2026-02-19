@@ -1,5 +1,7 @@
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
+
+const MAX_TABLES: usize = 1000;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -486,6 +488,12 @@ impl Engine {
                 name
             )));
         }
+        if self.tables.len() >= MAX_TABLES {
+            return Err(DriftError::Other(format!(
+                "Table limit reached (max {}). Drop unused tables first.",
+                MAX_TABLES
+            )));
+        }
 
         let mut columns = vec![ColumnDef {
             name: primary_key.to_string(),
@@ -536,6 +544,12 @@ impl Engine {
             return Err(DriftError::Other(format!(
                 "Table '{}' already exists",
                 name
+            )));
+        }
+        if self.tables.len() >= MAX_TABLES {
+            return Err(DriftError::Other(format!(
+                "Table limit reached (max {}). Drop unused tables first.",
+                MAX_TABLES
             )));
         }
 

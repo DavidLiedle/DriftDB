@@ -19,9 +19,12 @@ implemented or aspirational.
 - B-tree secondary indexes
 - Snapshot management with zstd compression
 - Basic ACID transactions with BEGIN/COMMIT/ROLLBACK
+- fsync on segment boundaries — data durability on crash
+- WAL path is configurable (defaults to `<data-dir>/wal.log`)
 
 ### SQL Interface (CLI + PostgreSQL server)
-- `CREATE TABLE t (pk=id, INDEX(col))` — table creation with indexes
+- Standard `CREATE TABLE users (id VARCHAR PRIMARY KEY, name VARCHAR)` syntax
+- `CREATE INDEX ON users (name)` — post-creation index building
 - `INSERT INTO t {"id": ..., "col": ...}` — JSON document insert
 - `SELECT` with WHERE, GROUP BY, ORDER BY, LIMIT, JOINs, subqueries, CTEs
 - `UPDATE ... SET ... WHERE` — partial updates
@@ -29,18 +32,22 @@ implemented or aspirational.
 - `VACUUM t` — compact old event segments
 - `CHECKPOINT TABLE t` — materialize a snapshot
 
-### Recently Added
+### Security
+- `--admin-token` / `DRIFTDB_ADMIN_TOKEN` — Bearer token auth on metrics, alerts, and performance HTTP endpoints
+- Health endpoints (`/health/live`, `/health/ready`) remain public
+
+### Recently Fixed
 - FOREIGN KEY, CHECK, UNIQUE, NOT NULL, DEFAULT constraints
 - Correlated subqueries, CASE WHEN expressions
 - Row-Level Security wiring (policy enforcement hooks)
 - Real disk-space health checks
+- Multiple `.unwrap()` panics on unexpected input — all 9 hot-path panics resolved
 
 ---
 
 ## What Doesn't Work ❌
 
 ### SQL Compatibility
-- Table creation uses `pk=id` syntax instead of standard `PRIMARY KEY (id)`
 - Temporal JOINs not supported
 - Views, triggers, stored procedures not implemented
 - Full-text search not implemented
@@ -60,14 +67,6 @@ implemented or aspirational.
 
 ## Known Issues
 
-### Critical (Data Safety)
-
-| # | Issue | Impact | Priority |
-|---|-------|--------|----------|
-| 1 | No fsync after WAL writes — recent commits may be lost on crash | HIGH | P0 |
-| 2 | `TransactionManager` hardcodes WAL path to `/tmp/wal` | HIGH | P0 |
-| 3 | Multiple `.unwrap()` panics on unexpected input | HIGH | P0 |
-
 ### Major
 
 | # | Issue | Impact |
@@ -81,7 +80,7 @@ implemented or aspirational.
 | # | Issue | Impact |
 |---|-------|--------|
 | 7 | All operations go through global RwLocks — poor concurrent write throughput | MEDIUM |
-| 8 | Unbounded in-memory caches — OOM risk under sustained load | MEDIUM |
+| 8 | Table/index/snapshot maps bounded at 1,000 tables — OOM risk above that limit | LOW |
 
 ### Operational
 
@@ -89,7 +88,6 @@ implemented or aspirational.
 |---|-------|--------|
 | 9 | Admin tool shows hardcoded values (e.g. always "1,234 QPS") | MEDIUM |
 | 10 | Schema migration rollbacks may corrupt data | MEDIUM |
-| 11 | No authentication on admin endpoints | HIGH |
 
 ---
 
@@ -102,9 +100,13 @@ cargo build --release
 # Initialize a database
 ./target/release/driftdb init test_data
 
-# Create a table
+# Create a table (standard SQL)
 ./target/release/driftdb sql --data test_data \
-  -e 'CREATE TABLE users (pk=id, INDEX(name, email))'
+  -e 'CREATE TABLE users (id VARCHAR PRIMARY KEY, name VARCHAR, email VARCHAR)'
+
+# Create an index
+./target/release/driftdb sql --data test_data \
+  -e 'CREATE INDEX ON users (name)'
 
 # Insert a row (JSON document)
 ./target/release/driftdb sql --data test_data \
@@ -131,6 +133,16 @@ cargo build --release
 
 # Start PostgreSQL-protocol server (port 5433)
 ./target/release/driftdb-server --data-path test_data
+
+# Start with admin endpoint authentication
+./target/release/driftdb-server --data-path test_data --admin-token mysecrettoken
+# or: DRIFTDB_ADMIN_TOKEN=mysecrettoken ./target/release/driftdb-server ...
+
+# Health check (always public)
+curl http://127.0.0.1:8080/health/live
+
+# Metrics (requires token if --admin-token set)
+curl -H "Authorization: Bearer mysecrettoken" http://127.0.0.1:8080/metrics
 ```
 
 ---

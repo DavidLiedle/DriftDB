@@ -227,6 +227,11 @@ struct Args {
     /// Alert resolution timeout in seconds
     #[arg(long, env = "DRIFTDB_ALERT_RESOLUTION_TIMEOUT", default_value = "300")]
     alert_resolution_timeout: u64,
+
+    /// Bearer token required for admin HTTP endpoints (metrics, alerts, performance).
+    /// Leave unset to allow unauthenticated access (development only).
+    #[arg(long, env = "DRIFTDB_ADMIN_TOKEN")]
+    admin_token: Option<String>,
 }
 
 #[tokio::main]
@@ -594,6 +599,7 @@ async fn main() -> Result<()> {
         let pool_opt_clone = pool_optimizer.clone();
         let alert_manager_clone = alert_manager.clone();
 
+        let admin_token_clone = args.admin_token.clone();
         tokio::spawn(async move {
             let result = start_http_server(
                 http_addr,
@@ -605,6 +611,7 @@ async fn main() -> Result<()> {
                 query_opt_clone,
                 pool_opt_clone,
                 alert_manager_clone,
+                admin_token_clone,
             )
             .await;
 
@@ -704,24 +711,24 @@ async fn start_http_server(
     query_optimizer: Option<Arc<QueryOptimizer>>,
     pool_optimizer: Option<Arc<ConnectionPoolOptimizer>>,
     alert_manager: Option<Arc<alerting::AlertManager>>,
+    admin_token: Option<String>,
 ) -> Result<()> {
     use axum::Router;
+    use axum::response::IntoResponse;
     use tower_http::trace::TraceLayer;
 
-    // Create health check router
+    // Create health check router (always unauthenticated)
     let health_state = health::HealthState::new(engine.clone(), session_manager.clone());
     let health_router = health::create_health_router(health_state);
 
-    // Create base router
-    let mut app = Router::new()
-        .merge(health_router)
-        .layer(TraceLayer::new_for_http());
+    // Build protected router (metrics, performance, alerts)
+    let mut protected = Router::new();
 
     // Add metrics router if enabled
     if enable_metrics {
         let metrics_state = metrics::MetricsState::new(engine, session_manager);
         let metrics_router = metrics::create_metrics_router(metrics_state);
-        app = app.merge(metrics_router);
+        protected = protected.merge(metrics_router);
     }
 
     // Add performance monitoring routes if enabled
@@ -732,16 +739,52 @@ async fn start_http_server(
             pool_optimizer,
         );
         let performance_router = performance_routes::create_performance_routes(performance_state);
-        app = app.merge(performance_router);
+        protected = protected.merge(performance_router);
         info!("Performance monitoring routes enabled");
     }
 
     // Add alerting routes if enabled
     if let Some(ref manager) = alert_manager {
         let alert_router = alert_routes::create_router(manager.clone());
-        app = app.merge(alert_router);
+        protected = protected.merge(alert_router);
         info!("Alerting routes enabled");
     }
+
+    // Apply Bearer token auth middleware to protected routes if token is configured
+    if let Some(token) = admin_token {
+        info!("Admin endpoints protected by Bearer token authentication");
+        protected = protected.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let token = token.clone();
+                async move {
+                    let authorized = req
+                        .headers()
+                        .get("Authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                        .map(|t| t == token.as_str())
+                        .unwrap_or(false);
+                    if authorized {
+                        next.run(req).await
+                    } else {
+                        (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            axum::Json(serde_json::json!({"error": "Unauthorized"})),
+                        )
+                            .into_response()
+                    }
+                }
+            },
+        ));
+    } else {
+        debug!("Admin endpoints have no authentication (set --admin-token for production)");
+    }
+
+    // Combine health (public) + protected routes
+    let app = Router::new()
+        .merge(health_router)
+        .merge(protected)
+        .layer(TraceLayer::new_for_http());
 
     // Start the server
     let listener = tokio::net::TcpListener::bind(addr).await?;

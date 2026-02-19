@@ -52,12 +52,16 @@ driftdb-cli
 ### 2. Create a Table
 
 ```sql
+-- Standard SQL (recommended)
 CREATE TABLE products (
     id TEXT PRIMARY KEY,
     name TEXT,
     price DECIMAL,
     created_at TIMESTAMP
 );
+
+-- Add an index after creation
+CREATE INDEX ON products (name);
 ```
 
 ### 3. Insert Some Data
@@ -129,13 +133,14 @@ UPDATE products SET price = price * 0.9 WHERE id = 'p4'; -- 10% discount
 COMMIT;
 ```
 
-##Creating Indexes
+## Creating Indexes
 
 Speed up your queries with indexes:
 
 ```sql
--- Create an index on price
-CREATE INDEX idx_price ON products(price);
+-- Create an index (with or without an explicit name)
+CREATE INDEX ON products (price);
+CREATE INDEX idx_price ON products (price);  -- named form
 
 -- Queries using price will now be faster
 SELECT * FROM products WHERE price > 50;

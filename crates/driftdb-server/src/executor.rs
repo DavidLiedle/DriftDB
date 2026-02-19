@@ -685,7 +685,7 @@ impl<'a> QueryExecutor<'a> {
             return Ok(Value::Number(n.into()));
         }
         if let Ok(f) = trimmed.parse::<f64>() {
-            return Ok(Value::Number(serde_json::Number::from_f64(f).unwrap()));
+            return Ok(serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null));
         }
 
         // Default to string without quotes
@@ -1529,7 +1529,7 @@ impl<'a> QueryExecutor<'a> {
             return Ok(None);
         }
 
-        let paren_pos = expr.find('(').unwrap();
+        let Some(paren_pos) = expr.find('(') else { return Ok(None); };
         let function_name = expr[..paren_pos].trim().to_uppercase();
         let argument = expr[paren_pos + 1..expr.len() - 1].trim();
 
@@ -2057,8 +2057,10 @@ impl<'a> QueryExecutor<'a> {
             return self.execute_legacy(sql).await;
         }
 
-        // Route DriftDB custom CREATE TABLE syntax (e.g., "CREATE TABLE users (pk = id)")
-        // to the dedicated handler before it falls through to sqlparser-rs
+        // Route CREATE INDEX and CREATE TABLE to dedicated handlers
+        if lower.starts_with("create index") {
+            return self.execute_create_index(sql).await;
+        }
         if lower.starts_with("create table") {
             return self.execute_create_table(sql).await;
         }
@@ -2174,7 +2176,8 @@ impl<'a> QueryExecutor<'a> {
         let select_clause = self.parse_select_clause(select_part)?;
 
         // Parse FROM clause (handles JOINs)
-        let from_pos = lower.find(" from ").unwrap() + 6;
+        // from_pos already validated via ok_or_else above
+        let from_pos = from_pos + 6;
         let remaining = &sql[from_pos..];
 
         // Find the end of the FROM clause
@@ -3166,11 +3169,74 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write()?;
+        use driftdb_core::schema::ColumnDef;
+        use sqlparser::ast::{ColumnOption, Statement, TableConstraint};
+        use sqlparser::dialect::GenericDialect;
+        use sqlparser::parser::Parser;
 
-        // Parse CREATE TABLE name (columns...)
+        // Try standard SQL parsing first; fall back to legacy pk=id syntax if it fails
+        let dialect = GenericDialect {};
+        if let Ok(mut ast) = Parser::parse_sql(&dialect, sql) {
+            if let Some(Statement::CreateTable(create)) = ast.pop() {
+                let table_name = create.name.to_string();
+
+                // Extract PRIMARY KEY: table-level constraint takes precedence
+                let mut primary_key = "id".to_string();
+                for constraint in &create.constraints {
+                    if let TableConstraint::PrimaryKey { columns, .. } = constraint {
+                        if let Some(col) = columns.first() {
+                            primary_key = col.value.clone();
+                            break;
+                        }
+                    }
+                }
+                // Column-level inline PRIMARY KEY (only if no table-level PK found yet)
+                if primary_key == "id" {
+                    'outer: for col in &create.columns {
+                        for opt in &col.options {
+                            if let ColumnOption::Unique { is_primary: true, .. } = opt.option {
+                                primary_key = col.name.value.clone();
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+
+                // Build engine ColumnDef list
+                let columns: Vec<ColumnDef> = create.columns.iter().map(|c| {
+                    let indexed = c.options.iter().any(|o| matches!(o.option, ColumnOption::Unique { .. }));
+                    ColumnDef {
+                        name: c.name.value.clone(),
+                        col_type: c.data_type.to_string(),
+                        index: indexed,
+                    }
+                }).collect();
+
+                let mut engine = self.engine_write()?;
+                engine
+                    .create_table_with_columns(&table_name, &primary_key, columns)
+                    .map_err(|e| anyhow!("Create table failed: {}", e))?;
+                drop(engine);
+
+                // Register FK constraints if REFERENCES keyword present in SQL
+                let lower = sql.to_lowercase();
+                if lower.contains("references") {
+                    if let (Some(open), Some(close)) = (sql.find('('), sql.rfind(')')) {
+                        self.register_fk_constraints(&table_name, &sql[open + 1..close]);
+                    }
+                }
+
+                info!("Table {} created (pk={})", table_name, primary_key);
+                return Ok(QueryResult::CreateTable);
+            }
+        }
+
+        // Legacy fallback: pk=id syntax (e.g. CREATE TABLE t (pk=id, INDEX(col)))
+        self.execute_create_table_legacy(sql).await
+    }
+
+    async fn execute_create_table_legacy(&self, sql: &str) -> Result<QueryResult> {
         let lower = sql.to_lowercase();
-
         if !lower.starts_with("create table") {
             return Err(anyhow!("Not a CREATE TABLE statement"));
         }
@@ -3183,8 +3249,7 @@ impl<'a> QueryExecutor<'a> {
         let table_name = after_create[..table_end].trim();
 
         // Extract the column definitions body (inside the outer parentheses)
-        let paren_open = after_create.find('(').unwrap();
-        // Find matching close paren
+        let paren_open = table_end;
         let col_body = {
             let s = &after_create[paren_open + 1..];
             let mut depth = 1usize;
@@ -3193,7 +3258,7 @@ impl<'a> QueryExecutor<'a> {
                 match ch {
                     '(' => depth += 1,
                     ')' => {
-                        depth -= 1;
+                        depth = depth.saturating_sub(1);
                         if depth == 0 {
                             end = i;
                             break;
@@ -3205,27 +3270,66 @@ impl<'a> QueryExecutor<'a> {
             &s[..end]
         };
 
-        // Parse column definitions and determine primary key
+        // Parse pk=id or PRIMARY KEY syntax
         let mut primary_key = "id".to_string();
         for part in col_body.split(',') {
-            let part_upper = part.trim().to_uppercase();
-            // Detect explicit PRIMARY KEY constraint: "col_name ... PRIMARY KEY"
-            if part_upper.contains("PRIMARY KEY") {
-                let col_name = part.split_whitespace().next().unwrap_or("id");
+            let trimmed = part.trim();
+            let trimmed_upper = trimmed.to_uppercase();
+            // Legacy: pk=col_name
+            if trimmed_upper.starts_with("PK=") || trimmed.to_lowercase().starts_with("pk=") {
+                let pk_val = trimmed.split_once('=').map(|x| x.1).unwrap_or("id").trim();
+                primary_key = pk_val.to_string();
+                break;
+            }
+            // Standard: col_name ... PRIMARY KEY
+            if trimmed_upper.contains("PRIMARY KEY") {
+                let col_name = trimmed.split_whitespace().next().unwrap_or("id");
                 primary_key = col_name.to_string();
                 break;
             }
         }
 
+        let mut engine = self.engine_write()?;
         engine
             .create_table(table_name, &primary_key, vec![])
             .map_err(|e| anyhow!("Create table failed: {}", e))?;
+        drop(engine);
 
         // Register FK constraints if present
         self.register_fk_constraints(table_name, col_body);
 
-        info!("Table {} created successfully", table_name);
+        info!("Table {} created (pk={}, legacy syntax)", table_name, primary_key);
         Ok(QueryResult::CreateTable)
+    }
+
+    async fn execute_create_index(&self, sql: &str) -> Result<QueryResult> {
+        // Handles: CREATE INDEX ON table_name (col1, col2)
+        //          CREATE INDEX idx_name ON table_name (col)
+        let lower = sql.to_lowercase();
+        let on_pos = lower
+            .find(" on ")
+            .ok_or_else(|| anyhow!("CREATE INDEX missing ON clause"))?;
+        let after_on = sql[on_pos + 4..].trim();
+        let paren_pos = after_on
+            .find('(')
+            .ok_or_else(|| anyhow!("CREATE INDEX missing column list"))?;
+        let table_name = after_on[..paren_pos].trim();
+        let cols_str = after_on[paren_pos + 1..]
+            .trim_end_matches([')', ';'])
+            .trim();
+
+        let mut engine = self.engine_write()?;
+        for col in cols_str.split(',') {
+            let col = col.trim();
+            if !col.is_empty() {
+                engine
+                    .create_index(table_name, col, None)
+                    .map_err(|e| anyhow!("CREATE INDEX failed: {}", e))?;
+            }
+        }
+
+        info!("Index created on {}", table_name);
+        Ok(QueryResult::CreateIndex)
     }
 
     async fn execute_show(&self, sql: &str) -> Result<QueryResult> {
@@ -3306,7 +3410,7 @@ impl<'a> QueryExecutor<'a> {
         }
 
         let stmt_name = parts[1];
-        let query_start = sql.find(" AS ").unwrap() + 4;
+        let query_start = sql.find(" AS ").ok_or_else(|| anyhow!("Invalid PREPARE syntax: missing AS"))? + 4;
         let query_sql = sql[query_start..].trim();
 
         // Parse the query and identify parameters ($1, $2, etc.)
@@ -3344,7 +3448,7 @@ impl<'a> QueryExecutor<'a> {
 
         // Extract parameters if present
         let params = if sql.contains('(') {
-            let param_start = sql.find('(').unwrap() + 1;
+            let param_start = sql.find('(').ok_or_else(|| anyhow!("Invalid EXECUTE syntax: missing '('"))? + 1;
             let param_end = sql
                 .rfind(')')
                 .ok_or_else(|| anyhow!("Missing closing parenthesis"))?;
@@ -4180,12 +4284,8 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Find ON clause
-        let on_pos = join_clause.to_lowercase().find(" on ");
-        if on_pos.is_none() {
-            return Err(anyhow!("Missing ON clause in JOIN"));
-        }
-
-        let on_pos = on_pos.unwrap();
+        let on_pos = join_clause.to_lowercase().find(" on ")
+            .ok_or_else(|| anyhow!("Missing ON clause in JOIN"))?;
         let table_part = join_clause[..on_pos].trim();
         let on_part = join_clause[on_pos + 4..].trim(); // Skip " on "
 
@@ -4998,7 +5098,8 @@ impl<'a> QueryExecutor<'a> {
                 if rows.len() != 1 || rows[0].is_empty() {
                     return Err(anyhow!("Scalar subquery must return exactly one value"));
                 }
-                Ok(rows.pop().unwrap().pop().unwrap())
+                let mut row = rows.pop().ok_or_else(|| anyhow!("Scalar subquery returned no rows"))?;
+                row.pop().ok_or_else(|| anyhow!("Scalar subquery returned empty row"))
             }
             _ => Err(anyhow!("Scalar subquery must return a result set")),
         }
@@ -6539,7 +6640,7 @@ impl<'a> QueryExecutor<'a> {
                 .find("to savepoint ")
                 .map(|p| p + 13)
                 .or_else(|| lower.find("to ").map(|p| p + 3))
-                .unwrap();
+                .ok_or_else(|| anyhow!("Invalid ROLLBACK TO SAVEPOINT syntax"))?;
 
             let savepoint_name = sql[savepoint_pos..].trim().trim_matches(';');
 
