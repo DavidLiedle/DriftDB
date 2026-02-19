@@ -244,13 +244,13 @@ impl QueryOptimizer {
     fn default_rewrite_rules() -> Vec<QueryRewriteRule> {
         vec![
             QueryRewriteRule {
-                pattern: r"SELECT \* FROM (\w+) WHERE (.+) LIMIT 1".to_string(),
+                pattern: "SELECT * FROM".to_string(),
                 replacement: "SELECT * FROM $1 WHERE $2 LIMIT 1 -- optimized for single row"
                     .to_string(),
                 description: "Single row optimization".to_string(),
             },
             QueryRewriteRule {
-                pattern: r"SELECT COUNT\(\*\) FROM (\w+)".to_string(),
+                pattern: "SELECT COUNT(*)".to_string(),
                 replacement: "SELECT COUNT(*) FROM $1 -- consider index optimization".to_string(),
                 description: "Count optimization hint".to_string(),
             },

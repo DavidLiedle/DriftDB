@@ -648,7 +648,9 @@ impl AlertManager {
 
         for txn_type in &txn_types {
             for status in &all_statuses {
-                let value = TRANSACTION_TOTAL.with_label_values(&[txn_type, status]).get();
+                let value = TRANSACTION_TOTAL
+                    .with_label_values(&[txn_type, status])
+                    .get();
                 total += value;
                 if abort_statuses.contains(status) {
                     aborted += value;

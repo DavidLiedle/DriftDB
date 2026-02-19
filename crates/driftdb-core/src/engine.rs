@@ -833,7 +833,13 @@ impl Engine {
             let txn_guard = txn.lock();
 
             // Check write set first (read-your-writes)
+            // Keys in write_set are stored as JSON-serialized primary keys (e.g., "\"post1\""),
+            // so also try the JSON-quoted form if the plain key doesn't match.
             if let Some(event) = txn_guard.write_set.get(key) {
+                return Ok(Some(event.payload.clone()));
+            }
+            let json_key = serde_json::Value::String(key.to_string()).to_string();
+            if let Some(event) = txn_guard.write_set.get(&json_key) {
                 return Ok(Some(event.payload.clone()));
             }
 

@@ -220,26 +220,42 @@ impl Stemmer {
         let word = word.to_lowercase();
 
         // Remove common suffixes
-        if word.ends_with("ing") && word.len() > 6 {
-            return word[..word.len() - 3].to_string();
+        if word.ends_with("ing") && word.len() > 4 {
+            let stem = &word[..word.len() - 3];
+            // Handle doubled consonant (e.g., "running" -> "runn" -> "run")
+            let bytes = stem.as_bytes();
+            if bytes.len() >= 2 && bytes[bytes.len() - 1] == bytes[bytes.len() - 2] {
+                return stem[..stem.len() - 1].to_string();
+            }
+            return stem.to_string();
         }
-        if word.ends_with("ed") && word.len() > 5 {
-            return word[..word.len() - 2].to_string();
+        if word.ends_with("ed") && word.len() > 4 {
+            let stem = &word[..word.len() - 2];
+            let bytes = stem.as_bytes();
+            if bytes.len() >= 2 && bytes[bytes.len() - 1] == bytes[bytes.len() - 2] {
+                return stem[..stem.len() - 1].to_string();
+            }
+            return stem.to_string();
         }
-        if word.ends_with("er") && word.len() > 5 {
-            return word[..word.len() - 2].to_string();
+        if word.ends_with("er") && word.len() > 4 {
+            let stem = &word[..word.len() - 2];
+            let bytes = stem.as_bytes();
+            if bytes.len() >= 2 && bytes[bytes.len() - 1] == bytes[bytes.len() - 2] {
+                return stem[..stem.len() - 1].to_string();
+            }
+            return stem.to_string();
         }
-        if word.ends_with("est") && word.len() > 6 {
+        if word.ends_with("est") && word.len() > 5 {
             return word[..word.len() - 3].to_string();
         }
         if word.ends_with("ly") && word.len() > 5 {
             return word[..word.len() - 2].to_string();
         }
-        if word.ends_with("tion") && word.len() > 7 {
-            return word[..word.len() - 4].to_string();
+        if word.ends_with("tion") && word.len() > 6 {
+            return word[..word.len() - 3].to_string();
         }
-        if word.ends_with("sion") && word.len() > 7 {
-            return word[..word.len() - 4].to_string();
+        if word.ends_with("sion") && word.len() > 6 {
+            return word[..word.len() - 3].to_string();
         }
 
         word

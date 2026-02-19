@@ -632,6 +632,7 @@ pub struct ClusterStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_consistent_hash_ring() {
@@ -654,9 +655,10 @@ mod tests {
 
     #[test]
     fn test_consistency_level_calculation() {
+        let temp_dir = TempDir::new().unwrap();
         let coordinator = QueryCoordinator::new(
             ClusterConfig::default(),
-            Arc::new(Engine::open("/tmp/test").unwrap()),
+            Arc::new(Engine::open(temp_dir.path()).unwrap()),
         );
 
         assert_eq!(

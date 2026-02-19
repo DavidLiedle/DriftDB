@@ -246,7 +246,7 @@ impl MVCCManager {
     }
 
     /// Read a record with MVCC
-        pub fn read(&self, txn: &MVCCTransaction, record_id: RecordId) -> Result<Option<Value>> {
+    pub fn read(&self, txn: &MVCCTransaction, record_id: RecordId) -> Result<Option<Value>> {
         // Enforce transaction timeout
         self.enforce_timeout(txn)?;
 
@@ -269,7 +269,7 @@ impl MVCCManager {
     }
 
     /// Write a record with MVCC
-        pub fn write(&self, txn: &MVCCTransaction, record_id: RecordId, data: Value) -> Result<()> {
+    pub fn write(&self, txn: &MVCCTransaction, record_id: RecordId, data: Value) -> Result<()> {
         // Enforce transaction timeout
         self.enforce_timeout(txn)?;
 
@@ -311,7 +311,7 @@ impl MVCCManager {
     }
 
     /// Delete a record with MVCC
-        pub fn delete(&self, txn: &MVCCTransaction, record_id: RecordId) -> Result<()> {
+    pub fn delete(&self, txn: &MVCCTransaction, record_id: RecordId) -> Result<()> {
         // Enforce transaction timeout
         self.enforce_timeout(txn)?;
 
@@ -334,7 +334,7 @@ impl MVCCManager {
     }
 
     /// Commit a transaction
-        pub fn commit(&self, txn: Arc<MVCCTransaction>) -> Result<()> {
+    pub fn commit(&self, txn: Arc<MVCCTransaction>) -> Result<()> {
         // Enforce transaction timeout
         self.enforce_timeout(&txn)?;
 
@@ -692,11 +692,7 @@ impl MVCCManager {
         }
 
         // Update timestamps to be after the imported data
-        let max_timestamp = versions
-            .values()
-            .map(|v| v.timestamp)
-            .max()
-            .unwrap_or(0);
+        let max_timestamp = versions.values().map(|v| v.timestamp).max().unwrap_or(0);
         let max_txn_id = versions.values().map(|v| v.txn_id).max().unwrap_or(0);
 
         self.current_timestamp
@@ -790,7 +786,8 @@ impl MVCCManager {
     /// Check if a transaction has exceeded its timeout
     pub fn check_transaction_timeout(&self, txn: &MVCCTransaction) -> bool {
         let elapsed = txn.start_time.elapsed();
-        let max_duration = std::time::Duration::from_millis(self.config.max_transaction_duration_ms);
+        let max_duration =
+            std::time::Duration::from_millis(self.config.max_transaction_duration_ms);
         elapsed > max_duration
     }
 
@@ -1477,12 +1474,8 @@ mod tests {
         let txn1 = mvcc
             .begin_transaction(IsolationLevel::ReadCommitted)
             .unwrap();
-        mvcc.write(
-            &txn1,
-            record_id.clone(),
-            Value::String("value".to_string()),
-        )
-        .unwrap();
+        mvcc.write(&txn1, record_id.clone(), Value::String("value".to_string()))
+            .unwrap();
         mvcc.commit(txn1).unwrap();
 
         // Delete the record
@@ -1788,12 +1781,8 @@ mod tests {
             let txn = mvcc
                 .begin_transaction(IsolationLevel::ReadCommitted)
                 .unwrap();
-            mvcc.write(
-                &txn,
-                record_id,
-                Value::Number(serde_json::Number::from(i)),
-            )
-            .unwrap();
+            mvcc.write(&txn, record_id, Value::Number(serde_json::Number::from(i)))
+                .unwrap();
             mvcc.commit(txn).unwrap();
         }
 

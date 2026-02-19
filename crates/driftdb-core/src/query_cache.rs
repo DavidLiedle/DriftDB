@@ -773,18 +773,18 @@ mod tests {
         let result = QueryResult {
             rows: vec![],
             row_count: 0,
-            execution_time_ms: 100,
+            execution_time_ms: 150,
             cached: false,
         };
 
-        // Cache a query
+        // Cache a query (execution_time_ms > 100 needed for adaptive caching)
         manager
             .put(
                 "SELECT COUNT(*) FROM orders",
                 &[],
                 None,
                 result,
-                100,
+                150,
                 vec!["orders".to_string()],
             )
             .unwrap();

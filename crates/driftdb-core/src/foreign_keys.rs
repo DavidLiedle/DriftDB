@@ -521,10 +521,13 @@ impl ForeignKeyManager {
         visited.insert(start.to_string());
         path.push(start.to_string());
 
+        // Follow dependency edges (child_to_parents) to detect cycles:
+        // If we can reach the child_table from the parent_table by following
+        // existing dependencies, adding the new edge would create a cycle.
         let index = self.reference_index.read();
-        if let Some(children) = index.parent_to_children.get(start) {
-            for child in children {
-                if self.detect_cycle_dfs(child, target, visited, path)? {
+        if let Some(parents) = index.child_to_parents.get(start) {
+            for parent in parents {
+                if self.detect_cycle_dfs(parent, target, visited, path)? {
                     return Ok(true);
                 }
             }
@@ -853,7 +856,8 @@ impl ForeignKeyManager {
             }
         }
 
-        sorted.reverse();
+        // No reverse needed: DFS naturally pushes dependencies (parents) before
+        // dependents (children), giving correct creation order.
         Ok(sorted)
     }
 

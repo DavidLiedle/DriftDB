@@ -323,7 +323,11 @@ fn parse_pit_timestamp(timestamp_str: &str) -> Result<DateTime<Utc>> {
 }
 
 /// Apply PITR to a single table
-fn apply_pitr_to_table(db_path: &Path, table_name: &str, target_time: DateTime<Utc>) -> Result<u64> {
+fn apply_pitr_to_table(
+    db_path: &Path,
+    table_name: &str,
+    target_time: DateTime<Utc>,
+) -> Result<u64> {
     // Open the table storage
     let table_storage = TableStorage::open(db_path, table_name, None)
         .with_context(|| format!("Failed to open table '{}' for PITR", table_name))?;
@@ -433,9 +437,7 @@ fn truncate_table_to_sequence(
     let meta_path = table_path.join("meta.json");
     if meta_path.exists() {
         let meta_json = fs::read_to_string(&meta_path)?;
-        if let Ok(mut meta) =
-            serde_json::from_str::<driftdb_core::storage::TableMeta>(&meta_json)
-        {
+        if let Ok(mut meta) = serde_json::from_str::<driftdb_core::storage::TableMeta>(&meta_json) {
             meta.last_sequence = target_sequence;
             let updated_json = serde_json::to_string_pretty(&meta)?;
             fs::write(&meta_path, updated_json)?;
@@ -451,10 +453,7 @@ fn cleanup_snapshots_after_sequence(
     table_name: &str,
     target_sequence: u64,
 ) -> Result<()> {
-    let snapshots_dir = db_path
-        .join("tables")
-        .join(table_name)
-        .join("snapshots");
+    let snapshots_dir = db_path.join("tables").join(table_name).join("snapshots");
 
     if !snapshots_dir.exists() {
         return Ok(());

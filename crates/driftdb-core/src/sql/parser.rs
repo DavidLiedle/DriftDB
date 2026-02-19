@@ -111,11 +111,18 @@ impl TemporalSqlParser {
     fn parse_as_of(&self, clause: &str) -> Result<SystemTimeClause> {
         let upper = clause.to_uppercase();
 
-        if upper.contains("CURRENT_TIMESTAMP") {
+        // Extract the value after "AS OF"
+        let value_part = if let Some(pos) = upper.find("AS OF") {
+            clause[pos + 5..].trim()
+        } else {
+            clause.trim()
+        };
+
+        if value_part.to_uppercase() == "CURRENT_TIMESTAMP" {
             Ok(SystemTimeClause::AsOf(TemporalPoint::CurrentTimestamp))
-        } else if upper.contains("@SEQ:") {
+        } else if value_part.to_uppercase().starts_with("@SEQ:") {
             // DriftDB extension: sequence numbers
-            let seq_str = clause
+            let seq_str = value_part
                 .split("@SEQ:")
                 .nth(1)
                 .and_then(|s| s.split_whitespace().next())
@@ -127,8 +134,8 @@ impl TemporalSqlParser {
 
             Ok(SystemTimeClause::AsOf(TemporalPoint::Sequence(sequence)))
         } else {
-            // Parse timestamp
-            let timestamp = self.extract_timestamp(clause)?;
+            // Parse timestamp from the extracted value
+            let timestamp = self.extract_timestamp(value_part)?;
             Ok(SystemTimeClause::AsOf(TemporalPoint::Timestamp(timestamp)))
         }
     }

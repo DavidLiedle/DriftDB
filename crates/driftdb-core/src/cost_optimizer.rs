@@ -900,7 +900,9 @@ impl CostOptimizer {
     /// Extract table name from a potentially qualified column name
     /// "users.id" -> Some("users"), "id" -> None
     fn extract_table_from_column(&self, column: &str) -> Option<String> {
-        column.find('.').map(|dot_pos| column[..dot_pos].to_string())
+        column
+            .find('.')
+            .map(|dot_pos| column[..dot_pos].to_string())
     }
 
     /// Estimate join selectivity

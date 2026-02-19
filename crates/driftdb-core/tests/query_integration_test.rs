@@ -164,8 +164,9 @@ fn test_time_travel_queries() {
         })
         .unwrap();
 
-    // Capture sequence number
-    let snapshot1_seq = 2; // After create table and first insert
+    // Capture sequence number (create_table doesn't generate a storage event,
+    // so the insert is seq 1)
+    let snapshot1_seq = 1; // After first insert
 
     // Update the product
     engine
@@ -275,11 +276,12 @@ fn test_soft_delete() {
     }
 
     // Historical query should still see the item
+    // (create_table doesn't generate a storage event, so insert is seq 1, delete is seq 2)
     let historical_result = engine
         .execute_query(Query::Select {
             table: "items".to_string(),
             conditions: vec![],
-            as_of: Some(driftdb_core::query::AsOf::Sequence(2)), // Before delete
+            as_of: Some(driftdb_core::query::AsOf::Sequence(1)), // After insert, before delete
             limit: None,
         })
         .unwrap();

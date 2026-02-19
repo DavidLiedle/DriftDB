@@ -775,10 +775,7 @@ mod tests {
         let ciphertext = service.encrypt(plaintext, "rotation_test").unwrap();
 
         // Rotate the key
-        service
-            .key_manager
-            .rotate_key("rotation_test")
-            .unwrap();
+        service.key_manager.rotate_key("rotation_test").unwrap();
 
         // Note: In a real system, old ciphertext would need to be re-encrypted
         // or we'd need to maintain old keys for decryption.
@@ -1014,7 +1011,12 @@ mod tests {
         for context in contexts {
             let ciphertext = service.encrypt(plaintext, context).unwrap();
             let decrypted = service.decrypt(&ciphertext, context).unwrap();
-            assert_eq!(plaintext.to_vec(), decrypted, "Failed for context: {}", context);
+            assert_eq!(
+                plaintext.to_vec(),
+                decrypted,
+                "Failed for context: {}",
+                context
+            );
         }
     }
 
@@ -1050,10 +1052,7 @@ mod tests {
         let decrypted = service.decrypt(&ciphertext, "unicode_test").unwrap();
 
         assert_eq!(plaintext.to_vec(), decrypted);
-        assert_eq!(
-            String::from_utf8(decrypted).unwrap(),
-            "Hello 世界 🌍 مرحبا"
-        );
+        assert_eq!(String::from_utf8(decrypted).unwrap(), "Hello 世界 🌍 مرحبا");
     }
 
     #[test]

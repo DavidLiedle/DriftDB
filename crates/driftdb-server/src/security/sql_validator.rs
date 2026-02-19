@@ -102,6 +102,7 @@ impl SqlValidator {
             "\"; #",
             " OR 1=1--",
             " OR '1'='1'--",
+            "' --",
         ];
 
         for pattern in patterns {
@@ -130,7 +131,6 @@ impl SqlValidator {
             "; DELETE ",
             "; INSERT ",
             "; UPDATE ",
-            "; CREATE ",
             "; ALTER ",
             "; EXEC",
             "; TRUNCATE",
@@ -140,6 +140,11 @@ impl SqlValidator {
             if sql.contains(pattern) {
                 return true;
             }
+        }
+
+        // Check for "; CREATE " but allow safe DDL like "; CREATE INDEX"
+        if sql.contains("; CREATE ") && !sql.contains("; CREATE INDEX") {
+            return true;
         }
 
         // Also check for quotes followed by semicolon and dangerous commands
@@ -217,6 +222,15 @@ impl SqlValidator {
 
     /// Detect tautology-based injection (always true conditions)
     fn detect_tautology_injection(&self, sql: &str) -> bool {
+        // Detect injection payloads that start with a quote to break out of a string
+        // e.g., "' OR '1'='1" or "' OR 1=1"
+        let trimmed = sql.trim();
+        if (trimmed.starts_with('\'') || trimmed.starts_with('"'))
+            && trimmed.to_uppercase().contains(" OR ")
+        {
+            return true;
+        }
+
         // Common tautology patterns
         let patterns = [
             " OR 1=1",

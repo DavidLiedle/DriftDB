@@ -744,7 +744,12 @@ mod tests {
 
     #[test]
     fn test_user_creation_md5() {
-        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::MD5,
+        );
 
         assert_eq!(user.username, "testuser");
         assert_eq!(user.auth_method, AuthMethod::MD5);
@@ -794,7 +799,12 @@ mod tests {
 
     #[test]
     fn test_user_verify_password_md5_direct() {
-        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::MD5,
+        );
         // Direct password verification (no challenge)
         assert!(user.verify_password("password123", None));
         assert!(!user.verify_password("wrongpassword", None));
@@ -802,7 +812,12 @@ mod tests {
 
     #[test]
     fn test_user_verify_password_md5_with_challenge() {
-        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::MD5,
+        );
         let salt: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
 
         let response = md5_auth("password123", "testuser", &salt);
@@ -828,13 +843,23 @@ mod tests {
 
     #[test]
     fn test_user_not_locked_by_default() {
-        let user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::MD5,
+        );
         assert!(!user.is_locked());
     }
 
     #[test]
     fn test_user_locked_until_future() {
-        let mut user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let mut user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::MD5,
+        );
 
         // Lock user until future time
         let future_time = SystemTime::now()
@@ -849,7 +874,12 @@ mod tests {
 
     #[test]
     fn test_user_unlocked_after_expiry() {
-        let mut user = User::new("testuser".to_string(), "password123", false, AuthMethod::MD5);
+        let mut user = User::new(
+            "testuser".to_string(),
+            "password123",
+            false,
+            AuthMethod::MD5,
+        );
 
         // Lock user until past time
         let past_time = SystemTime::now()

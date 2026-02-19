@@ -625,7 +625,10 @@ mod tests {
         assert_eq!(RlsManager::escape_sql_string("O'Brien"), "O''Brien");
         assert_eq!(RlsManager::escape_sql_string("'test'"), "''test''");
         assert_eq!(RlsManager::escape_sql_string("''"), "''''");
-        assert_eq!(RlsManager::escape_sql_string("'; DROP TABLE --"), "''; DROP TABLE --");
+        assert_eq!(
+            RlsManager::escape_sql_string("'; DROP TABLE --"),
+            "''; DROP TABLE --"
+        );
     }
 
     #[test]
@@ -757,7 +760,9 @@ mod tests {
 
         let mut context =
             SecurityContext::new("alice".to_string(), vec!["employee".to_string()], false);
-        context.variables.insert("department".to_string(), "engineering".to_string());
+        context
+            .variables
+            .insert("department".to_string(), "engineering".to_string());
 
         let result = manager.check_access("documents", PolicyAction::Select, &context);
         assert!(result.is_ok());
@@ -911,10 +916,9 @@ mod tests {
 
         let mut context = SecurityContext::new("user".to_string(), vec!["user".to_string()], false);
         // Inject through variable with quotes to try to break out of string
-        context.variables.insert(
-            "tenant".to_string(),
-            "1'; DELETE FROM data; --".to_string(),
-        );
+        context
+            .variables
+            .insert("tenant".to_string(), "1'; DELETE FROM data; --".to_string());
 
         let result = manager.check_access("data", PolicyAction::Select, &context);
         assert!(result.is_ok());
@@ -965,7 +969,9 @@ mod tests {
         };
 
         // Drop the policy
-        manager.drop_policy("cached_table", "initial_policy").unwrap();
+        manager
+            .drop_policy("cached_table", "initial_policy")
+            .unwrap();
 
         // Create a different policy
         let new_policy = Policy::new(
@@ -979,8 +985,11 @@ mod tests {
         manager.create_policy(new_policy).unwrap();
 
         // Access again - should get new policy, not cached old one
-        let mut context2 = SecurityContext::new("alice".to_string(), vec!["user".to_string()], false);
-        context2.variables.insert("dept".to_string(), "engineering".to_string());
+        let mut context2 =
+            SecurityContext::new("alice".to_string(), vec!["user".to_string()], false);
+        context2
+            .variables
+            .insert("dept".to_string(), "engineering".to_string());
 
         let result2 = manager.check_access("cached_table", PolicyAction::Select, &context2);
         assert!(result2.is_ok());
@@ -1061,11 +1070,7 @@ mod tests {
         for roles in roles_to_test {
             let context = SecurityContext::new("testuser".to_string(), roles.clone(), false);
             let result = manager.check_access("public_table", PolicyAction::Select, &context);
-            assert!(
-                result.is_ok(),
-                "Policy should apply to roles: {:?}",
-                roles
-            );
+            assert!(result.is_ok(), "Policy should apply to roles: {:?}", roles);
             assert!(
                 matches!(result.unwrap(), PolicyResult::Filter(_)),
                 "Should get filter for roles: {:?}",
@@ -1118,9 +1123,14 @@ mod tests {
         manager.create_policy(restrictive2).unwrap();
         manager.create_policy(restrictive3).unwrap();
 
-        let mut context = SecurityContext::new("agent".to_string(), vec!["analyst".to_string()], false);
-        context.variables.insert("user_clearance".to_string(), "3".to_string());
-        context.variables.insert("user_dept".to_string(), "intel".to_string());
+        let mut context =
+            SecurityContext::new("agent".to_string(), vec!["analyst".to_string()], false);
+        context
+            .variables
+            .insert("user_clearance".to_string(), "3".to_string());
+        context
+            .variables
+            .insert("user_dept".to_string(), "intel".to_string());
 
         let result = manager.check_access("sensitive_data", PolicyAction::Select, &context);
         assert!(result.is_ok());

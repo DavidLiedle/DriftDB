@@ -618,14 +618,22 @@ impl WindowExecutor {
     /// Sum values in frame rows
     fn sum_values(&self, rows: &[(usize, Value)], frame_indices: &[usize], column: &str) -> Value {
         let mut sum = 0.0;
+        let mut all_integers = true;
         for &idx in frame_indices {
             if let Some(val) = rows[idx].1.get(column) {
-                if let Some(num) = val.as_f64() {
+                if let Some(num) = val.as_i64() {
+                    sum += num as f64;
+                } else if let Some(num) = val.as_f64() {
                     sum += num;
+                    all_integers = false;
                 }
             }
         }
-        Value::Number(Number::from_f64(sum).unwrap_or(Number::from(0)))
+        if all_integers {
+            Value::Number(Number::from(sum as i64))
+        } else {
+            Value::Number(Number::from_f64(sum).unwrap_or(Number::from(0)))
+        }
     }
 
     /// Average values in frame rows

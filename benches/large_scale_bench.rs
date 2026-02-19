@@ -89,26 +89,21 @@ fn bench_large_scale_select(c: &mut Criterion) {
             );
             sql_bridge::execute_sql(&mut engine, &sql).ok();
         }
-        println!(
-            "Setup {} rows in {:?}",
-            num_rows,
-            setup_start.elapsed()
-        );
+        println!("Setup {} rows in {:?}", num_rows, setup_start.elapsed());
 
         let engine = Arc::new(Mutex::new(engine));
 
         // Benchmark full table scan
         let engine_clone = engine.clone();
-        group.bench_with_input(
-            BenchmarkId::new("full_scan", num_rows),
-            num_rows,
-            |b, _| {
-                b.iter(|| {
-                    let mut eng = engine_clone.lock().unwrap();
-                    black_box(sql_bridge::execute_sql(&mut eng, "SELECT COUNT(*) FROM large_select"))
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("full_scan", num_rows), num_rows, |b, _| {
+            b.iter(|| {
+                let mut eng = engine_clone.lock().unwrap();
+                black_box(sql_bridge::execute_sql(
+                    &mut eng,
+                    "SELECT COUNT(*) FROM large_select",
+                ))
+            });
+        });
 
         // Benchmark filtered query (10% of data)
         let engine_clone = engine.clone();
@@ -186,10 +181,7 @@ fn bench_large_scale_time_travel(c: &mut Criterion) {
             let id = i % 10000; // 10K unique rows with many updates
             if i < 10000 {
                 // Initial inserts
-                let sql = format!(
-                    "INSERT INTO large_tt VALUES ({}, 'value_{}', 1)",
-                    id, i
-                );
+                let sql = format!("INSERT INTO large_tt VALUES ({}, 'value_{}', 1)", id, i);
                 sql_bridge::execute_sql(&mut engine, &sql).ok();
             } else {
                 // Updates to create version history
@@ -202,11 +194,7 @@ fn bench_large_scale_time_travel(c: &mut Criterion) {
                 sql_bridge::execute_sql(&mut engine, &sql).ok();
             }
         }
-        println!(
-            "Setup {} events in {:?}",
-            num_events,
-            setup_start.elapsed()
-        );
+        println!("Setup {} events in {:?}", num_events, setup_start.elapsed());
 
         // Create snapshot midway for comparison
         let _snapshot_result = engine.create_snapshot("large_tt");
@@ -220,10 +208,7 @@ fn bench_large_scale_time_travel(c: &mut Criterion) {
                     let target_seq = (num_events * 99) / 100;
                     black_box(sql_bridge::execute_sql(
                         &mut engine,
-                        &format!(
-                            "SELECT * FROM large_tt AS OF @seq:{} LIMIT 100",
-                            target_seq
-                        ),
+                        &format!("SELECT * FROM large_tt AS OF @seq:{} LIMIT 100", target_seq),
                     ))
                 });
             },
@@ -238,10 +223,7 @@ fn bench_large_scale_time_travel(c: &mut Criterion) {
                     let target_seq = num_events / 2;
                     black_box(sql_bridge::execute_sql(
                         &mut engine,
-                        &format!(
-                            "SELECT * FROM large_tt AS OF @seq:{} LIMIT 100",
-                            target_seq
-                        ),
+                        &format!("SELECT * FROM large_tt AS OF @seq:{} LIMIT 100", target_seq),
                     ))
                 });
             },
@@ -256,10 +238,7 @@ fn bench_large_scale_time_travel(c: &mut Criterion) {
                     let target_seq = num_events / 10;
                     black_box(sql_bridge::execute_sql(
                         &mut engine,
-                        &format!(
-                            "SELECT * FROM large_tt AS OF @seq:{} LIMIT 100",
-                            target_seq
-                        ),
+                        &format!("SELECT * FROM large_tt AS OF @seq:{} LIMIT 100", target_seq),
                     ))
                 });
             },
@@ -328,10 +307,7 @@ fn bench_concurrent_stress(c: &mut Criterion) {
                                     black_box(
                                         sql_bridge::execute_sql(
                                             &mut eng,
-                                            &format!(
-                                                "SELECT * FROM stress_test WHERE id = {}",
-                                                id
-                                            ),
+                                            &format!("SELECT * FROM stress_test WHERE id = {}", id),
                                         )
                                         .ok(),
                                     );
@@ -563,7 +539,10 @@ fn bench_large_scale_index(c: &mut Criterion) {
                     let mut eng = engine_clone.lock().unwrap();
                     black_box(sql_bridge::execute_sql(
                         &mut eng,
-                        &format!("SELECT * FROM idx_large WHERE indexed_col = {} LIMIT 100", target),
+                        &format!(
+                            "SELECT * FROM idx_large WHERE indexed_col = {} LIMIT 100",
+                            target
+                        ),
                     ))
                 });
             },
@@ -587,7 +566,10 @@ fn bench_large_scale_index(c: &mut Criterion) {
                     let mut eng = engine_clone.lock().unwrap();
                     black_box(sql_bridge::execute_sql(
                         &mut eng,
-                        &format!("SELECT * FROM idx_large WHERE indexed_col = {} LIMIT 100", target),
+                        &format!(
+                            "SELECT * FROM idx_large WHERE indexed_col = {} LIMIT 100",
+                            target
+                        ),
                     ))
                 });
             },

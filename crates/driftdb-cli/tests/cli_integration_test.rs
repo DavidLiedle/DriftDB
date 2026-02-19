@@ -92,7 +92,9 @@ fn test_ingest_jsonl() {
         .arg("-d")
         .arg(db.path_str())
         .arg("-e")
-        .arg("CREATE TABLE orders (id INTEGER, product VARCHAR, quantity INTEGER, PRIMARY KEY (id))")
+        .arg(
+            "CREATE TABLE orders (id INTEGER, product VARCHAR, quantity INTEGER, PRIMARY KEY (id))",
+        )
         .assert()
         .success();
 

@@ -142,7 +142,8 @@ impl ConnectionAffinity {
             .as_secs() as f64;
         let request_count = self.request_count as f64;
 
-        self.affinity_score = (session_duration / 60.0).min(5.0) + (request_count / 100.0).min(3.0);
+        self.affinity_score =
+            1.0 + (session_duration / 60.0).min(5.0) + (request_count / 100.0).min(3.0);
     }
 }
 

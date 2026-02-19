@@ -819,7 +819,8 @@ mod tests {
         index.add(entry1).unwrap();
         index.add(entry2).unwrap();
 
-        let query = vec![1.5, 2.5, 3.5];
+        // Query closer to vec2 [2.0, 3.0, 4.0] than vec1 [1.0, 2.0, 3.0]
+        let query = vec![1.8, 2.8, 3.8];
         let results = index.search(&query, 2, None).unwrap();
 
         assert_eq!(results.len(), 2);

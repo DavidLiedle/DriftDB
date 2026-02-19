@@ -1372,23 +1372,28 @@ impl<'a> QueryExecutor<'a> {
             return self.execute_legacy(sql).await;
         }
 
-        // Check if we're in a transaction for DML operations
-        let in_transaction = self
-            .transaction_manager
-            .is_in_transaction(&self.session_id)?;
-
-        // Handle DML operations with transaction awareness
-        if (lower.starts_with("delete from ") || lower.starts_with("delete ")) && in_transaction {
-            return self.execute_delete(sql).await;
+        // Route DriftDB custom CREATE TABLE syntax (e.g., "CREATE TABLE users (pk = id)")
+        // to the dedicated handler before it falls through to sqlparser-rs
+        if lower.starts_with("create table") {
+            return self.execute_create_table(sql).await;
         }
-        if (lower.starts_with("insert into ") || lower.starts_with("insert ")) && in_transaction {
+
+        // Route DML/DQL operations to the executor's own handlers which support
+        // aggregation, GROUP BY, ORDER BY, JOINs, subqueries, etc.
+        if lower.starts_with("select ") {
+            return self.execute_select(sql).await;
+        }
+        if lower.starts_with("insert into ") || lower.starts_with("insert ") {
             return self.execute_insert(sql).await;
         }
-        if lower.starts_with("update ") && in_transaction {
+        if lower.starts_with("update ") {
             return self.execute_update(sql).await;
         }
+        if lower.starts_with("delete from ") || lower.starts_with("delete ") {
+            return self.execute_delete(sql).await;
+        }
 
-        // For SQL commands (including non-transactional DML), use the bridge
+        // For other SQL commands, use the bridge
         let mut engine = self.engine_write()?;
 
         // Extract table name and get columns BEFORE executing query to avoid deadlock
@@ -3568,8 +3573,8 @@ impl<'a> QueryExecutor<'a> {
             .find(start_pattern)
             .ok_or_else(|| anyhow!("Invalid EXISTS condition"))?;
 
-        // Extract subquery from parentheses
-        let subquery_start = start_pos + start_pattern.len();
+        // Point to the '(' so extract_parenthesized_subquery can find it
+        let subquery_start = start_pos + start_pattern.len() - 1;
         let subquery_sql = self.extract_parenthesized_subquery(&condition[subquery_start..])?;
 
         let subquery = self.parse_subquery(&subquery_sql)?;
@@ -3588,7 +3593,8 @@ impl<'a> QueryExecutor<'a> {
             .ok_or_else(|| anyhow!("Invalid IN condition"))?;
 
         let column = condition[..in_pos].trim().to_string();
-        let subquery_start = in_pos + in_pattern.len();
+        // Point to the '(' so extract_parenthesized_subquery can find it
+        let subquery_start = in_pos + in_pattern.len() - 1;
         let subquery_sql = self.extract_parenthesized_subquery(&condition[subquery_start..])?;
 
         let subquery = self.parse_subquery(&subquery_sql)?;
@@ -3635,7 +3641,8 @@ impl<'a> QueryExecutor<'a> {
             return Err(anyhow!("Invalid ANY/ALL condition format"));
         }
 
-        let subquery_start = quantifier_pos + pattern.len();
+        // Point to the '(' so extract_parenthesized_subquery can find it
+        let subquery_start = quantifier_pos + pattern.len() - 1;
         let subquery_sql = self.extract_parenthesized_subquery(&condition[subquery_start..])?;
 
         let subquery = self.parse_subquery(&subquery_sql)?;
@@ -4315,17 +4322,15 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute JOIN with temporal support
-    #[allow(clippy::await_holding_lock)]
     async fn execute_temporal_join(
         &self,
         from_clause: &FromClause,
         temporal_clause: &Option<TemporalClause>,
     ) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read()?;
-
         match from_clause {
             FromClause::Single(table_ref) => {
-                // Single table with temporal support
+                // Single table with temporal support - get all data synchronously
+                let engine = self.engine_read()?;
                 let table_data = match temporal_clause {
                     Some(TemporalClause::AsOf(point)) => {
                         match point {
@@ -4373,7 +4378,9 @@ impl<'a> QueryExecutor<'a> {
                 };
 
                 // Create column names with table prefix if alias exists
-                let columns = self.get_table_columns(&engine, &table_ref.name).await?;
+                let columns = engine
+                    .get_table_columns(&table_ref.name)
+                    .map_err(|e| anyhow!("{}", e))?;
                 let prefixed_columns = if let Some(alias) = &table_ref.alias {
                     columns
                         .iter()
@@ -4392,30 +4399,39 @@ impl<'a> QueryExecutor<'a> {
         }
     }
 
-    #[allow(clippy::await_holding_lock)]
     async fn execute_join(&self, from_clause: &FromClause) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read()?;
-
         match from_clause {
             FromClause::Single(table_ref) => {
-                // Single table - no JOIN needed
+                // Single table - no JOIN needed. Get all data synchronously to avoid
+                // holding a non-Send RwLockReadGuard across await points.
+                let engine = self.engine_read()?;
                 let table_data = engine
                     .get_table_data(&table_ref.name)
                     .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
-                // Create column names with table prefix if alias exists
-                let columns = self.get_table_columns(&engine, &table_ref.name).await?;
-                let prefixed_columns = if let Some(alias) = &table_ref.alias {
-                    columns
-                        .iter()
-                        .map(|col| format!("{}.{}", alias, col))
-                        .collect()
-                } else {
-                    columns
-                        .iter()
-                        .map(|col| format!("{}.{}", table_ref.name, col))
-                        .collect()
-                };
+                // Get schema columns, then discover additional columns from actual data
+                // (DriftDB is schema-flexible, so inserts can add columns not in the schema)
+                let mut columns: Vec<String> = engine
+                    .get_table_columns(&table_ref.name)
+                    .unwrap_or_default();
+
+                // Discover additional columns from actual data records
+                let mut seen: std::collections::HashSet<String> = columns.iter().cloned().collect();
+                for record in &table_data {
+                    if let Value::Object(map) = record {
+                        for key in map.keys() {
+                            if seen.insert(key.clone()) {
+                                columns.push(key.clone());
+                            }
+                        }
+                    }
+                }
+
+                let prefix = table_ref.alias.as_ref().unwrap_or(&table_ref.name);
+                let prefixed_columns = columns
+                    .iter()
+                    .map(|col| format!("{}.{}", prefix, col))
+                    .collect();
 
                 Ok((table_data, prefixed_columns))
             }
@@ -4451,36 +4467,39 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute implicit JOIN (cross product of multiple tables)
-    #[allow(clippy::await_holding_lock)]
     async fn execute_implicit_join(
         &self,
         tables: &[TableRef],
     ) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read()?;
-
         if tables.is_empty() {
             return Err(anyhow!("No tables specified for implicit JOIN"));
         }
 
-        // Get data for all tables
-        let mut table_data = Vec::new();
-        let mut all_columns = Vec::new();
+        // Get data for all tables synchronously, then drop the guard
+        let (table_data, all_columns) = {
+            let engine = self.engine_read()?;
+            let mut table_data = Vec::new();
+            let mut all_columns = Vec::new();
 
-        for table_ref in tables {
-            let data = engine
-                .get_table_data(&table_ref.name)
-                .map_err(|e| anyhow!("Failed to get table data for {}: {}", table_ref.name, e))?;
+            for table_ref in tables {
+                let data = engine.get_table_data(&table_ref.name).map_err(|e| {
+                    anyhow!("Failed to get table data for {}: {}", table_ref.name, e)
+                })?;
 
-            let columns = self.get_table_columns(&engine, &table_ref.name).await?;
-            let table_prefix = table_ref.alias.as_ref().unwrap_or(&table_ref.name);
-            let prefixed_columns: Vec<String> = columns
-                .iter()
-                .map(|col| format!("{}.{}", table_prefix, col))
-                .collect();
+                let columns = engine
+                    .get_table_columns(&table_ref.name)
+                    .map_err(|e| anyhow!("{}", e))?;
+                let table_prefix = table_ref.alias.as_ref().unwrap_or(&table_ref.name);
+                let prefixed_columns: Vec<String> = columns
+                    .iter()
+                    .map(|col| format!("{}.{}", table_prefix, col))
+                    .collect();
 
-            table_data.push(data);
-            all_columns.extend(prefixed_columns);
-        }
+                table_data.push(data);
+                all_columns.extend(prefixed_columns);
+            }
+            (table_data, all_columns)
+        };
 
         // Create Cartesian product
         let joined_rows = self.create_cartesian_product(&table_data);
@@ -4489,25 +4508,28 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute explicit JOINs
-    #[allow(clippy::await_holding_lock)]
     async fn execute_explicit_joins(
         &self,
         base_table: &TableRef,
         joins: &[Join],
     ) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read()?;
+        // Get base table data synchronously, then drop the guard
+        let (mut current_data, mut current_columns) = {
+            let engine = self.engine_read()?;
+            let data = engine
+                .get_table_data(&base_table.name)
+                .map_err(|e| anyhow!("Failed to get base table data: {}", e))?;
 
-        // Start with base table
-        let mut current_data = engine
-            .get_table_data(&base_table.name)
-            .map_err(|e| anyhow!("Failed to get base table data: {}", e))?;
-
-        let mut current_columns = self.get_table_columns(&engine, &base_table.name).await?;
-        let base_prefix = base_table.alias.as_ref().unwrap_or(&base_table.name);
-        current_columns = current_columns
-            .iter()
-            .map(|col| format!("{}.{}", base_prefix, col))
-            .collect();
+            let columns = engine
+                .get_table_columns(&base_table.name)
+                .map_err(|e| anyhow!("{}", e))?;
+            let base_prefix = base_table.alias.as_ref().unwrap_or(&base_table.name);
+            let prefixed: Vec<String> = columns
+                .iter()
+                .map(|col| format!("{}.{}", base_prefix, col))
+                .collect();
+            (data, prefixed)
+        };
 
         // Apply each JOIN in sequence
         for join in joins {
@@ -4523,26 +4545,29 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute a single JOIN operation
-    #[allow(clippy::await_holding_lock)]
     async fn execute_single_join(
         &self,
         left_data: &[Value],
         left_columns: &[String],
         join: &Join,
     ) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read()?;
+        // Get right table data synchronously, then drop the guard
+        let (right_data, right_columns) = {
+            let engine = self.engine_read()?;
+            let data = engine
+                .get_table_data(&join.table)
+                .map_err(|e| anyhow!("Failed to get table data for {}: {}", join.table, e))?;
 
-        // Get right table data
-        let right_data = engine
-            .get_table_data(&join.table)
-            .map_err(|e| anyhow!("Failed to get table data for {}: {}", join.table, e))?;
-
-        let right_table_columns = self.get_table_columns(&engine, &join.table).await?;
-        let right_prefix = join.table_alias.as_ref().unwrap_or(&join.table);
-        let right_columns: Vec<String> = right_table_columns
-            .iter()
-            .map(|col| format!("{}.{}", right_prefix, col))
-            .collect();
+            let columns = engine
+                .get_table_columns(&join.table)
+                .map_err(|e| anyhow!("{}", e))?;
+            let right_prefix = join.table_alias.as_ref().unwrap_or(&join.table);
+            let prefixed: Vec<String> = columns
+                .iter()
+                .map(|col| format!("{}.{}", right_prefix, col))
+                .collect();
+            (data, prefixed)
+        };
 
         // Combine column lists
         let mut combined_columns = left_columns.to_vec();
@@ -5375,12 +5400,28 @@ impl<'a> QueryExecutor<'a> {
                 if let Value::Object(map) = record {
                     columns
                         .iter()
-                        .map(|col| map.get(col).cloned().unwrap_or(Value::Null))
+                        .map(|col| {
+                            // Try full prefixed name first, then unprefixed (after the dot)
+                            map.get(col)
+                                .or_else(|| {
+                                    col.split('.')
+                                        .next_back()
+                                        .and_then(|suffix| map.get(suffix))
+                                })
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        })
                         .collect()
                 } else {
                     vec![Value::Null; columns.len()]
                 }
             })
+            .collect();
+
+        // Strip table prefix from column names for cleaner output
+        let columns: Vec<String> = columns
+            .into_iter()
+            .map(|col| col.split('.').next_back().unwrap_or(&col).to_string())
             .collect();
 
         // Apply ORDER BY if specified

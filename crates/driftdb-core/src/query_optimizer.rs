@@ -466,9 +466,10 @@ impl QueryOptimizer {
     /// would be more efficient than a full table scan.
     fn generate_index_optimized_plan(&self, query: &OptimizableQuery) -> Result<ExecutionPlan> {
         // Get the primary table
-        let table = query.tables.first().ok_or_else(|| {
-            DriftError::InvalidQuery("No tables in query".to_string())
-        })?;
+        let table = query
+            .tables
+            .first()
+            .ok_or_else(|| DriftError::InvalidQuery("No tables in query".to_string()))?;
 
         // Find the best index for the query conditions
         let best_index = self.find_best_index(table, &query.where_conditions)?;
@@ -594,10 +595,7 @@ impl QueryOptimizer {
         }
 
         // Extract columns referenced in WHERE conditions
-        let filter_columns: Vec<&str> = conditions
-            .iter()
-            .map(|c| c.column.as_str())
-            .collect();
+        let filter_columns: Vec<&str> = conditions.iter().map(|c| c.column.as_str()).collect();
 
         if filter_columns.is_empty() {
             return Ok(None);
@@ -608,12 +606,7 @@ impl QueryOptimizer {
         let mut best_index: Option<String> = None;
 
         for (index_name, index_stats) in &table_stats.index_stats {
-            let score = self.score_index(
-                index_name,
-                index_stats,
-                &filter_columns,
-                &table_stats,
-            );
+            let score = self.score_index(index_name, index_stats, &filter_columns, &table_stats);
 
             if score > best_score {
                 best_score = score;
@@ -742,11 +735,8 @@ impl QueryOptimizer {
         let total_rows = table_stats.as_ref().map(|s| s.row_count).unwrap_or(1000);
 
         // Estimate selectivity based on key conditions
-        let selectivity = self.estimate_index_selectivity(
-            key_conditions,
-            index_stats.as_ref(),
-            total_rows,
-        );
+        let selectivity =
+            self.estimate_index_selectivity(key_conditions, index_stats.as_ref(), total_rows);
 
         // Create filter for remaining conditions
         let filter = if !remaining_conditions.is_empty() {
@@ -760,7 +750,8 @@ impl QueryOptimizer {
         // Index scan cost: lookup cost + result retrieval
         let index_depth = index_stats.as_ref().map(|s| s.depth).unwrap_or(3);
         let lookup_cost = (index_depth as f64) * self.config.cost_model.index_lookup_cost;
-        let retrieval_cost = cardinality as f64 * self.config.cost_model.seq_scan_cost_per_row * 0.5;
+        let retrieval_cost =
+            cardinality as f64 * self.config.cost_model.seq_scan_cost_per_row * 0.5;
         let total_cost = lookup_cost + retrieval_cost;
 
         Ok(PlanNode {

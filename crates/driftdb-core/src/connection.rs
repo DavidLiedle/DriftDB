@@ -450,7 +450,7 @@ impl ConnectionPool {
     pub fn stats(&self) -> PoolStats {
         let connections = self.connections.read();
         let available = self.available.lock();
-        let active_count = connections.len() - available.len();
+        let active_count = connections.len().saturating_sub(available.len());
 
         // Calculate detailed metrics
         let mut with_transactions = 0;

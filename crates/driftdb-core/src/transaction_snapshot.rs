@@ -199,7 +199,7 @@ mod tests {
         let snapshot = TransactionSnapshot::new(1);
 
         // Read should see the value
-        let value = snapshot.read("test", "\"key1\"", &storage).unwrap();
+        let value = snapshot.read("test", "key1", &storage).unwrap();
         assert!(value.is_some());
 
         // Add another event after snapshot
@@ -211,7 +211,7 @@ mod tests {
         storage.append_event(event2).unwrap();
 
         // Snapshot should still see old value
-        let value = snapshot.read("test", "\"key1\"", &storage).unwrap();
+        let value = snapshot.read("test", "key1", &storage).unwrap();
         if let Some(v) = value {
             assert_eq!(v["value"], json!("initial"));
         }
