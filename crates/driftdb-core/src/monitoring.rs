@@ -764,7 +764,7 @@ impl ResolutionBucket {
             || snapshot
                 .timestamp
                 .duration_since(self.data.back().unwrap().timestamp)
-                .unwrap()
+                .unwrap_or_default()
                 >= self.interval
         {
             self.data.push_back(snapshot);

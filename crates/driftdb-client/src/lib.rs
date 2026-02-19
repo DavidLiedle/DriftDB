@@ -39,8 +39,9 @@
 //!
 //!     // Time-travel query
 //!     let historical_users: Vec<User> = client
-//!         .query_as("SELECT * FROM users")
+//!         .query_builder("SELECT * FROM users")
 //!         .as_of(TimeTravel::Sequence(42))
+//!         .execute_as()
 //!         .await?;
 //!
 //!     // Transactions

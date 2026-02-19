@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 /// Authentication methods supported by DriftDB
@@ -61,6 +62,13 @@ impl Default for AuthConfig {
     }
 }
 
+/// Generate a random password for default superuser
+fn generate_random_password() -> String {
+    let mut bytes = [0u8; 24];
+    thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 /// Generate a random salt for password hashing
 pub fn generate_salt() -> [u8; 16] {
     let mut salt = [0u8; 16];
@@ -76,34 +84,52 @@ pub fn hash_password_sha256(password: &str, salt: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Verify SHA-256 hashed password
+/// Verify SHA-256 hashed password using constant-time comparison
 pub fn verify_password_sha256(password: &str, stored_hash: &str, salt: &[u8]) -> bool {
     let computed_hash = hash_password_sha256(password, salt);
-    computed_hash == stored_hash
+    computed_hash.as_bytes().ct_eq(stored_hash.as_bytes()).into()
+}
+
+/// Compute the inner MD5 hash: hex(md5(password + username))
+/// This is the value that should be stored instead of the plaintext password.
+pub fn md5_password_hash(password: &str, username: &str) -> String {
+    let pass_user = format!("{}{}", password, username);
+    let pass_user_hash = md5::compute(pass_user.as_bytes());
+    hex::encode(pass_user_hash.as_ref())
 }
 
 /// Perform MD5 authentication as per PostgreSQL protocol
+#[allow(dead_code)]
 pub fn md5_auth(password: &str, username: &str, salt: &[u8; 4]) -> String {
     // PostgreSQL MD5 auth:
     // 1. MD5(password + username)
     // 2. MD5(result + salt)
     // 3. Prepend "md5"
 
-    let pass_user = format!("{}{}", password, username);
-    let pass_user_hash = md5::compute(pass_user.as_bytes());
+    let inner_hash = md5_password_hash(password, username);
+    md5_auth_from_hash(&inner_hash, salt)
+}
 
-    // The salt is raw bytes, not text - concatenate hex hash with raw salt bytes
-    let mut salt_input = hex::encode(pass_user_hash.as_ref()).into_bytes();
+/// Perform MD5 authentication from a pre-computed inner hash (hex(md5(password+username)))
+fn md5_auth_from_hash(inner_hash: &str, salt: &[u8; 4]) -> String {
+    let mut salt_input = inner_hash.as_bytes().to_vec();
     salt_input.extend_from_slice(salt);
     let final_hash = md5::compute(&salt_input);
-
     format!("md5{}", hex::encode(final_hash.as_ref()))
 }
 
-/// Verify MD5 authentication
+/// Verify MD5 authentication using constant-time comparison.
+/// Takes a plaintext password and computes the expected challenge response.
+#[allow(dead_code)]
 pub fn verify_md5(received: &str, expected_password: &str, username: &str, salt: &[u8; 4]) -> bool {
     let expected = md5_auth(expected_password, username, salt);
-    received == expected
+    received.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+/// Verify MD5 authentication from a pre-computed inner hash using constant-time comparison
+pub fn verify_md5_prehashed(received: &str, stored_hash: &str, salt: &[u8; 4]) -> bool {
+    let expected = md5_auth_from_hash(stored_hash, salt);
+    received.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 /// Generate MD5 challenge for client
@@ -132,7 +158,7 @@ impl ScramSha256 {
         let iteration_count = 4096;
 
         // For simplified implementation, we'll use basic PBKDF2
-        let salted_password = pbkdf2_simple(password.as_bytes(), &salt, iteration_count);
+        let salted_password = pbkdf2_derive(password.as_bytes(), &salt, iteration_count);
 
         // Generate keys (simplified)
         let stored_key = hash_password_sha256(&hex::encode(&salted_password), b"stored");
@@ -147,18 +173,11 @@ impl ScramSha256 {
     }
 }
 
-/// Simplified PBKDF2 implementation
-fn pbkdf2_simple(password: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
-    let mut result = password.to_vec();
-    result.extend_from_slice(salt);
-
-    for _ in 0..iterations {
-        let mut hasher = Sha256::new();
-        hasher.update(&result);
-        result = hasher.finalize().to_vec();
-    }
-
-    result
+/// PBKDF2-HMAC-SHA256 key derivation
+fn pbkdf2_derive(password: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
+    let mut output = vec![0u8; 32]; // SHA-256 output size
+    pbkdf2::pbkdf2_hmac::<Sha256>(password, salt, iterations, &mut output);
+    output
 }
 
 /// User information stored in the database
@@ -190,7 +209,7 @@ impl User {
         let salt = generate_salt().to_vec();
         let password_hash = match auth_method {
             AuthMethod::Trust => String::new(),
-            AuthMethod::MD5 => password.to_string(), // Store plaintext for MD5 compatibility
+            AuthMethod::MD5 => md5_password_hash(password, &username),
             AuthMethod::ScramSha256 => hash_password_sha256(password, &salt),
         };
 
@@ -251,9 +270,13 @@ impl User {
             AuthMethod::Trust => true,
             AuthMethod::MD5 => {
                 if let Some(salt) = challenge_salt {
-                    verify_md5(password, &self.password_hash, &self.username, salt)
+                    // password_hash stores the pre-computed inner hash
+                    verify_md5_prehashed(password, &self.password_hash, salt)
                 } else {
-                    self.password_hash == password
+                    // Direct comparison: compute the inner hash from the provided password
+                    // and compare with the stored hash using constant-time comparison
+                    let computed = md5_password_hash(password, &self.username);
+                    computed.as_bytes().ct_eq(self.password_hash.as_bytes()).into()
                 }
             }
             AuthMethod::ScramSha256 => {
@@ -285,8 +308,18 @@ impl UserDb {
 
         // Create default superuser if authentication is enabled
         if config.require_auth {
-            let default_password =
-                std::env::var("DRIFTDB_PASSWORD").unwrap_or_else(|_| "driftdb".to_string());
+            let default_password = match std::env::var("DRIFTDB_PASSWORD") {
+                Ok(pw) => pw,
+                Err(_) => {
+                    let random_pw = generate_random_password();
+                    warn!("==========================================================");
+                    warn!("WARNING: No DRIFTDB_PASSWORD environment variable set!");
+                    warn!("Generated random superuser password: {}", random_pw);
+                    warn!("Set DRIFTDB_PASSWORD env var to use a persistent password.");
+                    warn!("==========================================================");
+                    random_pw
+                }
+            };
 
             let superuser = User::new(
                 "driftdb".to_string(),
@@ -360,7 +393,7 @@ impl UserDb {
             match user.auth_method {
                 AuthMethod::Trust => {}
                 AuthMethod::MD5 => {
-                    user.password_hash = new_password.to_string();
+                    user.password_hash = md5_password_hash(new_password, &user.username);
                 }
                 AuthMethod::ScramSha256 => {
                     user.password_hash = hash_password_sha256(new_password, &salt);

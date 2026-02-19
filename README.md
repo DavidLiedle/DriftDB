@@ -107,7 +107,7 @@ The following features have been architecturally designed with varying levels of
 - **Query Optimizer**: Cost-based optimization with join reordering and index selection
 - **Point-in-Time Recovery**: Restore database to any timestamp
 - **Alerting System**: Real-time metrics monitoring with configurable alerts
-- **Authentication & Authorization**: RBAC with user management (partial)
+- **Authentication & Authorization**: RBAC with user management, constant-time password comparison, PBKDF2-HMAC-SHA256 key derivation
 - **Encryption at Rest**: AES-256-GCM encryption (partial)
 - **Performance Regression Detection**: CI-integrated benchmark comparison
 
@@ -140,7 +140,7 @@ cd driftdb
 
 # Connect to DriftDB
 psql -h localhost -p 5433 -d driftdb -U driftdb
-# Password: driftdb
+# Set DRIFTDB_PASSWORD env var, or check server logs for generated password
 ```
 
 ### Manual Installation
@@ -180,14 +180,14 @@ DriftDB now includes a PostgreSQL wire protocol server, allowing you to connect 
 # Connect with psql
 psql -h 127.0.0.1 -p 5433 -d driftdb -U driftdb
 
-# Connect with any PostgreSQL driver
-postgresql://driftdb:driftdb@127.0.0.1:5433/driftdb
+# Connect with any PostgreSQL driver (set DRIFTDB_PASSWORD or check logs)
+postgresql://driftdb:<password>@127.0.0.1:5433/driftdb
 ```
 
 The server supports:
 - PostgreSQL wire protocol v3
 - SQL queries with automatic temporal tracking
-- Authentication (cleartext and MD5)
+- Authentication (MD5 and SCRAM-SHA-256 with constant-time verification)
 - Integration with existing PostgreSQL tools and ORMs
 
 ### Manual CLI Usage
@@ -435,6 +435,9 @@ data/
 - **Encryption in transit**: TLS 1.3 for network communication
 - **Key rotation**: Automatic key rotation support
 - **Rate limiting**: DoS protection with per-client limits
+- **Constant-time auth**: Timing-attack resistant password verification (subtle crate)
+- **PBKDF2 key derivation**: Industry-standard PBKDF2-HMAC-SHA256 for SCRAM authentication
+- **No plaintext storage**: MD5 auth stores pre-computed hashes, never raw passwords
 
 ## 🎯 Use Cases
 
@@ -757,7 +760,7 @@ DriftDB is currently in **alpha** stage with significant recent improvements but
 ### v0.6.0 (Release Candidate)
 - 📋 Production monitoring
 - 📋 Proper replication implementation
-- 📋 Security hardening
+- ✅ Security hardening (constant-time auth, PBKDF2, no plaintext storage, panic prevention)
 - 📋 Stress testing
 - 📋 Cloud deployment support
 

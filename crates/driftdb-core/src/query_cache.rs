@@ -534,23 +534,26 @@ impl Cache {
                 self.entries.get_mut(key)
             }
             CacheStrategy::SLRU => {
-                // Check hot segment first
-                if let Some(ref mut hot) = self.segment_hot {
-                    if let Some(entry) = hot.get_mut(key) {
-                        return Some(unsafe {
-                            std::mem::transmute::<&mut CacheEntry, &mut CacheEntry>(entry)
-                        });
-                    }
+                // Check if key exists in hot segment
+                let in_hot = self
+                    .segment_hot
+                    .as_ref()
+                    .is_some_and(|hot| hot.contains(key));
+
+                if in_hot {
+                    return self.segment_hot.as_mut().unwrap().get_mut(key);
                 }
 
-                // Check cold segment
-                if let Some(ref mut cold) = self.segment_cold {
-                    if let Some(entry) = cold.pop(key) {
-                        // Promote to hot segment
-                        if let Some(ref mut hot) = self.segment_hot {
-                            hot.put(key.clone(), entry);
-                            return hot.get_mut(key).map(|e| unsafe { std::mem::transmute(e) });
-                        }
+                // Check cold segment and promote to hot if found
+                let promoted = self
+                    .segment_cold
+                    .as_mut()
+                    .and_then(|cold| cold.pop(key));
+
+                if let Some(entry) = promoted {
+                    if let Some(ref mut hot) = self.segment_hot {
+                        hot.put(key.clone(), entry);
+                        return hot.get_mut(key);
                     }
                 }
 

@@ -353,7 +353,7 @@ impl QueryOptimizer {
         }
 
         // Sort by cost and select best plan
-        candidate_plans.sort_by(|a, b| a.estimated_cost.partial_cmp(&b.estimated_cost).unwrap());
+        candidate_plans.sort_by(|a, b| a.estimated_cost.total_cmp(&b.estimated_cost));
 
         let mut best_plan = candidate_plans
             .into_iter()

@@ -122,6 +122,7 @@ impl Transaction {
     /// # let client = Client::connect("localhost:5433").await?;
     /// let mut tx = client.begin().await?;
     /// // ... perform operations ...
+    /// let some_error_condition = false;
     /// if some_error_condition {
     ///     tx.rollback().await?;
     /// }
