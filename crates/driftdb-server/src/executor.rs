@@ -390,10 +390,29 @@ pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
     engine: Option<Arc<SyncRwLock<Engine>>>,
     subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
+    cte_tables: Arc<Mutex<HashMap<String, Vec<Value>>>>,      // CTE result cache for current query
     use_indexes: bool,                                        // Enable/disable index optimization
     prepared_statements: Arc<ParkingMutex<HashMap<String, PreparedStatement>>>, // Prepared statements cache
     transaction_manager: Arc<TransactionManager>, // Transaction management
     session_id: String,                           // Session identifier for transaction tracking
+}
+
+/// Foreign key constraint definition (process-global registry)
+#[derive(Debug, Clone)]
+pub struct ForeignKeyConstraint {
+    /// Column in this table that holds the FK value
+    pub column: String,
+    /// Referenced table name
+    pub ref_table: String,
+    /// Referenced column in the target table
+    pub ref_column: String,
+}
+
+fn fk_registry() -> &'static parking_lot::RwLock<HashMap<String, Vec<ForeignKeyConstraint>>> {
+    static FK_REGISTRY: std::sync::OnceLock<
+        parking_lot::RwLock<HashMap<String, Vec<ForeignKeyConstraint>>>,
+    > = std::sync::OnceLock::new();
+    FK_REGISTRY.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
 
 #[allow(dead_code)]
@@ -530,6 +549,7 @@ impl<'a> QueryExecutor<'a> {
             engine_guard: None,
             engine: Some(engine),
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+            cte_tables: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true, // Enable index optimization by default
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
             transaction_manager,
@@ -546,6 +566,7 @@ impl<'a> QueryExecutor<'a> {
             engine_guard: Some(engine_guard),
             engine: None,
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+            cte_tables: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true,
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
             transaction_manager,
@@ -563,6 +584,7 @@ impl<'a> QueryExecutor<'a> {
             engine_guard: Some(engine_guard),
             engine: None,
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+            cte_tables: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true,
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
             transaction_manager,
@@ -668,6 +690,669 @@ impl<'a> QueryExecutor<'a> {
 
         // Default to string without quotes
         Ok(Value::String(trimmed.to_string()))
+    }
+
+    // -------------------------------------------------------------------------
+    // CASE WHEN expression evaluation
+    // -------------------------------------------------------------------------
+
+    /// Evaluate a CASE WHEN expression against a row map.
+    /// Supports both searched form: CASE WHEN cond THEN val … [ELSE val] END
+    /// and simple form:            CASE expr WHEN val THEN result … END
+    fn evaluate_case_expression(
+        &self,
+        expr: &str,
+        row: &serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        let trimmed = expr.trim();
+
+        // Must start with CASE (case-insensitive)
+        let upper = trimmed.to_uppercase();
+        if !upper.starts_with("CASE") {
+            return Ok(Value::Null);
+        }
+
+        // Strip leading CASE and trailing END
+        let inner = trimmed[4..].trim();
+        let inner = if inner.to_uppercase().ends_with("END") {
+            inner[..inner.len() - 3].trim()
+        } else {
+            inner
+        };
+
+        // Determine form: searched (starts with WHEN) vs. simple (has a subject expr)
+        let inner_upper = inner.to_uppercase();
+        if inner_upper.starts_with("WHEN") {
+            // Searched CASE: CASE WHEN cond THEN val [WHEN cond THEN val]* [ELSE val] END
+            self.evaluate_searched_case(inner, row)
+        } else {
+            // Simple CASE: CASE subject_expr WHEN val THEN result … [ELSE result] END
+            self.evaluate_simple_case(inner, row)
+        }
+    }
+
+    /// Evaluate searched CASE: WHEN cond THEN val … [ELSE val]
+    fn evaluate_searched_case(
+        &self,
+        inner: &str,
+        row: &serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        // Tokenise into WHEN/THEN/ELSE/END segments (case-insensitive)
+        let mut rest = inner;
+        loop {
+            let upper = rest.to_uppercase();
+            if upper.starts_with("WHEN") {
+                let after_when = rest[4..].trim();
+                // Find the matching THEN
+                let then_pos = Self::find_keyword_pos(after_when, "THEN")?;
+                let condition_str = after_when[..then_pos].trim();
+                let after_then = after_when[then_pos + 4..].trim();
+
+                // Find next WHEN, ELSE, or end
+                let next_pos = Self::find_next_case_keyword(after_then);
+                let then_value_str = after_then[..next_pos].trim();
+
+                // Evaluate the condition
+                if self.evaluate_case_condition(condition_str, row)? {
+                    return self.evaluate_case_value(then_value_str, row);
+                }
+                rest = after_then[next_pos..].trim();
+            } else if upper.starts_with("ELSE") {
+                let else_value_str = rest[4..].trim();
+                return self.evaluate_case_value(else_value_str, row);
+            } else {
+                break;
+            }
+        }
+        Ok(Value::Null)
+    }
+
+    /// Evaluate simple CASE: subject WHEN val THEN result … [ELSE result]
+    fn evaluate_simple_case(
+        &self,
+        inner: &str,
+        row: &serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        // Split off subject from first WHEN
+        let when_pos = Self::find_keyword_pos(inner, "WHEN")?;
+        let subject_str = inner[..when_pos].trim();
+        let subject_val = self.resolve_value_or_column(subject_str, row);
+
+        let mut rest = inner[when_pos..].trim();
+        loop {
+            let upper = rest.to_uppercase();
+            if upper.starts_with("WHEN") {
+                let after_when = rest[4..].trim();
+                let then_pos = Self::find_keyword_pos(after_when, "THEN")?;
+                let compare_str = after_when[..then_pos].trim();
+                let compare_val = self.parse_sql_value(compare_str)?;
+
+                let after_then = after_when[then_pos + 4..].trim();
+                let next_pos = Self::find_next_case_keyword(after_then);
+                let result_str = after_then[..next_pos].trim();
+
+                if subject_val == compare_val {
+                    return self.evaluate_case_value(result_str, row);
+                }
+                rest = after_then[next_pos..].trim();
+            } else if upper.starts_with("ELSE") {
+                let else_value_str = rest[4..].trim();
+                return self.evaluate_case_value(else_value_str, row);
+            } else {
+                break;
+            }
+        }
+        Ok(Value::Null)
+    }
+
+    /// Find the byte position of a keyword (whole-word, case-insensitive) in `s`.
+    fn find_keyword_pos(s: &str, keyword: &str) -> Result<usize> {
+        let upper = s.to_uppercase();
+        let kw_upper = keyword.to_uppercase();
+        let mut depth = 0usize;
+        let mut i = 0;
+        while i + kw_upper.len() <= upper.len() {
+            if upper[i..].starts_with("CASE") {
+                depth += 1;
+                i += 4;
+                continue;
+            }
+            if upper[i..].starts_with("END") && depth > 0 {
+                depth -= 1;
+                i += 3;
+                continue;
+            }
+            if depth == 0 && upper[i..].starts_with(kw_upper.as_str()) {
+                // Verify word boundary after keyword
+                let end = i + kw_upper.len();
+                let after = upper.get(end..end + 1).unwrap_or(" ");
+                if after == " " || after == "(" || end == upper.len() {
+                    return Ok(i);
+                }
+            }
+            i += 1;
+        }
+        Err(anyhow!("Keyword '{}' not found in CASE expression", keyword))
+    }
+
+    /// Find the position of the next top-level WHEN, ELSE, or end of string.
+    fn find_next_case_keyword(s: &str) -> usize {
+        let upper = s.to_uppercase();
+        let mut depth = 0usize;
+        let mut i = 0;
+        while i < upper.len() {
+            if upper[i..].starts_with("CASE") {
+                depth += 1;
+                i += 4;
+                continue;
+            }
+            if upper[i..].starts_with("END") && depth > 0 {
+                depth -= 1;
+                i += 3;
+                continue;
+            }
+            if depth == 0
+                && (upper[i..].starts_with("WHEN ") || upper[i..].starts_with("ELSE"))
+            {
+                return i;
+            }
+            i += 1;
+        }
+        upper.len()
+    }
+
+    /// Evaluate a CASE condition string ("column op value" or boolean).
+    fn evaluate_case_condition(
+        &self,
+        condition_str: &str,
+        row: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let s = condition_str.trim();
+        // Try simple "col op val" patterns
+        let operators = ["!=", "<>", ">=", "<=", "=", ">", "<"];
+        for op in &operators {
+            if let Some(op_pos) = s.find(op) {
+                let lhs = s[..op_pos].trim();
+                let rhs = s[op_pos + op.len()..].trim();
+                let lhs_val = self.resolve_value_or_column(lhs, row);
+                let rhs_val = self.parse_sql_value(rhs)?;
+                let canonical_op = if *op == "<>" { "!=" } else { op };
+                return Ok(self.matches_condition(&lhs_val, canonical_op, &rhs_val));
+            }
+        }
+        // IS NULL / IS NOT NULL
+        let su = s.to_uppercase();
+        if su.ends_with("IS NOT NULL") {
+            let col = s[..s.len() - 11].trim();
+            let val = self.resolve_value_or_column(col, row);
+            return Ok(!val.is_null());
+        }
+        if su.ends_with("IS NULL") {
+            let col = s[..s.len() - 7].trim();
+            let val = self.resolve_value_or_column(col, row);
+            return Ok(val.is_null());
+        }
+        Ok(false)
+    }
+
+    /// Evaluate a CASE result value (could be a literal, column ref, or nested CASE).
+    fn evaluate_case_value(
+        &self,
+        value_str: &str,
+        row: &serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        let s = value_str.trim();
+        if s.to_uppercase().starts_with("CASE") {
+            return self.evaluate_case_expression(s, row);
+        }
+        Ok(self.resolve_value_or_column(s, row))
+    }
+
+    /// Resolve a string as either a column reference or a SQL literal.
+    fn resolve_value_or_column(&self, s: &str, row: &serde_json::Map<String, Value>) -> Value {
+        let s = s.trim();
+        // String literal
+        if s.starts_with('\'') && s.ends_with('\'') {
+            return Value::String(s[1..s.len() - 1].replace("''", "'"));
+        }
+        // Number literal
+        if let Ok(n) = s.parse::<i64>() {
+            return Value::Number(n.into());
+        }
+        if let Ok(f) = s.parse::<f64>() {
+            if let Some(num) = serde_json::Number::from_f64(f) {
+                return Value::Number(num);
+            }
+        }
+        // Boolean literal
+        if s.eq_ignore_ascii_case("TRUE") {
+            return Value::Bool(true);
+        }
+        if s.eq_ignore_ascii_case("FALSE") {
+            return Value::Bool(false);
+        }
+        if s.eq_ignore_ascii_case("NULL") {
+            return Value::Null;
+        }
+        // Column reference: try exact match, then table.col prefix match
+        if let Some(v) = row.get(s) {
+            return v.clone();
+        }
+        for (key, val) in row {
+            if key.ends_with(&format!(".{}", s)) || key == s {
+                return val.clone();
+            }
+        }
+        Value::Null
+    }
+
+    // -------------------------------------------------------------------------
+    // CASE WHEN — select-clause pre-processing
+    // -------------------------------------------------------------------------
+
+    /// Split a SELECT column list by comma, respecting CASE…END and parentheses.
+    fn split_select_cols(select_part: &str) -> Vec<String> {
+        let mut items = Vec::new();
+        let mut current = String::new();
+        let mut depth_paren: usize = 0;
+        let mut case_depth: usize = 0;
+        let chars: Vec<char> = select_part.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
+            // Detect CASE keyword (word-boundary, case-insensitive)
+            if depth_paren == 0 {
+                let remaining: String = chars[i..].iter().collect();
+                let ru = remaining.to_uppercase();
+                if ru.starts_with("CASE")
+                    && (chars.get(i + 4).map(|c| !c.is_alphanumeric() && *c != '_').unwrap_or(true))
+                {
+                    case_depth += 1;
+                    current.push_str("CASE");
+                    i += 4;
+                    continue;
+                }
+                if ru.starts_with("END")
+                    && case_depth > 0
+                    && (chars.get(i + 3).map(|c| !c.is_alphanumeric() && *c != '_').unwrap_or(true))
+                {
+                    case_depth -= 1;
+                    current.push_str("END");
+                    i += 3;
+                    continue;
+                }
+            }
+            match ch {
+                '(' => {
+                    depth_paren += 1;
+                    current.push(ch);
+                }
+                ')' => {
+                    depth_paren = depth_paren.saturating_sub(1);
+                    current.push(ch);
+                }
+                ',' if depth_paren == 0 && case_depth == 0 => {
+                    items.push(current.trim().to_string());
+                    current.clear();
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+            i += 1;
+        }
+        if !current.trim().is_empty() {
+            items.push(current.trim().to_string());
+        }
+        items
+    }
+
+    /// Scan a SELECT clause for CASE WHEN expressions; return:
+    /// - the modified clause (CASE expressions replaced by their alias/placeholder)
+    /// - a map from alias -> original CASE expression
+    fn extract_case_expressions(select_part: &str) -> (String, HashMap<String, String>) {
+        let items = Self::split_select_cols(select_part);
+        let mut case_map: HashMap<String, String> = HashMap::new();
+        let mut new_items: Vec<String> = Vec::new();
+
+        for (idx, item) in items.iter().enumerate() {
+            let item_upper = item.to_uppercase();
+            if item_upper.trim_start().starts_with("CASE") {
+                // Extract alias from "… AS alias" suffix
+                let (alias, expr) = Self::extract_alias_from_case(item, idx);
+                case_map.insert(alias.clone(), expr);
+                new_items.push(alias);
+            } else {
+                new_items.push(item.clone());
+            }
+        }
+        (new_items.join(", "), case_map)
+    }
+
+    /// Split a CASE expression item into (alias, full_expression).
+    fn extract_alias_from_case(item: &str, idx: usize) -> (String, String) {
+        // Find " AS " after the END keyword (case-insensitive)
+        let upper = item.to_uppercase();
+        // Search from the right for " AS " pattern after END
+        if let Some(end_pos) = upper.rfind("END") {
+            let after_end = &item[end_pos + 3..].trim().to_string();
+            let after_upper = after_end.to_uppercase();
+            if after_upper.starts_with("AS ") {
+                let alias = after_end[3..].trim().to_string();
+                let expr = item[..end_pos + 3].trim().to_string();
+                return (alias, expr);
+            }
+        }
+        // No alias — generate one
+        let alias = format!("_case_{}", idx);
+        (alias, item.trim().to_string())
+    }
+
+    // -------------------------------------------------------------------------
+    // CTE (WITH clause) support
+    // -------------------------------------------------------------------------
+
+    /// Parse and execute CTEs from a query starting with WITH.
+    /// Returns the main SELECT SQL (without the WITH prefix) after populating
+    /// `self.cte_tables`.
+    async fn extract_and_execute_ctes(&self, sql: &str) -> Result<String> {
+        // Strip leading "WITH" keyword
+        let sql = sql.trim();
+        let after_with = if sql.to_uppercase().starts_with("WITH ") {
+            sql[5..].trim()
+        } else {
+            return Ok(sql.to_string());
+        };
+
+        // We need to find the final SELECT that terminates the CTE block.
+        // Strategy: scan through comma-separated CTE definitions looking for the
+        // pattern:  cte_name AS ( ... ), cte2 AS ( ... ), ... SELECT ...
+        let mut rest = after_with;
+        let mut is_recursive = false;
+
+        // Check for RECURSIVE keyword
+        if rest.to_uppercase().starts_with("RECURSIVE ") {
+            is_recursive = true;
+            rest = rest[9..].trim();
+        }
+
+        loop {
+            // Each iteration parses one CTE: name AS (body)
+            let name_end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
+            let cte_name = rest[..name_end].trim().to_string();
+            if cte_name.is_empty() {
+                break;
+            }
+            rest = rest[name_end..].trim();
+
+            // Expect AS
+            if !rest.to_uppercase().starts_with("AS") {
+                break;
+            }
+            rest = rest[2..].trim();
+
+            // Expect opening paren
+            if !rest.starts_with('(') {
+                break;
+            }
+
+            // Find the matching closing paren
+            let body_start = 1;
+            let mut depth = 1usize;
+            let mut idx = body_start;
+            let bytes = rest.as_bytes();
+            while idx < bytes.len() && depth > 0 {
+                match bytes[idx] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    idx += 1;
+                }
+            }
+            let cte_body = rest[body_start..idx].trim();
+            rest = rest[idx + 1..].trim(); // skip the closing paren
+
+            // Execute the CTE body
+            let cte_result = if is_recursive {
+                Box::pin(self.execute_recursive_cte(&cte_name, cte_body)).await?
+            } else {
+                Box::pin(self.execute(cte_body)).await?
+            };
+
+            // Convert QueryResult to Vec<Value> and store
+            let rows: Vec<Value> = match cte_result {
+                QueryResult::Select { columns, rows } => rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut map = serde_json::Map::new();
+                        for (col, val) in columns.iter().zip(row.into_iter()) {
+                            map.insert(col.clone(), val);
+                        }
+                        Value::Object(map)
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+
+            {
+                let mut ctes = self.cte_tables.lock().await;
+                ctes.insert(cte_name, rows);
+            }
+
+            // After the closing paren, there's either a comma (more CTEs) or the main SELECT
+            if rest.starts_with(',') {
+                rest = rest[1..].trim();
+            } else {
+                break;
+            }
+        }
+
+        Ok(rest.to_string())
+    }
+
+    /// Execute a RECURSIVE CTE by iterating until fixed-point.
+    async fn execute_recursive_cte(&self, cte_name: &str, body: &str) -> Result<QueryResult> {
+        // Recursive CTEs have the form:
+        //   anchor_term UNION [ALL] recursive_term
+        // We execute the anchor first, then iteratively execute the recursive term
+        // using the previous iteration's output as the CTE, until no new rows appear.
+
+        let upper = body.to_uppercase();
+        let union_pos = if let Some(p) = upper.find(" UNION ALL ") {
+            Some((p, p + 11, true))
+        } else {
+            upper.find(" UNION ").map(|p| (p, p + 7, false))
+        };
+
+        if let Some((split_at, rest_start, _all)) = union_pos {
+            let anchor_sql = body[..split_at].trim();
+            let recursive_sql = body[rest_start..].trim();
+
+            // Execute anchor
+            let anchor_result = Box::pin(self.execute(anchor_sql)).await?;
+            let (columns, mut accumulated) = match anchor_result {
+                QueryResult::Select { columns, rows } => (columns, rows),
+                _ => return Ok(QueryResult::Select { columns: vec![], rows: vec![] }),
+            };
+
+            // Convert accumulated to CTE format
+            let to_value_rows = |rows: &[Vec<Value>]| -> Vec<Value> {
+                rows.iter()
+                    .map(|row| {
+                        let mut map = serde_json::Map::new();
+                        for (col, val) in columns.iter().zip(row.iter()) {
+                            map.insert(col.clone(), val.clone());
+                        }
+                        Value::Object(map)
+                    })
+                    .collect()
+            };
+
+            // Iterate
+            const MAX_ITERATIONS: usize = 1000;
+            for _ in 0..MAX_ITERATIONS {
+                {
+                    let mut ctes = self.cte_tables.lock().await;
+                    ctes.insert(cte_name.to_string(), to_value_rows(&accumulated));
+                }
+
+                let iter_result = Box::pin(self.execute(recursive_sql)).await;
+                match iter_result {
+                    Ok(QueryResult::Select { rows: new_rows, .. }) => {
+                        if new_rows.is_empty() {
+                            break;
+                        }
+                        let prev_len = accumulated.len();
+                        accumulated.extend(new_rows);
+                        if accumulated.len() == prev_len {
+                            break; // Fixed point
+                        }
+                    }
+                    _ => break,
+                }
+            }
+
+            Ok(QueryResult::Select {
+                columns,
+                rows: accumulated,
+            })
+        } else {
+            // No UNION — not really recursive, just execute body
+            Box::pin(self.execute(body)).await
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // FK constraint helpers
+    // -------------------------------------------------------------------------
+
+    /// Parse REFERENCES clauses from a CREATE TABLE body and register FKs.
+    fn register_fk_constraints(&self, table_name: &str, column_defs_str: &str) {
+        // Look for patterns: col_name ... REFERENCES other_table(other_col)
+        let mut registry = fk_registry().write();
+        let mut constraints = Vec::new();
+
+        // Simple per-column scan
+        for part in column_defs_str.split(',') {
+            let part = part.trim();
+            let upper = part.to_uppercase();
+            if let Some(ref_pos) = upper.find("REFERENCES") {
+                // Extract the column name (first token of this definition)
+                let col_name = part.split_whitespace().next().unwrap_or("").to_string();
+                let after_ref = part[ref_pos + 10..].trim();
+                // Parse ref_table(ref_col)
+                if let Some(paren_open) = after_ref.find('(') {
+                    if let Some(paren_close) = after_ref.find(')') {
+                        let ref_table = after_ref[..paren_open].trim().to_string();
+                        let ref_col = after_ref[paren_open + 1..paren_close].trim().to_string();
+                        if !col_name.is_empty() && !ref_table.is_empty() && !ref_col.is_empty() {
+                            constraints.push(ForeignKeyConstraint {
+                                column: col_name,
+                                ref_table,
+                                ref_column: ref_col,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if !constraints.is_empty() {
+            registry.insert(table_name.to_string(), constraints);
+            info!("Registered {} FK constraint(s) for table '{}'", registry[table_name].len(), table_name);
+        }
+    }
+
+    /// Validate FK constraints on INSERT: for each FK column in the inserted doc,
+    /// verify a row with the referenced PK value exists in the referenced table.
+    fn validate_fk_insert(&self, table_name: &str, doc: &Value) -> Result<()> {
+        let registry = fk_registry().read();
+        let constraints = match registry.get(table_name) {
+            Some(c) => c.clone(),
+            None => return Ok(()),
+        };
+        drop(registry);
+
+        if constraints.is_empty() {
+            return Ok(());
+        }
+
+        let engine = self.engine_read()?;
+        for fk in &constraints {
+            let fk_val = if let Value::Object(map) = doc {
+                map.get(&fk.column).cloned().unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            if fk_val.is_null() {
+                continue; // NULL FK values are allowed (no referential check needed)
+            }
+            // Scan the referenced table for a matching row
+            let ref_data = engine
+                .get_table_data(&fk.ref_table)
+                .map_err(|e| anyhow!("FK check: failed to read table '{}': {}", fk.ref_table, e))?;
+            let found = ref_data.iter().any(|row| {
+                if let Value::Object(map) = row {
+                    map.get(&fk.ref_column).map(|v| v == &fk_val).unwrap_or(false)
+                } else {
+                    false
+                }
+            });
+            if !found {
+                return Err(anyhow!(
+                    "Foreign key violation: value {:?} in column '{}' does not exist in '{}'.'{}'",
+                    fk_val, fk.column, fk.ref_table, fk.ref_column
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate FK constraints on DELETE: ensure no other table has a FK pointing
+    /// at the row being deleted.
+    fn validate_fk_delete(&self, table_name: &str, deleted_row: &Value) -> Result<()> {
+        let registry = fk_registry().read();
+        let engine = self.engine_read()?;
+
+        for (referencing_table, constraints) in registry.iter() {
+            for fk in constraints {
+                if fk.ref_table != table_name {
+                    continue;
+                }
+                // fk.ref_column in deleted_row gives the PK value we're deleting
+                let pk_val = if let Value::Object(map) = deleted_row {
+                    map.get(&fk.ref_column).cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                if pk_val.is_null() {
+                    continue;
+                }
+                // Check if any row in the referencing table uses this PK value
+                let ref_data = engine
+                    .get_table_data(referencing_table)
+                    .map_err(|e| anyhow!("FK check failed: {}", e))?;
+                let blocked = ref_data.iter().any(|row| {
+                    if let Value::Object(map) = row {
+                        map.get(&fk.column).map(|v| v == &pk_val).unwrap_or(false)
+                    } else {
+                        false
+                    }
+                });
+                if blocked {
+                    return Err(anyhow!(
+                        "Foreign key violation: cannot delete row from '{}' because '{}' has a \
+                         reference via column '{}'",
+                        table_name, referencing_table, fk.column
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Parse GROUP BY clause
@@ -1383,6 +2068,10 @@ impl<'a> QueryExecutor<'a> {
         if lower.starts_with("select ") {
             return self.execute_select(sql).await;
         }
+        // CTE queries start with WITH and contain a final SELECT
+        if lower.starts_with("with ") {
+            return self.execute_select(sql).await;
+        }
         if lower.starts_with("insert into ") || lower.starts_with("insert ") {
             return self.execute_insert(sql).await;
         }
@@ -1439,6 +2128,18 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_select(&self, sql: &str) -> Result<QueryResult> {
+        // ---------------------------------------------------------------
+        // Handle CTEs: WITH cte_name AS (…) SELECT …
+        // ---------------------------------------------------------------
+        let sql_owned: String;
+        let sql = if sql.trim().to_uppercase().starts_with("WITH ") {
+            let main_sql = self.extract_and_execute_ctes(sql).await?;
+            sql_owned = main_sql;
+            sql_owned.as_str()
+        } else {
+            sql
+        };
+
         let lower = sql.to_lowercase();
 
         // Note: parse_result is not available in this scope
@@ -1457,7 +2158,18 @@ impl<'a> QueryExecutor<'a> {
         let from_pos = lower
             .find(" from ")
             .ok_or_else(|| anyhow!("Missing FROM clause"))?;
-        let select_part = &sql[select_start..from_pos];
+        let raw_select_part = &sql[select_start..from_pos];
+
+        // ---------------------------------------------------------------
+        // Extract CASE WHEN expressions from the SELECT clause
+        // ---------------------------------------------------------------
+        let (modified_select_part, case_expressions) =
+            Self::extract_case_expressions(raw_select_part);
+        let select_part = if case_expressions.is_empty() {
+            raw_select_part
+        } else {
+            &modified_select_part
+        };
 
         let select_clause = self.parse_select_clause(select_part)?;
 
@@ -1495,6 +2207,25 @@ impl<'a> QueryExecutor<'a> {
             joined_data.len(),
             all_columns.len()
         );
+
+        // Inject computed CASE WHEN columns into every row so they are
+        // available during column projection
+        if !case_expressions.is_empty() {
+            for row in &mut joined_data {
+                if let Value::Object(ref mut map) = row {
+                    for (alias, case_expr) in &case_expressions {
+                        let computed = self.evaluate_case_expression(case_expr, map)?;
+                        map.insert(alias.clone(), computed);
+                    }
+                }
+            }
+            // Also extend the column list so validation passes
+            for alias in case_expressions.keys() {
+                if !all_columns.contains(alias) {
+                    all_columns.push(alias.clone());
+                }
+            }
+        }
 
         // Parse WHERE conditions if present (with subquery support)
         let _where_conditions = if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
@@ -2003,6 +2734,9 @@ impl<'a> QueryExecutor<'a> {
         // Insert the document
         let doc = Value::Object(json_obj);
 
+        // Validate foreign key constraints before inserting
+        self.validate_fk_insert(table_name, &doc)?;
+
         // Check if we're in a transaction - if so, buffer the write
         if let Ok(true) = self.transaction_manager.is_in_transaction(&self.session_id) {
             // Buffer the write for later commit
@@ -2410,6 +3144,9 @@ impl<'a> QueryExecutor<'a> {
                             .cloned()
                             .ok_or_else(|| anyhow!("Row missing primary key"))?;
 
+                        // Validate FK referential integrity before deleting
+                        self.validate_fk_delete(table_name, &Value::Object(map.clone()))?;
+
                         // Delete the row (soft delete for audit trail)
                         engine.delete_record(table_name, primary_key)?;
                         deleted_count += 1;
@@ -2440,11 +3177,47 @@ impl<'a> QueryExecutor<'a> {
             .ok_or_else(|| anyhow!("Invalid CREATE TABLE syntax"))?;
         let table_name = after_create[..table_end].trim();
 
-        // Parse column definitions (simplified for now)
-        // Default to 'id' as primary key
+        // Extract the column definitions body (inside the outer parentheses)
+        let paren_open = after_create.find('(').unwrap();
+        // Find matching close paren
+        let col_body = {
+            let s = &after_create[paren_open + 1..];
+            let mut depth = 1usize;
+            let mut end = 0;
+            for (i, ch) in s.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &s[..end]
+        };
+
+        // Parse column definitions and determine primary key
+        let mut primary_key = "id".to_string();
+        for part in col_body.split(',') {
+            let part_upper = part.trim().to_uppercase();
+            // Detect explicit PRIMARY KEY constraint: "col_name ... PRIMARY KEY"
+            if part_upper.contains("PRIMARY KEY") {
+                let col_name = part.split_whitespace().next().unwrap_or("id");
+                primary_key = col_name.to_string();
+                break;
+            }
+        }
+
         engine
-            .create_table(table_name, "id", vec![])
+            .create_table(table_name, &primary_key, vec![])
             .map_err(|e| anyhow!("Create table failed: {}", e))?;
+
+        // Register FK constraints if present
+        self.register_fk_constraints(table_name, col_body);
 
         info!("Table {} created successfully", table_name);
         Ok(QueryResult::CreateTable)
@@ -3855,8 +4628,10 @@ impl<'a> QueryExecutor<'a> {
         subquery: &Subquery,
         outer_row: Option<&Value>,
     ) -> Result<QueryResult> {
-        // If this is a correlated subquery, we need to pass the outer row context
-        if let (true, Some(row)) = (subquery.is_correlated, outer_row) {
+        // If an outer row is provided, always run through the correlated path so that
+        // references like "alias.col" are substituted with actual values.  This is safe
+        // for non-correlated subqueries too: if no keys match, the SQL is left unchanged.
+        if let Some(row) = outer_row {
             self.execute_correlated_subquery(subquery, row).await
         } else {
             // Non-correlated subquery - check cache first
@@ -3885,16 +4660,106 @@ impl<'a> QueryExecutor<'a> {
         }
     }
 
-    /// Execute a correlated subquery with outer row context
+    /// Execute a correlated subquery with outer row context.
+    ///
+    /// Substitutes outer-row column values into the subquery SQL.  The outer
+    /// row may contain either:
+    ///   a) prefixed keys like `"u.id"` — when the JOIN already embeds the alias, or
+    ///   b) bare keys like `"id"` — when the engine row has no alias prefix.
+    ///
+    /// For (a): exact string replacement is safe (keys are already fully qualified).
+    /// For (b): we must handle two cases in order:
+    ///   1. `alias.col` references in the SQL (e.g. `u.id`) — find `.{col}` suffixes
+    ///      and replace the whole `alias.col` token.
+    ///   2. Bare `col` references — replace with word-boundary checking to avoid
+    ///      corrupting compound identifiers like `customer_id`.
     async fn execute_correlated_subquery(
         &self,
         subquery: &Subquery,
-        _outer_row: &Value,
+        outer_row: &Value,
     ) -> Result<QueryResult> {
-        // For now, treat as regular subquery
-        // In a full implementation, you'd substitute correlation variables
-        // with values from the outer row before execution
-        Box::pin(self.execute(subquery.sql.as_str())).await
+        let mut sql = subquery.sql.clone();
+
+        if let Value::Object(map) = outer_row {
+            // Sort keys longest-first so longer keys are replaced before shorter ones.
+            let mut pairs: Vec<(&String, &Value)> = map.iter().collect();
+            pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+            // Word-boundary replacement helper (avoids matching substrings of identifiers).
+            let replace_word_bounded = |haystack: &str, pattern: &str, replacement: &str| -> String {
+                let mut result = String::new();
+                let mut search = haystack;
+                while let Some(pos) = search.find(pattern) {
+                    let before = if pos > 0 { search.as_bytes()[pos - 1] } else { b' ' };
+                    let after = search
+                        .as_bytes()
+                        .get(pos + pattern.len())
+                        .copied()
+                        .unwrap_or(b' ');
+                    let is_boundary = |c: u8| !c.is_ascii_alphanumeric() && c != b'_';
+                    result.push_str(&search[..pos]);
+                    if is_boundary(before) && is_boundary(after) {
+                        result.push_str(replacement);
+                    } else {
+                        result.push_str(pattern);
+                    }
+                    search = &search[pos + pattern.len()..];
+                }
+                result.push_str(search);
+                result
+            };
+
+            for (key, value) in &pairs {
+                let literal = match value {
+                    Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    _ => "NULL".to_string(),
+                };
+
+                if key.contains('.') {
+                    // Prefixed key (e.g. "u.id"): safe exact replacement.
+                    sql = sql.replace(key.as_str(), &literal);
+                } else {
+                    // Bare key (e.g. "id").
+                    //
+                    // Step 1: replace "alias.key" patterns → literal.
+                    // This handles the common case WHERE SQL uses `u.id` but the
+                    // outer row only contains the bare key `id`.
+                    let dot_key = format!(".{}", key);
+                    let mut result = String::new();
+                    let mut search = sql.as_str();
+                    while let Some(dot_pos) = search.find(&dot_key) {
+                        let after_pos = dot_pos + dot_key.len();
+                        let after = search.as_bytes().get(after_pos).copied().unwrap_or(b' ');
+                        let is_boundary = |c: u8| !c.is_ascii_alphanumeric() && c != b'_';
+                        if is_boundary(after) {
+                            // Walk back to find the start of the alias token.
+                            let alias_start = search[..dot_pos]
+                                .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                                .map(|p| p + 1)
+                                .unwrap_or(0);
+                            result.push_str(&search[..alias_start]);
+                            result.push_str(&literal);
+                            search = &search[after_pos..];
+                        } else {
+                            // Not a word boundary after the key — skip past this occurrence.
+                            result.push_str(&search[..dot_pos + dot_key.len()]);
+                            search = &search[dot_pos + dot_key.len()..];
+                        }
+                    }
+                    result.push_str(search);
+                    sql = result;
+
+                    // Step 2: replace any remaining bare "key" occurrences using
+                    // word-boundary matching.
+                    sql = replace_word_bounded(&sql, key, &literal);
+                }
+            }
+        }
+
+        Box::pin(self.execute(&sql)).await
     }
 
     /// Evaluate WHERE conditions with subquery support
@@ -3913,6 +4778,15 @@ impl<'a> QueryExecutor<'a> {
                     if let Value::Object(map) = row {
                         let field_value = map
                             .get(column)
+                            .or_else(|| {
+                                // If column has a table prefix (e.g. "p.customer_id"),
+                                // strip it and retry with the bare name ("customer_id").
+                                if let Some(dot) = column.rfind('.') {
+                                    map.get(&column[dot + 1..])
+                                } else {
+                                    None
+                                }
+                            })
                             .or_else(|| {
                                 // Try to find column with any table prefix
                                 map.iter()
@@ -4402,6 +5276,33 @@ impl<'a> QueryExecutor<'a> {
     async fn execute_join(&self, from_clause: &FromClause) -> Result<(Vec<Value>, Vec<String>)> {
         match from_clause {
             FromClause::Single(table_ref) => {
+                // Check CTE tables first
+                {
+                    let ctes = self.cte_tables.lock().await;
+                    if let Some(cte_rows) = ctes.get(&table_ref.name) {
+                        let cte_rows = cte_rows.clone();
+                        drop(ctes);
+                        // Derive column list from the CTE data
+                        let mut columns: Vec<String> = Vec::new();
+                        let mut seen = std::collections::HashSet::new();
+                        for row in &cte_rows {
+                            if let Value::Object(map) = row {
+                                for key in map.keys() {
+                                    if seen.insert(key.clone()) {
+                                        columns.push(key.clone());
+                                    }
+                                }
+                            }
+                        }
+                        let prefix = table_ref.alias.as_ref().unwrap_or(&table_ref.name);
+                        let prefixed_columns: Vec<String> = columns
+                            .iter()
+                            .map(|col| format!("{}.{}", prefix, col))
+                            .collect();
+                        return Ok((cte_rows, prefixed_columns));
+                    }
+                }
+
                 // Single table - no JOIN needed. Get all data synchronously to avoid
                 // holding a non-Send RwLockReadGuard across await points.
                 let engine = self.engine_read()?;
@@ -5299,12 +6200,60 @@ impl<'a> QueryExecutor<'a> {
             });
         }
 
-        // Validate that all requested columns exist
+        // Helper: check whether a SELECT item is a literal constant (number, quoted
+        // string, NULL, TRUE, FALSE).  Literals are always "valid" — they don't
+        // need to exist as a column in the joined data.
+        let is_literal = |col: &str| -> bool {
+            let trimmed = col.trim();
+            if trimmed.eq_ignore_ascii_case("null")
+                || trimmed.eq_ignore_ascii_case("true")
+                || trimmed.eq_ignore_ascii_case("false")
+            {
+                return true;
+            }
+            if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+                return true;
+            }
+            trimmed.parse::<f64>().is_ok()
+        };
+
+        // Helper: evaluate a literal constant SELECT item.
+        let eval_literal = |col: &str| -> Value {
+            let trimmed = col.trim();
+            if trimmed.eq_ignore_ascii_case("null") {
+                return Value::Null;
+            }
+            if trimmed.eq_ignore_ascii_case("true") {
+                return Value::Bool(true);
+            }
+            if trimmed.eq_ignore_ascii_case("false") {
+                return Value::Bool(false);
+            }
+            if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+                return Value::String(trimmed[1..trimmed.len() - 1].to_string());
+            }
+            if let Ok(n) = trimmed.parse::<i64>() {
+                return Value::Number(n.into());
+            }
+            if let Ok(f) = trimmed.parse::<f64>() {
+                if let Some(n) = serde_json::Number::from_f64(f) {
+                    return Value::Number(n);
+                }
+            }
+            Value::Null
+        };
+
+        // Validate that all requested columns exist (literals are always valid).
         let first = &joined_data[0];
         if let Value::Object(map) = first {
             for col in selected_columns {
-                // Check if column exists directly or with any table prefix
+                if is_literal(col) {
+                    continue; // constants don't need to exist as columns
+                }
+                // Check if column exists directly, with a table prefix, or stripped prefix.
+                let bare_col = col.rfind('.').map(|p| &col[p + 1..]).unwrap_or(col.as_str());
                 let column_exists = map.contains_key(col)
+                    || map.contains_key(bare_col)
                     || map.keys().any(|key| key.ends_with(&format!(".{}", col)))
                     || all_columns.contains(col)
                     || all_columns
@@ -5328,9 +6277,22 @@ impl<'a> QueryExecutor<'a> {
                     selected_columns
                         .iter()
                         .map(|col| {
+                            // Literal constant: return the value directly.
+                            if is_literal(col) {
+                                return eval_literal(col);
+                            }
+
                             // Try exact match first
                             if let Some(value) = map.get(col) {
                                 return value.clone();
+                            }
+
+                            // Strip table prefix (e.g. "p.customer_id" → "customer_id")
+                            if let Some(dot) = col.rfind('.') {
+                                let bare = &col[dot + 1..];
+                                if let Some(value) = map.get(bare) {
+                                    return value.clone();
+                                }
                             }
 
                             // Try to find column with any table prefix

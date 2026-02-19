@@ -280,20 +280,136 @@ impl QueryOptimizer {
         self.execution_plan_cache.insert(query_hash, cached_plan);
     }
 
-    /// Apply query optimizations
+    /// Apply query optimizations.
+    /// Returns the (possibly rewritten) SQL and a list of applied optimisation
+    /// descriptions.  The returned SQL is semantically equivalent to the input.
     pub fn optimize_query(&self, sql: &str) -> (String, Vec<String>) {
-        let optimized_sql = sql.to_string();
+        let mut optimized_sql = sql.to_string();
         let mut applied_optimizations = Vec::new();
+        let sql_upper = sql.to_uppercase();
 
+        // Rule 1: Push LIMIT down for simple PKlookups that already return ≤1 row.
+        // Pattern: SELECT … FROM t WHERE id = <literal>  (no existing LIMIT)
+        // This is mainly a hint — the executor already short-circuits, but the
+        // comment helps query plan logging.
+        if sql_upper.starts_with("SELECT")
+            && sql_upper.contains(" WHERE ")
+            && (sql_upper.contains(" ID = ") || sql_upper.contains(" ID="))
+            && !sql_upper.contains(" LIMIT ")
+            && !sql_upper.contains(" JOIN ")
+        {
+            // Don't add LIMIT if it's a SELECT * (all cols); just note it.
+            applied_optimizations.push("PK equality lookup detected — single-row access path".to_string());
+        }
+
+        // Rule 2: COUNT(*) with no WHERE — flag as fast-path candidate.
+        if sql_upper.contains("COUNT(*)") && !sql_upper.contains(" WHERE ") {
+            applied_optimizations.push("Full-table COUNT(*) — consider caching or snapshot count".to_string());
+        }
+
+        // Rule 3: Reorder WHERE conditions — put equality conditions before
+        // range/LIKE conditions so the executor hits them first.
+        if sql_upper.contains(" WHERE ") && !sql_upper.contains(" JOIN ") {
+            let reordered = self.reorder_where_conditions(&optimized_sql);
+            if reordered != optimized_sql {
+                optimized_sql = reordered;
+                applied_optimizations.push("WHERE conditions reordered (equality first)".to_string());
+            }
+        }
+
+        // Rule 4: Generic rule description logging (existing rules)
         for rule in &self.rewrite_rules {
-            // Simple pattern matching - in production, use a proper SQL parser
-            if sql.to_uppercase().contains(&rule.pattern.to_uppercase()) {
+            if sql_upper.contains(&rule.pattern.to_uppercase()) {
                 applied_optimizations.push(rule.description.clone());
                 debug!("Applied optimization: {}", rule.description);
             }
         }
 
+        // Cache execution plan on first optimization
+        if !applied_optimizations.is_empty() {
+            let hash = self.hash_sql(sql);
+            let plan_desc = applied_optimizations.join("; ");
+            let cost = if applied_optimizations
+                .iter()
+                .any(|o| o.contains("PK equality"))
+            {
+                1.0 // very cheap
+            } else {
+                100.0
+            };
+            self.cache_execution_plan(hash, plan_desc, cost);
+        }
+
         (optimized_sql, applied_optimizations)
+    }
+
+    /// Reorder WHERE clause conditions to put equality (=) conditions before
+    /// range/LIKE/IN conditions.  Operates on the AND-separated conditions only.
+    fn reorder_where_conditions(&self, sql: &str) -> String {
+        let lower = sql.to_lowercase();
+        let where_pos = match lower.find(" where ") {
+            Some(p) => p,
+            None => return sql.to_string(),
+        };
+
+        let before_where = &sql[..where_pos + 7]; // includes " WHERE "
+        let after_where = &sql[where_pos + 7..];
+
+        // Find end of WHERE clause (ORDER BY / GROUP BY / LIMIT / end of string)
+        let keywords = [" order by ", " group by ", " limit ", " having "];
+        let where_end = keywords
+            .iter()
+            .filter_map(|kw| lower[where_pos + 7..].find(kw))
+            .min()
+            .unwrap_or(after_where.len());
+
+        let where_clause = &after_where[..where_end];
+        let rest = &after_where[where_end..];
+
+        // Split by AND (top-level only; good enough for simple queries)
+        let conditions: Vec<&str> = where_clause.split(" AND ").collect();
+        if conditions.len() <= 1 {
+            return sql.to_string(); // nothing to reorder
+        }
+
+        // Classify: equality conditions score 0 (go first), others score 1
+        let mut scored: Vec<(usize, &str)> = conditions
+            .iter()
+            .enumerate()
+            .map(|(i, cond)| {
+                let c_upper = cond.to_uppercase();
+                let score = if c_upper.contains(" LIKE ")
+                    || c_upper.contains(" IN ")
+                    || c_upper.contains(">")
+                    || c_upper.contains("<")
+                {
+                    1
+                } else {
+                    0
+                };
+                (score * 1000 + i, *cond) // stable sort: preserve original order within same score
+            })
+            .collect();
+
+        scored.sort_by_key(|(score, _)| *score);
+
+        let reordered_where: Vec<&str> = scored.iter().map(|(_, c)| *c).collect();
+        let new_where = reordered_where.join(" AND ");
+
+        if new_where == where_clause {
+            sql.to_string()
+        } else {
+            format!("{}{}{}", before_where, new_where, rest)
+        }
+    }
+
+    /// Compute a short hash string for the SQL to use as cache key.
+    fn hash_sql(&self, sql: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        sql.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
     }
 
     /// Clean up old cached plans

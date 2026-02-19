@@ -23,6 +23,7 @@ use crate::security_audit::SecurityAuditLogger;
 use crate::slow_query_log::SlowQueryLogger;
 use crate::tls::SecureStream;
 use crate::transaction::TransactionManager;
+use driftdb_core::row_level_security::{PolicyAction, PolicyResult, RlsManager, SecurityContext};
 use driftdb_core::{EngineGuard, EnginePool, RateLimitManager};
 
 pub struct SessionManager {
@@ -33,6 +34,7 @@ pub struct SessionManager {
     slow_query_logger: Arc<SlowQueryLogger>,
     audit_logger: Arc<SecurityAuditLogger>,
     rbac_manager: Arc<RbacManager>,
+    rls_manager: Arc<RlsManager>,
 }
 
 impl SessionManager {
@@ -52,6 +54,7 @@ impl SessionManager {
             slow_query_logger,
             audit_logger,
             rbac_manager,
+            rls_manager: Arc::new(RlsManager::new()),
         }
     }
 
@@ -198,6 +201,7 @@ impl SessionManager {
             slow_query_logger: self.slow_query_logger.clone(),
             audit_logger: self.audit_logger.clone(),
             is_encrypted,
+            rls_manager: self.rls_manager.clone(),
         };
 
         // Handle session
@@ -234,6 +238,7 @@ struct Session {
     slow_query_logger: Arc<SlowQueryLogger>,
     audit_logger: Arc<SecurityAuditLogger>,
     is_encrypted: bool,
+    rls_manager: Arc<RlsManager>,
 }
 
 impl Session {
@@ -655,9 +660,12 @@ impl Session {
             session_id,
         );
         match executor.execute(sql).await {
-            Ok(result) => {
+            Ok(mut result) => {
                 let duration = start_time.elapsed();
                 let duration_secs = duration.as_secs_f64();
+
+                // Apply Row-Level Security filtering for SELECT results
+                result = self.apply_rls_filter(sql, result);
 
                 // Update transaction status based on the command
                 let sql_upper = sql.trim().to_uppercase();
@@ -729,6 +737,78 @@ impl Session {
         }
 
         Ok(())
+    }
+
+    /// Apply Row-Level Security policies to a query result.
+    /// For SELECT results, rows that fail the USING expression are dropped.
+    fn apply_rls_filter(
+        &self,
+        sql: &str,
+        result: crate::executor::QueryResult,
+    ) -> crate::executor::QueryResult {
+        use crate::executor::QueryResult;
+
+        let (columns, rows) = match result {
+            QueryResult::Select { columns, rows } => (columns, rows),
+            other => return other, // RLS only applies to SELECT
+        };
+
+        // Extract the primary table name from the SQL
+        let table_name = extract_table_name_from_select(sql);
+        let table_name = match table_name {
+            Some(t) => t,
+            None => {
+                return QueryResult::Select { columns, rows };
+            }
+        };
+
+        // Build security context
+        let username = self
+            .username
+            .clone()
+            .unwrap_or_else(|| "anonymous".to_string());
+        let context = SecurityContext {
+            username: username.clone(),
+            roles: vec![],
+            is_superuser: username == "driftdb" || username == "postgres",
+            session_id: Some(format!("session_{}", self.process_id)),
+            variables: std::collections::HashMap::new(),
+        };
+
+        // Check access
+        let policy_result = match self
+            .rls_manager
+            .check_access(&table_name, PolicyAction::Select, &context)
+        {
+            Ok(r) => r,
+            Err(_) => return QueryResult::Select { columns, rows },
+        };
+
+        match policy_result {
+            PolicyResult::Allow => QueryResult::Select { columns, rows },
+            PolicyResult::Deny => QueryResult::Select {
+                columns,
+                rows: vec![],
+            },
+            PolicyResult::Filter(filter_expr) => {
+                // Apply the filter expression to each row
+                let filtered_rows = rows
+                    .into_iter()
+                    .filter(|row| {
+                        rls_row_matches_filter(&columns, row, &filter_expr)
+                    })
+                    .collect();
+                QueryResult::Select {
+                    columns,
+                    rows: filtered_rows,
+                }
+            }
+        }
+    }
+
+    /// Expose the RLS manager for policy management commands.
+    pub fn rls_manager(&self) -> &Arc<RlsManager> {
+        &self.rls_manager
     }
 
     async fn handle_user_management_query(
@@ -1154,6 +1234,97 @@ impl Session {
         stream.write_all(&bytes).await?;
         stream.flush().await?;
         Ok(())
+    }
+}
+
+/// Extract the primary FROM table name from a SELECT query (best-effort).
+fn extract_table_name_from_select(sql: &str) -> Option<String> {
+    let lower = sql.to_lowercase();
+    let from_pos = lower.find(" from ")?;
+    let after_from = sql[from_pos + 6..].trim();
+    // Take the first token (the table name, before any alias/JOIN/WHERE)
+    let table_name = after_from
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')')
+        .next()?
+        .trim()
+        .to_string();
+    if table_name.is_empty() {
+        None
+    } else {
+        Some(table_name)
+    }
+}
+
+/// Evaluate a simple RLS filter expression (e.g. `"user_id = 'alice'"`)
+/// against a row represented as a parallel columns/values pair.
+fn rls_row_matches_filter(columns: &[String], row: &[Value], filter_expr: &str) -> bool {
+    // Build a quick map: column_name -> value
+    let row_map: std::collections::HashMap<&str, &Value> = columns
+        .iter()
+        .zip(row.iter())
+        .map(|(c, v)| (c.as_str(), v))
+        .collect();
+
+    // Split on AND (OR is not supported in this minimal implementation)
+    for part in filter_expr.split(" AND ") {
+        let part = part.trim();
+        // Handle "col = 'val'" or "col = 123"
+        let operators = ["!=", ">=", "<=", "=", ">", "<"];
+        let mut matched_op = false;
+        for op in &operators {
+            if let Some(op_pos) = part.find(op) {
+                let lhs = part[..op_pos].trim();
+                let rhs = part[op_pos + op.len()..].trim();
+                let rhs_val = parse_rls_literal(rhs);
+                let lhs_val = row_map.get(lhs).copied().cloned().unwrap_or(Value::Null);
+                let result = match *op {
+                    "=" => lhs_val == rhs_val,
+                    "!=" => lhs_val != rhs_val,
+                    ">" => compare_values(&lhs_val, &rhs_val) > 0,
+                    "<" => compare_values(&lhs_val, &rhs_val) < 0,
+                    ">=" => compare_values(&lhs_val, &rhs_val) >= 0,
+                    "<=" => compare_values(&lhs_val, &rhs_val) <= 0,
+                    _ => false,
+                };
+                if !result {
+                    return false;
+                }
+                matched_op = true;
+                break;
+            }
+        }
+        if !matched_op {
+            // Can't evaluate this condition; default to allow
+        }
+    }
+    true
+}
+
+fn parse_rls_literal(s: &str) -> Value {
+    let s = s.trim();
+    if s.starts_with('\'') && s.ends_with('\'') {
+        return Value::String(s[1..s.len() - 1].to_string());
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return Value::Number(n.into());
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        if let Some(num) = serde_json::Number::from_f64(f) {
+            return Value::Number(num);
+        }
+    }
+    Value::String(s.to_string())
+}
+
+fn compare_values(a: &Value, b: &Value) -> i32 {
+    match (a, b) {
+        (Value::Number(na), Value::Number(nb)) => {
+            let fa = na.as_f64().unwrap_or(0.0);
+            let fb = nb.as_f64().unwrap_or(0.0);
+            fa.partial_cmp(&fb).map(|o| o as i32).unwrap_or(0)
+        }
+        (Value::String(sa), Value::String(sb)) => sa.cmp(sb) as i32,
+        _ => 0,
     }
 }
 
