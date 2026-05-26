@@ -1932,6 +1932,67 @@ fn execute_group_by_aggregation(
     select: &Select,
     group_exprs: &[Expr],
 ) -> Result<Vec<Value>> {
+    // SQL-standard validation, matching PostgreSQL's strictness:
+    //   1. `SELECT *` is not meaningful with GROUP BY — the projected rows
+    //      are groups, not source rows, so `*` would have to expand to
+    //      something the planner can't decide unambiguously.
+    //   2. Every non-aggregate column in the SELECT list must appear in
+    //      GROUP BY (functional-dependency rule). Otherwise the value the
+    //      query would return is non-deterministic.
+    //
+    // Previously sql_bridge silently accepted both, returning whatever the
+    // first row of each group happened to contain — wrong by the standard
+    // and inconsistent with the server's old hand-rolled validator.
+    let group_columns: std::collections::HashSet<&str> = group_exprs
+        .iter()
+        .filter_map(|expr| match expr {
+            Expr::Identifier(i) => Some(i.value.as_str()),
+            Expr::CompoundIdentifier(parts) => parts.last().map(|p| p.value.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    for item in &select.projection {
+        match item {
+            SelectItem::Wildcard(_) => {
+                return Err(DriftError::InvalidQuery(
+                    "SELECT * with GROUP BY is not supported".to_string(),
+                ));
+            }
+            SelectItem::UnnamedExpr(Expr::Identifier(ident))
+                if !group_columns.contains(ident.value.as_str()) =>
+            {
+                return Err(DriftError::InvalidQuery(format!(
+                    "column \"{}\" must be in GROUP BY clause or used in an aggregate",
+                    ident.value
+                )));
+            }
+            SelectItem::ExprWithAlias {
+                expr: Expr::Identifier(ident),
+                ..
+            } if !group_columns.contains(ident.value.as_str()) => {
+                return Err(DriftError::InvalidQuery(format!(
+                    "column \"{}\" must be in GROUP BY clause or used in an aggregate",
+                    ident.value
+                )));
+            }
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                if let Some(last) = parts.last() {
+                    if !group_columns.contains(last.value.as_str()) {
+                        return Err(DriftError::InvalidQuery(format!(
+                            "column \"{}\" must be in GROUP BY clause or used in an aggregate",
+                            last.value
+                        )));
+                    }
+                }
+            }
+            // Function calls (aggregates), aliased aggregates, and computed
+            // expressions are allowed unconditionally — the aggregation is the
+            // valid escape from the functional-dependency rule.
+            _ => {}
+        }
+    }
+
     // Group rows by the GROUP BY expressions
     let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
 
@@ -2102,15 +2163,18 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
         _ => None,
     };
 
-    // Generate result column name based on the function
+    // Generate result column name based on the function. PostgreSQL
+    // convention: column header is the lowercase function name, e.g.
+    // `count(*)`, `sum(price)`. Unquoted SQL is case-insensitive at the
+    // language level; the canonical output form is lowercase.
     let result_name = match func_name.as_str() {
-        "COUNT" if column.is_none() => "COUNT(*)".to_string(),
-        "COUNT" => format!("COUNT({})", column.as_ref().unwrap()),
-        "SUM" => format!("SUM({})", column.as_ref().unwrap_or(&"*".to_string())),
-        "AVG" => format!("AVG({})", column.as_ref().unwrap_or(&"*".to_string())),
-        "MIN" => format!("MIN({})", column.as_ref().unwrap_or(&"*".to_string())),
-        "MAX" => format!("MAX({})", column.as_ref().unwrap_or(&"*".to_string())),
-        _ => func_name.clone(),
+        "COUNT" if column.is_none() => "count(*)".to_string(),
+        "COUNT" => format!("count({})", column.as_ref().unwrap()),
+        "SUM" => format!("sum({})", column.as_ref().unwrap_or(&"*".to_string())),
+        "AVG" => format!("avg({})", column.as_ref().unwrap_or(&"*".to_string())),
+        "MIN" => format!("min({})", column.as_ref().unwrap_or(&"*".to_string())),
+        "MAX" => format!("max({})", column.as_ref().unwrap_or(&"*".to_string())),
+        _ => func_name.to_lowercase(),
     };
 
     // Helper to get column value, checking both original and prefixed names
@@ -2141,12 +2205,36 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
         }
         "SUM" => {
             if let Some(col) = column {
-                let sum: f64 = rows
+                // SQL-standard / PostgreSQL semantics:
+                //   - SUM over zero rows (or all-NULL rows) is NULL, not 0.
+                //   - SUM of integer inputs returns an integer; if any input
+                //     is a float, the whole sum is a float. We don't have a
+                //     numeric type distinction, but we do have JSON int vs
+                //     float, so preserve that.
+                let collected: Vec<Value> = rows
                     .iter()
                     .filter_map(|row| get_column_value(row, &col))
-                    .filter_map(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
-                    .sum();
-                Ok((result_name, json!(sum)))
+                    .filter(|v| !v.is_null())
+                    .collect();
+
+                if collected.is_empty() {
+                    return Ok((result_name, Value::Null));
+                }
+
+                let all_ints = collected.iter().all(|v| {
+                    v.as_i64().is_some()
+                        || matches!(v, Value::Number(n) if n.is_i64() || n.is_u64())
+                });
+                if all_ints {
+                    let sum: i64 = collected.iter().filter_map(|v| v.as_i64()).sum();
+                    Ok((result_name, json!(sum)))
+                } else {
+                    let sum: f64 = collected
+                        .iter()
+                        .filter_map(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
+                        .sum();
+                    Ok((result_name, json!(sum)))
+                }
             } else {
                 Err(DriftError::InvalidQuery(
                     "SUM requires a column".to_string(),
@@ -2175,14 +2263,16 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
         }
         "MIN" => {
             if let Some(col) = column {
+                // Use the canonical compare so MIN/MAX work for string and
+                // mixed-type columns. The previous numeric-only comparator
+                // returned Ordering::Equal for any non-Number pair, which
+                // made `MIN(name)` return whatever happened to come first
+                // in iteration order rather than the alphabetic minimum.
                 let min = rows
                     .iter()
                     .filter_map(|row| get_column_value(row, &col))
                     .filter(|v| !v.is_null())
-                    .min_by(|a, b| match (a.as_f64(), b.as_f64()) {
-                        (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap(),
-                        _ => std::cmp::Ordering::Equal,
-                    });
+                    .min_by(crate::query::predicate::compare_json_values);
 
                 Ok((result_name, min.unwrap_or(Value::Null)))
             } else {
@@ -2197,10 +2287,7 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
                     .iter()
                     .filter_map(|row| get_column_value(row, &col))
                     .filter(|v| !v.is_null())
-                    .max_by(|a, b| match (a.as_f64(), b.as_f64()) {
-                        (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap(),
-                        _ => std::cmp::Ordering::Equal,
-                    });
+                    .max_by(crate::query::predicate::compare_json_values);
 
                 Ok((result_name, max.unwrap_or(Value::Null)))
             } else {
@@ -2553,14 +2640,18 @@ fn evaluate_having_expression(expr: &Expr, row: &Value) -> Result<bool> {
                     };
 
                     // Match the actual column naming from evaluate_aggregate_function
+                    // PostgreSQL convention: aggregate column headers are
+                    // lowercase (`count(*)`, `sum(x)`) unless the user quoted
+                    // the function name. Matches the column naming produced
+                    // by `evaluate_aggregate_function`.
                     let col_name = match func_name.as_str() {
-                        "COUNT" if column.is_none() => "COUNT(*)".to_string(),
-                        "COUNT" => format!("COUNT({})", column.as_ref().unwrap()),
-                        "SUM" => format!("SUM({})", column.as_ref().unwrap_or(&"*".to_string())),
-                        "AVG" => format!("AVG({})", column.as_ref().unwrap_or(&"*".to_string())),
-                        "MIN" => format!("MIN({})", column.as_ref().unwrap_or(&"*".to_string())),
-                        "MAX" => format!("MAX({})", column.as_ref().unwrap_or(&"*".to_string())),
-                        _ => func_name.clone(),
+                        "COUNT" if column.is_none() => "count(*)".to_string(),
+                        "COUNT" => format!("count({})", column.as_ref().unwrap()),
+                        "SUM" => format!("sum({})", column.as_ref().unwrap_or(&"*".to_string())),
+                        "AVG" => format!("avg({})", column.as_ref().unwrap_or(&"*".to_string())),
+                        "MIN" => format!("min({})", column.as_ref().unwrap_or(&"*".to_string())),
+                        "MAX" => format!("max({})", column.as_ref().unwrap_or(&"*".to_string())),
+                        _ => func_name.to_lowercase(),
                     };
 
                     row.get(&col_name).cloned().unwrap_or(Value::Null)
@@ -3238,6 +3329,45 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
         return Ok(data);
     }
 
+    // Validate bare column identifiers against the union of column names
+    // observed across all rows. PostgreSQL errors on `SELECT nonexistent FROM t`,
+    // and matching that behaviour is the choice we make here — silently
+    // producing NULLs for unknown columns hides typos and schema drift.
+    //
+    // DriftDB's storage is schemaless within a table (legacy `CREATE TABLE t
+    // (pk = id)` declares only the PK; data columns are introduced by INSERT),
+    // so the only reliable "set of valid columns" is what's actually in the
+    // data. If the data is non-empty, every Expr::Identifier in the
+    // projection must appear in at least one row; otherwise we error.
+    if !data.is_empty() {
+        let mut known_columns: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for row in &data {
+            if let Value::Object(map) = row {
+                for key in map.keys() {
+                    known_columns.insert(key.as_str());
+                }
+            }
+        }
+        for item in projection {
+            let ident = match item {
+                SelectItem::UnnamedExpr(Expr::Identifier(i)) => Some(&i.value),
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(i),
+                    ..
+                } => Some(&i.value),
+                _ => None,
+            };
+            if let Some(name) = ident {
+                if !known_columns.contains(name.as_str()) {
+                    return Err(DriftError::InvalidQuery(format!(
+                        "column \"{}\" does not exist",
+                        name
+                    )));
+                }
+            }
+        }
+    }
+
     let mut result = Vec::new();
     for row in data {
         if let Value::Object(row_map) = &row {
@@ -3354,6 +3484,35 @@ fn apply_distinct(data: Vec<Value>) -> Vec<Value> {
     result
 }
 
+/// Build the canonical lowercase column name an aggregate function call would
+/// produce, so `ORDER BY AVG(salary)` can locate the `avg(salary)` key that
+/// `evaluate_aggregate_function` wrote into the result row.
+fn aggregate_column_name(func: &Function) -> Option<String> {
+    let func_name = func.name.to_string().to_uppercase();
+    let column = match &func.args {
+        FunctionArguments::List(list) if list.args.len() == 1 => match &list.args[0] {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                Some(ident.value.clone())
+            }
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
+                parts.last().map(|p| p.value.clone())
+            }
+            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => None,
+            _ => return None,
+        },
+        _ => None,
+    };
+    Some(match func_name.as_str() {
+        "COUNT" if column.is_none() => "count(*)".to_string(),
+        "COUNT" => format!("count({})", column?),
+        "SUM" => format!("sum({})", column.unwrap_or_else(|| "*".to_string())),
+        "AVG" => format!("avg({})", column.unwrap_or_else(|| "*".to_string())),
+        "MIN" => format!("min({})", column.unwrap_or_else(|| "*".to_string())),
+        "MAX" => format!("max({})", column.unwrap_or_else(|| "*".to_string())),
+        _ => return None,
+    })
+}
+
 fn apply_order_by(mut rows: Vec<Value>, order_by: &[OrderByExpr]) -> Result<Vec<Value>> {
     rows.sort_by(|a, b| {
         for order_expr in order_by {
@@ -3374,13 +3533,16 @@ fn compare_rows_by_expr(
     b: &Value,
     order_expr: &OrderByExpr,
 ) -> Option<std::cmp::Ordering> {
-    // Extract the column name from the expression
+    // Extract the column name from the expression. ORDER BY can reference:
+    //   - a bare column: `ORDER BY name`
+    //   - a table-qualified column: `ORDER BY t.name`
+    //   - an aggregate that also appears in SELECT: `ORDER BY AVG(salary)`
+    //     — this works post-aggregation because the aggregation step writes
+    //     the result under the canonical lowercase name (`avg(salary)`).
     let column = match &order_expr.expr {
         Expr::Identifier(ident) => ident.value.clone(),
-        Expr::CompoundIdentifier(idents) => {
-            // For now, just take the last part (column name)
-            idents.last()?.value.clone()
-        }
+        Expr::CompoundIdentifier(idents) => idents.last()?.value.clone(),
+        Expr::Function(func) => aggregate_column_name(func)?,
         _ => return None,
     };
 

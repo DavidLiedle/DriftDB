@@ -462,44 +462,39 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
             CoreResult::Rows { data } => {
-                // Convert data: Vec<Value> to columnar format
-                if data.is_empty() {
-                    Ok(QueryResult::Select {
-                        columns: vec![],
-                        rows: vec![],
-                    })
+                // Derive column list from the first row's keys when possible —
+                // the workspace enables `serde_json/preserve_order`, so map
+                // iteration order matches projection / aggregation order. This
+                // is critical for queries like `SELECT b, a FROM t` where the
+                // schema column order would shuffle the result.
+                //
+                // For empty result sets we fall back to `table_columns` (the
+                // full schema), so PostgreSQL clients still see a column header
+                // — `SELECT * FROM empty_table` returns columns even though
+                // there's no row to read them from.
+                let columns: Vec<String> = if let Some(Value::Object(first_row)) = data.first() {
+                    first_row.keys().cloned().collect()
                 } else {
-                    // Use provided columns from schema, or fall back to HashMap keys
-                    let columns: Vec<String> = if let Some(cols) = table_columns {
-                        cols
-                    } else {
-                        // Fallback to HashMap keys
-                        if let Some(Value::Object(first_row)) = data.first() {
-                            first_row.keys().cloned().collect()
+                    table_columns.unwrap_or_default()
+                };
+
+                let rows: Vec<Vec<Value>> = data
+                    .iter()
+                    .filter_map(|row| {
+                        if let Value::Object(obj) = row {
+                            Some(
+                                columns
+                                    .iter()
+                                    .map(|col| obj.get(col).cloned().unwrap_or(Value::Null))
+                                    .collect(),
+                            )
                         } else {
-                            vec![]
+                            None
                         }
-                    };
+                    })
+                    .collect();
 
-                    // Convert rows
-                    let rows: Vec<Vec<Value>> = data
-                        .iter()
-                        .filter_map(|row| {
-                            if let Value::Object(obj) = row {
-                                Some(
-                                    columns
-                                        .iter()
-                                        .map(|col| obj.get(col).cloned().unwrap_or(Value::Null))
-                                        .collect(),
-                                )
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    Ok(QueryResult::Select { columns, rows })
-                }
+                Ok(QueryResult::Select { columns, rows })
             }
             CoreResult::DriftHistory { events } => {
                 // Convert history events to rows
@@ -1995,14 +1990,12 @@ impl<'a> QueryExecutor<'a> {
             return self.execute_create_table(sql).await;
         }
 
-        // Route DML/DQL operations to the executor's own handlers which support
-        // aggregation, GROUP BY, ORDER BY, JOINs, subqueries, etc.
-        if lower.starts_with("select ") {
-            return self.execute_select(sql).await;
-        }
-        // CTE queries start with WITH and contain a final SELECT
-        if lower.starts_with("with ") {
-            return self.execute_select(sql).await;
+        // SELECT and WITH (CTE) queries are executed through the core SQL bridge.
+        // The bridge handles temporal queries, aggregation, GROUP BY/HAVING,
+        // ORDER BY, JOINs, subqueries, CTEs (including recursive), set operations,
+        // and CASE WHEN — what used to be two parallel implementations is now one.
+        if lower.starts_with("select ") || lower.starts_with("with ") {
+            return self.execute_select_via_bridge(sql).await;
         }
         if lower.starts_with("insert into ") || lower.starts_with("insert ") {
             return self.execute_insert(sql).await;
@@ -2036,6 +2029,72 @@ impl<'a> QueryExecutor<'a> {
                 Err(anyhow!("SQL execution failed: {}", e))
             }
         }
+    }
+
+    /// Execute a SELECT / WITH query by delegating to the core SQL bridge.
+    /// The conversion layer derives column order from the first result row
+    /// (preserve_order makes that deterministic). For empty result sets we
+    /// fall back to projection columns parsed from the SQL itself — that
+    /// way `SELECT name FROM empty_table` still reports `name` in the
+    /// column header, matching PostgreSQL.
+    async fn execute_select_via_bridge(&self, sql: &str) -> Result<QueryResult> {
+        let mut engine = self.engine_write()?;
+
+        // Best-effort projection extraction for empty-result-set headers.
+        // Falls through to the table schema if SQL parsing fails or the
+        // query uses `SELECT *`.
+        let projection_columns = Self::projection_columns_from_sql(sql).or_else(|| {
+            Self::extract_table_from_sql_static(sql)
+                .ok()
+                .and_then(|name| engine.get_table_columns(&name).ok())
+        });
+
+        let result = driftdb_core::sql_bridge::execute_sql(&mut engine, sql)
+            .map_err(|e| anyhow!("SQL execution failed: {}", e))?;
+        drop(engine);
+
+        self.convert_sql_result(result, projection_columns)
+    }
+
+    /// Parse the SQL and return the user-visible column labels in projection
+    /// order. Returns `None` for `SELECT *`, parse failures, or non-SELECT
+    /// statements — callers should fall back to the table schema in those
+    /// cases.
+    fn projection_columns_from_sql(sql: &str) -> Option<Vec<String>> {
+        use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
+        use sqlparser::dialect::GenericDialect;
+        use sqlparser::parser::Parser;
+
+        let ast = Parser::parse_sql(&GenericDialect {}, sql).ok()?;
+        let query = match ast.into_iter().next()? {
+            Statement::Query(q) => q,
+            _ => return None,
+        };
+        let select = match *query.body {
+            SetExpr::Select(s) => s,
+            _ => return None,
+        };
+
+        let mut out = Vec::with_capacity(select.projection.len());
+        for item in &select.projection {
+            let name = match item {
+                SelectItem::Wildcard(_) => return None,
+                SelectItem::UnnamedExpr(Expr::Identifier(i)) => i.value.clone(),
+                SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                    parts.last()?.value.clone()
+                }
+                SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+                SelectItem::UnnamedExpr(Expr::Function(f)) => {
+                    // Canonical lowercase aggregate label — matches what
+                    // evaluate_aggregate_function writes into result rows.
+                    let func_name = f.name.to_string().to_lowercase();
+                    format!("{}(...)", func_name)
+                }
+                _ => return None,
+            };
+            out.push(name);
+        }
+        Some(out)
     }
 
     // Legacy execution path for backward compatibility
