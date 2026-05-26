@@ -1277,15 +1277,14 @@ fn rls_row_matches_filter(columns: &[String], row: &[Value], filter_expr: &str) 
                 let rhs = part[op_pos + op.len()..].trim();
                 let rhs_val = parse_rls_literal(rhs);
                 let lhs_val = row_map.get(lhs).copied().cloned().unwrap_or(Value::Null);
-                let result = match *op {
-                    "=" => lhs_val == rhs_val,
-                    "!=" => lhs_val != rhs_val,
-                    ">" => compare_values(&lhs_val, &rhs_val) > 0,
-                    "<" => compare_values(&lhs_val, &rhs_val) < 0,
-                    ">=" => compare_values(&lhs_val, &rhs_val) >= 0,
-                    "<=" => compare_values(&lhs_val, &rhs_val) <= 0,
-                    _ => false,
-                };
+                // Route RLS policy comparisons through the canonical predicate so
+                // policy evaluation sees the same operator semantics as ordinary
+                // queries. Previously the local `compare_values` collapsed mixed
+                // types to Equal, which could let `<`/`>` policies silently
+                // admit rows that should have been filtered.
+                let canonical_op = if *op == "<>" { "!=" } else { *op };
+                let result =
+                    driftdb_core::query::predicate::compare_values(&lhs_val, &rhs_val, canonical_op);
                 if !result {
                     return false;
                 }
@@ -1314,18 +1313,6 @@ fn parse_rls_literal(s: &str) -> Value {
         }
     }
     Value::String(s.to_string())
-}
-
-fn compare_values(a: &Value, b: &Value) -> i32 {
-    match (a, b) {
-        (Value::Number(na), Value::Number(nb)) => {
-            let fa = na.as_f64().unwrap_or(0.0);
-            let fb = nb.as_f64().unwrap_or(0.0);
-            fa.partial_cmp(&fb).map(|o| o as i32).unwrap_or(0)
-        }
-        (Value::String(sa), Value::String(sb)) => sa.cmp(sb) as i32,
-        _ => 0,
-    }
 }
 
 /// Determine the query type from SQL for metrics classification

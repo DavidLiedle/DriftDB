@@ -877,7 +877,11 @@ impl<'a> QueryExecutor<'a> {
                 let lhs_val = self.resolve_value_or_column(lhs, row);
                 let rhs_val = self.parse_sql_value(rhs)?;
                 let canonical_op = if *op == "<>" { "!=" } else { op };
-                return Ok(self.matches_condition(&lhs_val, canonical_op, &rhs_val));
+                return Ok(driftdb_core::query::predicate::compare_values(
+                    &lhs_val,
+                    &rhs_val,
+                    canonical_op,
+                ));
             }
         }
         // IS NULL / IS NOT NULL
@@ -1666,7 +1670,11 @@ impl<'a> QueryExecutor<'a> {
                     let (_, actual_value) =
                         self.compute_single_aggregation(&group_data, &aggregation)?;
 
-                    if !self.matches_condition(&actual_value, operator, expected_value) {
+                    if !driftdb_core::query::predicate::compare_values(
+                        &actual_value,
+                        expected_value,
+                        operator,
+                    ) {
                         matches_having = false;
                         break;
                     }
@@ -1843,7 +1851,7 @@ impl<'a> QueryExecutor<'a> {
                     match &min_value {
                         None => min_value = Some(value.clone()),
                         Some(current_min) => {
-                            if self.compare_values(value, current_min) == std::cmp::Ordering::Less {
+                            if driftdb_core::query::predicate::compare_json_values(value, current_min) == std::cmp::Ordering::Less {
                                 min_value = Some(value.clone());
                             }
                         }
@@ -1869,7 +1877,7 @@ impl<'a> QueryExecutor<'a> {
                     match &max_value {
                         None => max_value = Some(value.clone()),
                         Some(current_max) => {
-                            if self.compare_values(value, current_max)
+                            if driftdb_core::query::predicate::compare_json_values(value, current_max)
                                 == std::cmp::Ordering::Greater
                             {
                                 max_value = Some(value.clone());
@@ -1913,7 +1921,7 @@ impl<'a> QueryExecutor<'a> {
             let val_a = a.get(column_index).unwrap_or(&Value::Null);
             let val_b = b.get(column_index).unwrap_or(&Value::Null);
 
-            let comparison = self.compare_values(val_a, val_b);
+            let comparison = driftdb_core::query::predicate::compare_json_values(val_a, val_b);
 
             match order_by.direction {
                 OrderDirection::Asc => comparison,
@@ -1924,89 +1932,11 @@ impl<'a> QueryExecutor<'a> {
         Ok(())
     }
 
-    /// Compare two JSON values for sorting
-    fn compare_values(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-
-        match (a, b) {
-            // Null values sort first
-            (Value::Null, Value::Null) => Ordering::Equal,
-            (Value::Null, _) => Ordering::Less,
-            (_, Value::Null) => Ordering::Greater,
-
-            // Numbers
-            (Value::Number(na), Value::Number(nb)) => {
-                let fa = na.as_f64().unwrap_or(0.0);
-                let fb = nb.as_f64().unwrap_or(0.0);
-                fa.partial_cmp(&fb).unwrap_or(Ordering::Equal)
-            }
-
-            // Strings
-            (Value::String(sa), Value::String(sb)) => sa.cmp(sb),
-
-            // Booleans
-            (Value::Bool(ba), Value::Bool(bb)) => ba.cmp(bb),
-
-            // Mixed types: convert to strings and compare
-            _ => {
-                let sa = match a {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    _ => serde_json::to_string(a).unwrap_or_default(),
-                };
-                let sb = match b {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    _ => serde_json::to_string(b).unwrap_or_default(),
-                };
-                sa.cmp(&sb)
-            }
-        }
-    }
-
-    /// Check if a value matches a condition
-    fn matches_condition(
-        &self,
-        field_value: &Value,
-        operator: &str,
-        condition_value: &Value,
-    ) -> bool {
-        match operator {
-            "=" => field_value == condition_value,
-            "!=" => field_value != condition_value,
-            ">" => {
-                if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
-                    a.as_f64().unwrap_or(0.0) > b.as_f64().unwrap_or(0.0)
-                } else {
-                    false
-                }
-            }
-            "<" => {
-                if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
-                    a.as_f64().unwrap_or(0.0) < b.as_f64().unwrap_or(0.0)
-                } else {
-                    false
-                }
-            }
-            ">=" => {
-                if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
-                    a.as_f64().unwrap_or(0.0) >= b.as_f64().unwrap_or(0.0)
-                } else {
-                    false
-                }
-            }
-            "<=" => {
-                if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
-                    a.as_f64().unwrap_or(0.0) <= b.as_f64().unwrap_or(0.0)
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
+    // Note: `compare_values` and `matches_condition` previously lived here as
+    // server-local helpers, with NULLs-first ordering and number-only ordered
+    // comparisons. They've been replaced by `driftdb_core::query::predicate`
+    // (NULLs-last, full operator set including LIKE/IN/IS NULL/etc.) so the
+    // PostgreSQL protocol path produces identical results to the CLI path.
 
     pub async fn execute(&self, sql: &str) -> Result<QueryResult> {
         // Handle common PostgreSQL client queries
@@ -2898,7 +2828,7 @@ impl<'a> QueryExecutor<'a> {
                         let matches = if let Some(ref conds) = conditions {
                             conds.iter().all(|(column, operator, value)| {
                                 if let Some(field_value) = map.get(column) {
-                                    self.matches_condition(field_value, operator, value)
+                                    driftdb_core::query::predicate::compare_values(field_value, value, operator)
                                 } else {
                                     false
                                 }
@@ -2975,7 +2905,7 @@ impl<'a> QueryExecutor<'a> {
                     let matches = if let Some(ref conds) = conditions {
                         conds.iter().all(|(column, operator, value)| {
                             if let Some(field_value) = map.get(column) {
-                                self.matches_condition(field_value, operator, value)
+                                driftdb_core::query::predicate::compare_values(field_value, value, operator)
                             } else {
                                 false
                             }
@@ -3064,7 +2994,7 @@ impl<'a> QueryExecutor<'a> {
                         let matches = if let Some(ref conds) = conditions {
                             conds.iter().all(|(column, operator, value)| {
                                 if let Some(field_value) = map.get(column) {
-                                    self.matches_condition(field_value, operator, value)
+                                    driftdb_core::query::predicate::compare_values(field_value, value, operator)
                                 } else {
                                     false
                                 }
@@ -3136,7 +3066,7 @@ impl<'a> QueryExecutor<'a> {
                     let matches = if let Some(ref conds) = conditions {
                         conds.iter().all(|(column, operator, value)| {
                             if let Some(field_value) = map.get(column) {
-                                self.matches_condition(field_value, operator, value)
+                                driftdb_core::query::predicate::compare_values(field_value, value, operator)
                             } else {
                                 false
                             }
@@ -4907,7 +4837,11 @@ impl<'a> QueryExecutor<'a> {
                             return Ok(false);
                         }
 
-                        if !self.matches_condition(&field_value, operator, value) {
+                        if !driftdb_core::query::predicate::compare_values(
+                            &field_value,
+                            value,
+                            operator,
+                        ) {
                             return Ok(false);
                         }
                     } else {
@@ -5052,7 +4986,11 @@ impl<'a> QueryExecutor<'a> {
                         // ANY: true if comparison is true for at least one value
                         for result_row in rows {
                             if !result_row.is_empty()
-                                && self.matches_condition(&column_value, operator, &result_row[0])
+                                && driftdb_core::query::predicate::compare_values(
+                                    &column_value,
+                                    &result_row[0],
+                                    operator,
+                                )
                             {
                                 return Ok(true);
                             }
@@ -5063,7 +5001,11 @@ impl<'a> QueryExecutor<'a> {
                         // ALL: true if comparison is true for all values
                         for result_row in rows {
                             if !result_row.is_empty()
-                                && !self.matches_condition(&column_value, operator, &result_row[0])
+                                && !driftdb_core::query::predicate::compare_values(
+                                    &column_value,
+                                    &result_row[0],
+                                    operator,
+                                )
                             {
                                 return Ok(false);
                             }
@@ -5075,7 +5017,11 @@ impl<'a> QueryExecutor<'a> {
                         if rows.len() != 1 || rows[0].is_empty() {
                             return Err(anyhow!("Scalar subquery must return exactly one value"));
                         }
-                        Ok(self.matches_condition(&column_value, operator, &rows[0][0]))
+                        Ok(driftdb_core::query::predicate::compare_values(
+                            &column_value,
+                            &rows[0][0],
+                            operator,
+                        ))
                     }
                 }
             }
@@ -5875,19 +5821,19 @@ impl<'a> QueryExecutor<'a> {
             "=" => Ok(left_value == right_value),
             "!=" => Ok(left_value != right_value),
             "<" => {
-                let ordering = self.compare_values(&left_value, &right_value);
+                let ordering = driftdb_core::query::predicate::compare_json_values(&left_value, &right_value);
                 Ok(ordering == std::cmp::Ordering::Less)
             }
             ">" => {
-                let ordering = self.compare_values(&left_value, &right_value);
+                let ordering = driftdb_core::query::predicate::compare_json_values(&left_value, &right_value);
                 Ok(ordering == std::cmp::Ordering::Greater)
             }
             "<=" => {
-                let ordering = self.compare_values(&left_value, &right_value);
+                let ordering = driftdb_core::query::predicate::compare_json_values(&left_value, &right_value);
                 Ok(ordering != std::cmp::Ordering::Greater)
             }
             ">=" => {
-                let ordering = self.compare_values(&left_value, &right_value);
+                let ordering = driftdb_core::query::predicate::compare_json_values(&left_value, &right_value);
                 Ok(ordering != std::cmp::Ordering::Less)
             }
             _ => Err(anyhow!("Unsupported JOIN operator: {}", condition.operator)),
@@ -6032,7 +5978,11 @@ impl<'a> QueryExecutor<'a> {
                                 // Apply non-index conditions
                                 if let Value::Object(map) = &row {
                                     if let Some(field_value) = map.get(col) {
-                                        if !self.matches_condition(field_value, op, val) {
+                                        if !driftdb_core::query::predicate::compare_values(
+                                            field_value,
+                                            val,
+                                            op,
+                                        ) {
                                             matches = false;
                                             break;
                                         }
@@ -6810,34 +6760,33 @@ mod tests {
         assert!(executor.parse_limit_clause("invalid").is_err());
     }
 
-    #[tokio::test]
-    async fn test_compare_values() {
-        use tempfile::TempDir;
-        let temp_dir = TempDir::new().unwrap();
-        let engine = Arc::new(RwLock::new(Engine::init(temp_dir.path()).unwrap()));
-        let executor = QueryExecutor::new(engine);
-
+    #[test]
+    fn test_compare_values_routes_through_canonical_predicate() {
+        use driftdb_core::query::predicate::compare_json_values;
         use std::cmp::Ordering;
 
-        // Test number comparison
+        // Number comparison.
         let a = Value::Number(10.into());
         let b = Value::Number(20.into());
-        assert_eq!(executor.compare_values(&a, &b), Ordering::Less);
-        assert_eq!(executor.compare_values(&b, &a), Ordering::Greater);
-        assert_eq!(executor.compare_values(&a, &a), Ordering::Equal);
+        assert_eq!(compare_json_values(&a, &b), Ordering::Less);
+        assert_eq!(compare_json_values(&b, &a), Ordering::Greater);
+        assert_eq!(compare_json_values(&a, &a), Ordering::Equal);
 
-        // Test string comparison
+        // String comparison.
         let a = Value::String("apple".to_string());
         let b = Value::String("banana".to_string());
-        assert_eq!(executor.compare_values(&a, &b), Ordering::Less);
-        assert_eq!(executor.compare_values(&b, &a), Ordering::Greater);
+        assert_eq!(compare_json_values(&a, &b), Ordering::Less);
+        assert_eq!(compare_json_values(&b, &a), Ordering::Greater);
 
-        // Test null handling
+        // NULL handling — SQL-standard NULLs-last in ASC (was NULLs-first
+        // in the server's deleted local impl; that disagreed with the CLI
+        // path's NULLs-last and produced different orderings depending on
+        // which protocol the user connected through).
         let null = Value::Null;
         let num = Value::Number(5.into());
-        assert_eq!(executor.compare_values(&null, &num), Ordering::Less);
-        assert_eq!(executor.compare_values(&num, &null), Ordering::Greater);
-        assert_eq!(executor.compare_values(&null, &null), Ordering::Equal);
+        assert_eq!(compare_json_values(&null, &num), Ordering::Greater);
+        assert_eq!(compare_json_values(&num, &null), Ordering::Less);
+        assert_eq!(compare_json_values(&null, &null), Ordering::Equal);
     }
 
     #[tokio::test]

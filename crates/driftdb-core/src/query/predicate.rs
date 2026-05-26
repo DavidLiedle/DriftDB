@@ -35,7 +35,7 @@ use super::WhereCondition;
 
 /// True if every condition in `conditions` matches `row`. An empty
 /// condition list matches everything.
-pub(crate) fn matches_conditions(row: &Value, conditions: &[WhereCondition]) -> bool {
+pub fn matches_conditions(row: &Value, conditions: &[WhereCondition]) -> bool {
     conditions.iter().all(|cond| matches_one(row, cond))
 }
 
@@ -51,7 +51,7 @@ fn matches_one(row: &Value, cond: &WhereCondition) -> bool {
 /// Compare two JSON values under the named SQL operator. Returns false
 /// for unknown operators (with a warn trace) so callers don't get
 /// surprised by silent true-matches.
-pub(crate) fn compare_values(left: &Value, right: &Value, operator: &str) -> bool {
+pub fn compare_values(left: &Value, right: &Value, operator: &str) -> bool {
     // NULLs short-circuit: only equality and IS [NOT] NULL meaningfully
     // compare a NULL. Ordered ops on NULL always return false (SQL
     // three-valued logic collapsed to two-valued at the WHERE boundary).
@@ -102,7 +102,7 @@ pub(crate) fn compare_values(left: &Value, right: &Value, operator: &str) -> boo
 /// Mixed types fall back to string representation rather than
 /// "always-equal" so sorts are stable and ordered predicates produce a
 /// defined answer.
-pub(crate) fn compare_json_values(a: &Value, b: &Value) -> Ordering {
+pub fn compare_json_values(a: &Value, b: &Value) -> Ordering {
     use Value as V;
     match (a, b) {
         (V::Null, V::Null) => Ordering::Equal,

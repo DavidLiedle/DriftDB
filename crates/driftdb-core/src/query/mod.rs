@@ -1,6 +1,6 @@
 pub mod executor;
 pub mod optimizer;
-pub(crate) mod predicate;
+pub mod predicate;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
