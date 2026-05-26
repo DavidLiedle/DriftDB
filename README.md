@@ -86,12 +86,11 @@ SELECT * FROM events;                -- Shows 'modified'
 
 ## ✨ Core Features
 
-### SQL:2011 Temporal Queries (Native Support)
-- **`FOR SYSTEM_TIME AS OF`**: Query data at any point in time
-- **`FOR SYSTEM_TIME BETWEEN`**: Get all versions in a time range
-- **`FOR SYSTEM_TIME FROM...TO`**: Exclusive range queries
+### SQL:2011 Temporal Queries
+- **`FOR SYSTEM_TIME AS OF`**: Query data at any point in time (timestamp or `@SEQ:N`)
 - **`FOR SYSTEM_TIME ALL`**: Complete history of changes
 - **System-versioned tables**: Automatic history tracking
+- _Planned, not yet implemented:_ `FOR SYSTEM_TIME BETWEEN` and `FOR SYSTEM_TIME FROM ... TO` — currently return a clear "not yet supported" error
 
 ### Data Model & Storage
 - **Append-only storage**: Immutable events preserve complete history
@@ -239,11 +238,6 @@ SELECT * FROM users
 FOR SYSTEM_TIME ALL
 WHERE id = 1;
 
--- Query range of time
-SELECT * FROM users
-FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
-WHERE status = 'active';
-
 -- Advanced SQL Features (v0.6.0)
 -- Column selection
 SELECT name, email FROM users WHERE status = 'active';
@@ -287,21 +281,20 @@ SELECT * FROM orders
 FOR SYSTEM_TIME AS OF '2024-01-15T10:30:00Z'
 WHERE customer_id = 123;
 
--- BETWEEN: All versions in a time range (inclusive)
-SELECT * FROM accounts
-FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
-WHERE balance > 10000;
-
--- FROM...TO: Range query (exclusive end)
-SELECT * FROM inventory
-FOR SYSTEM_TIME FROM '2024-01-01' TO '2024-02-01'
-WHERE product_id = 'ABC-123';
+-- AS OF @SEQ:N: DriftDB extension — query by sequence number
+SELECT * FROM orders
+FOR SYSTEM_TIME AS OF @SEQ:5000
+WHERE customer_id = 123;
 
 -- ALL: Complete history
 SELECT * FROM audit_log
 FOR SYSTEM_TIME ALL
 WHERE action = 'DELETE';
 ```
+
+`FOR SYSTEM_TIME BETWEEN ... AND ...` and `FOR SYSTEM_TIME FROM ... TO ...` are
+parsed but not yet executable — they return a clear "not yet supported" error
+rather than silently dropping the clause. Tracking implementation as a follow-up.
 
 ### Creating Temporal Tables
 
