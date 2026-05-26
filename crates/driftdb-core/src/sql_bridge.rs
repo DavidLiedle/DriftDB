@@ -458,10 +458,40 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 ))
             }
         }
-        Statement::Explain { statement, .. } => {
-            // Provide query plan explanation
-            let plan = format!("Query Plan for: {:?}\n\n1. Parse SQL\n2. Analyze query structure\n3. Execute query\n4. Return results", statement);
-            Ok(QueryResult::Success { message: plan })
+        Statement::Explain {
+            statement, analyze, ..
+        } => {
+            // Build the tree-shaped plan from the AST sqlparser already gave
+            // us. The previous stub returned a Debug-printed Statement; we
+            // now produce PostgreSQL-style indented plan rows so psql
+            // displays them one-per-line.
+            let plan = crate::sql_explain::build_plan(engine, statement)?;
+            let mut lines = crate::sql_explain::format_plan(&plan);
+
+            // EXPLAIN ANALYZE: execute the wrapped statement and append the
+            // observed elapsed time. The execution result itself is
+            // discarded — `EXPLAIN ANALYZE SELECT ...` returns plan text,
+            // not the query rows, matching PostgreSQL.
+            if *analyze {
+                let sql_text = statement.to_string();
+                let start = std::time::Instant::now();
+                let _ = execute_sql_inner(engine, &sql_text)?;
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                lines.push(String::new());
+                lines.push(format!("Execution Time: {:.3} ms", elapsed_ms));
+            }
+
+            // Wrap each line as a row in a single-column `QUERY PLAN` result
+            // set — what psql expects from EXPLAIN.
+            let data: Vec<Value> = lines
+                .into_iter()
+                .map(|line| {
+                    let mut row = serde_json::Map::new();
+                    row.insert("QUERY PLAN".to_string(), Value::String(line));
+                    Value::Object(row)
+                })
+                .collect();
+            Ok(QueryResult::Rows { data })
         }
         Statement::Analyze { .. } => {
             // Run ANALYZE on all tables to update statistics

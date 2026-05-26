@@ -52,6 +52,7 @@ pub mod sequences;
 pub mod snapshot;
 pub mod sql;
 pub mod sql_bridge;
+pub mod sql_explain;
 pub mod sql_views;
 pub mod stats;
 pub mod storage;
