@@ -14,35 +14,11 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde_json::Value;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use crate::errors::{DriftError, Result};
+use crate::query::predicate;
 use crate::query::WhereCondition;
-
-/// Helper function to compare JSON values
-fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {
-    use serde_json::Value as V;
-    use std::cmp::Ordering;
-
-    match (a, b) {
-        (V::Null, V::Null) => Ordering::Equal,
-        (V::Null, _) => Ordering::Less,
-        (_, V::Null) => Ordering::Greater,
-        (V::Bool(a), V::Bool(b)) => a.cmp(b),
-        (V::Number(a), V::Number(b)) => {
-            // Handle numeric comparison
-            match (a.as_f64(), b.as_f64()) {
-                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
-                _ => Ordering::Equal,
-            }
-        }
-        (V::String(a), V::String(b)) => a.cmp(b),
-        (V::Array(a), V::Array(b)) => a.len().cmp(&b.len()),
-        (V::Object(a), V::Object(b)) => a.len().cmp(&b.len()),
-        // Mixed types - convert to string and compare
-        _ => a.to_string().cmp(&b.to_string()),
-    }
-}
 
 /// Configuration for parallel execution
 #[derive(Debug, Clone)]
@@ -134,7 +110,7 @@ impl ParallelExecutor {
         // Execute in parallel using rayon
         let results = self.thread_pool.install(|| {
             data.into_par_iter()
-                .filter(|(_, row)| Self::matches_conditions(row, conditions))
+                .filter(|(_, row)| predicate::matches_conditions(row, conditions))
                 .map(|(_, row)| row)
                 .collect::<Vec<Value>>()
         });
@@ -160,7 +136,7 @@ impl ParallelExecutor {
     ) -> Result<Vec<Value>> {
         let mut results: Vec<Value> = data
             .into_iter()
-            .filter(|(_, row)| Self::matches_conditions(row, conditions))
+            .filter(|(_, row)| predicate::matches_conditions(row, conditions))
             .map(|(_, row)| row)
             .collect();
 
@@ -318,13 +294,13 @@ impl ParallelExecutor {
             AggregateType::Min => data
                 .iter()
                 .filter_map(|row| row.get(&func.column))
-                .min_by(|a, b| compare_json_values(a, b))
+                .min_by(|a, b| predicate::compare_json_values(a, b))
                 .cloned()
                 .unwrap_or(Value::Null),
             AggregateType::Max => data
                 .iter()
                 .filter_map(|row| row.get(&func.column))
-                .max_by(|a, b| compare_json_values(a, b))
+                .max_by(|a, b| predicate::compare_json_values(a, b))
                 .cloned()
                 .unwrap_or(Value::Null),
         }
@@ -465,86 +441,6 @@ impl ParallelExecutor {
         Ok(results)
     }
 
-    /// Check if a row matches the given conditions
-    fn matches_conditions(row: &Value, conditions: &[WhereCondition]) -> bool {
-        conditions.iter().all(|cond| {
-            if let Some(field_value) = row.get(&cond.column) {
-                match cond.operator.as_str() {
-                    "=" | "==" => field_value == &cond.value,
-                    "!=" | "<>" => field_value != &cond.value,
-                    ">" => {
-                        if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
-                            a > b
-                        } else {
-                            compare_json_values(field_value, &cond.value)
-                                == std::cmp::Ordering::Greater
-                        }
-                    }
-                    "<" => {
-                        if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
-                            a < b
-                        } else {
-                            compare_json_values(field_value, &cond.value)
-                                == std::cmp::Ordering::Less
-                        }
-                    }
-                    ">=" => {
-                        if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
-                            a >= b
-                        } else {
-                            let ord = compare_json_values(field_value, &cond.value);
-                            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
-                        }
-                    }
-                    "<=" => {
-                        if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
-                            a <= b
-                        } else {
-                            let ord = compare_json_values(field_value, &cond.value);
-                            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
-                        }
-                    }
-                    "LIKE" => {
-                        if let (Some(text), Some(pattern)) =
-                            (field_value.as_str(), cond.value.as_str())
-                        {
-                            // Simple LIKE pattern matching (% = any chars, _ = single char)
-                            let pattern = pattern.replace("%", ".*").replace("_", ".");
-                            regex::Regex::new(&format!("^{}$", pattern))
-                                .map(|re| re.is_match(text))
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        }
-                    }
-                    "IN" => {
-                        if let Some(array) = cond.value.as_array() {
-                            array.contains(field_value)
-                        } else {
-                            false
-                        }
-                    }
-                    "NOT IN" => {
-                        if let Some(array) = cond.value.as_array() {
-                            !array.contains(field_value)
-                        } else {
-                            true
-                        }
-                    }
-                    "IS NULL" => field_value.is_null(),
-                    "IS NOT NULL" => !field_value.is_null(),
-                    _ => {
-                        warn!("Unsupported operator: {}", cond.operator);
-                        false
-                    }
-                }
-            } else {
-                // Field doesn't exist
-                cond.operator == "IS NULL"
-            }
-        })
-    }
-
     /// Get execution statistics
     pub fn statistics(&self) -> ParallelStats {
         self.stats.read().clone()
@@ -675,7 +571,7 @@ mod tests {
         });
 
         // Test equality
-        assert!(ParallelExecutor::matches_conditions(
+        assert!(predicate::matches_conditions(
             &row,
             &[WhereCondition {
                 column: "name".to_string(),
@@ -685,7 +581,7 @@ mod tests {
         ));
 
         // Test greater than
-        assert!(ParallelExecutor::matches_conditions(
+        assert!(predicate::matches_conditions(
             &row,
             &[WhereCondition {
                 column: "age".to_string(),
@@ -695,7 +591,7 @@ mod tests {
         ));
 
         // Test IN operator
-        assert!(ParallelExecutor::matches_conditions(
+        assert!(predicate::matches_conditions(
             &row,
             &[WhereCondition {
                 column: "city".to_string(),

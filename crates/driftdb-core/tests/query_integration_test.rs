@@ -368,6 +368,111 @@ fn test_query_path_honors_non_equality_operators() {
     }
 }
 
+/// Regression test for the dataset-size-dependent predicate divergence
+/// fixed by unifying all three matchers (Engine::query inline,
+/// sequential select compare_values, parallel matches_conditions) into
+/// crate::query::predicate. Before the fix, `LIKE`/`IN`/`IS NULL` only
+/// worked when the query happened to take the parallel path (~1000+
+/// rows), and the read-only Engine::query path didn't honor them at all.
+///
+/// This test exercises richer operators through both the read-only API
+/// (Engine::query) and the main execute_query path on a small dataset
+/// where the old code would have routed through the sequential matcher
+/// that lacked these operators.
+#[test]
+fn test_richer_predicates_work_on_small_datasets() {
+    use driftdb_core::query::WhereCondition;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut engine = Engine::init(temp_dir.path()).unwrap();
+
+    engine
+        .execute_query(Query::CreateTable {
+            name: "people".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
+
+    for (id, name, city) in [
+        ("1", "Alice", "Boston"),
+        ("2", "Bob", "NYC"),
+        ("3", "Charlie", "Boston"),
+    ] {
+        engine
+            .execute_query(Query::Insert {
+                table: "people".to_string(),
+                data: json!({"id": id, "name": name, "city": city}),
+            })
+            .unwrap();
+    }
+
+    // LIKE through Engine::query (read-only path). Old behavior: silent
+    // equality on cond.operator string — LIKE matched nothing.
+    let like_result = engine
+        .query(&Query::Select {
+            table: "people".to_string(),
+            conditions: vec![WhereCondition {
+                column: "name".to_string(),
+                operator: "LIKE".to_string(),
+                value: json!("A%"),
+            }],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
+    match like_result {
+        QueryResult::Rows { data } => {
+            assert_eq!(data.len(), 1, "LIKE 'A%' should match Alice only");
+            assert_eq!(data[0]["name"], json!("Alice"));
+        }
+        other => panic!("Expected Rows, got {:?}", other),
+    }
+
+    // IN through Engine::query — same path that was equality-only.
+    let in_result = engine
+        .query(&Query::Select {
+            table: "people".to_string(),
+            conditions: vec![WhereCondition {
+                column: "city".to_string(),
+                operator: "IN".to_string(),
+                value: json!(["Boston", "Seattle"]),
+            }],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
+    match in_result {
+        QueryResult::Rows { data } => {
+            let mut names: Vec<_> = data
+                .iter()
+                .map(|r| r["name"].as_str().unwrap().to_string())
+                .collect();
+            names.sort();
+            assert_eq!(names, vec!["Alice".to_string(), "Charlie".to_string()]);
+        }
+        other => panic!("Expected Rows, got {:?}", other),
+    }
+
+    // IS NULL on a missing column — must match every row.
+    let isnull_result = engine
+        .query(&Query::Select {
+            table: "people".to_string(),
+            conditions: vec![WhereCondition {
+                column: "missing_col".to_string(),
+                operator: "IS NULL".to_string(),
+                value: json!(null),
+            }],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
+    match isnull_result {
+        QueryResult::Rows { data } => assert_eq!(data.len(), 3),
+        other => panic!("Expected Rows, got {:?}", other),
+    }
+}
+
 #[test]
 fn test_soft_delete() {
     let temp_dir = TempDir::new().unwrap();
