@@ -287,6 +287,87 @@ fn test_query_path_resolves_as_of_timestamp() {
     }
 }
 
+/// Regression test for `Engine::query` ignoring `cond.operator` and
+/// silently doing equality. Before the predicate extraction, `<`/`!=`
+/// either matched nothing (`<` on a non-equal value would compare-as-
+/// equal-and-fail) or matched everything (`!=` on a row that satisfies
+/// `=` would be wrongly excluded). Both paths now share
+/// `query::predicate::matches_conditions`, so this exercises the
+/// previously-broken path with both an ordered and an inequality op.
+#[test]
+fn test_query_path_honors_non_equality_operators() {
+    use driftdb_core::query::WhereCondition;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut engine = Engine::init(temp_dir.path()).unwrap();
+
+    engine
+        .execute_query(Query::CreateTable {
+            name: "scores".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
+
+    for (id, value) in [("a", 10), ("b", 20), ("c", 30)] {
+        engine
+            .execute_query(Query::Insert {
+                table: "scores".to_string(),
+                data: json!({ "id": id, "value": value }),
+            })
+            .unwrap();
+    }
+
+    // `<` — must return only id=a (value 10). The old equality-only logic
+    // would compare `10 == 20` and exclude it.
+    let lt = engine
+        .query(&Query::Select {
+            table: "scores".to_string(),
+            conditions: vec![WhereCondition {
+                column: "value".to_string(),
+                operator: "<".to_string(),
+                value: json!(20),
+            }],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
+    match lt {
+        QueryResult::Rows { data } => {
+            assert_eq!(data.len(), 1, "value < 20 should return 1 row");
+            assert_eq!(data[0]["id"], json!("a"));
+        }
+        other => panic!("Expected Rows, got {:?}", other),
+    }
+
+    // `!=` — must return b and c. The old logic would compare for equality
+    // (because it ignored cond.operator) and return only the row where
+    // value=10, the opposite of what was asked.
+    let neq = engine
+        .query(&Query::Select {
+            table: "scores".to_string(),
+            conditions: vec![WhereCondition {
+                column: "value".to_string(),
+                operator: "!=".to_string(),
+                value: json!(10),
+            }],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
+    match neq {
+        QueryResult::Rows { data } => {
+            let mut ids: Vec<_> = data
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            assert_eq!(ids, vec!["b".to_string(), "c".to_string()]);
+        }
+        other => panic!("Expected Rows, got {:?}", other),
+    }
+}
+
 #[test]
 fn test_soft_delete() {
     let temp_dir = TempDir::new().unwrap();

@@ -936,30 +936,17 @@ impl Engine {
                 // Reconstruct state at the target point in time
                 let state = storage.reconstruct_state_at(target_sequence)?;
 
-                // Apply WHERE conditions if any
+                // Apply WHERE conditions if any. Shared with `Engine::execute_query`
+                // via `crate::query::predicate::matches_conditions` so both read paths
+                // honor the same operator set (`=`, `!=`, `<`, `<=`, `>`, `>=`).
                 let mut results = Vec::new();
                 let mut processed_rows = 0;
                 for (_key, value) in state {
-                    // Periodically check for cancellation (every 1000 rows)
                     if processed_rows % 1000 == 0 && cancellation_token.is_cancelled() {
                         return Err(DriftError::Other("Query cancelled".to_string()));
                     }
 
-                    // Check if row matches conditions
-                    let matches = if !conditions.is_empty() {
-                        conditions.iter().all(|cond| {
-                            // Simple equality check for now
-                            if let Some(field_value) = value.get(&cond.column) {
-                                field_value == &cond.value
-                            } else {
-                                false
-                            }
-                        })
-                    } else {
-                        true // No conditions means select all
-                    };
-
-                    if matches {
+                    if crate::query::predicate::matches_conditions(&value, conditions) {
                         results.push(value);
                     }
 

@@ -419,7 +419,7 @@ impl Engine {
             // Use sequential execution for small datasets
             let mut results: Vec<serde_json::Value> = state
                 .into_values()
-                .filter(|row| Self::matches_conditions(row, &conditions))
+                .filter(|row| super::predicate::matches_conditions(row, &conditions))
                 .collect();
 
             if let Some(limit) = limit {
@@ -427,65 +427,6 @@ impl Engine {
             }
 
             Ok(results)
-        }
-    }
-
-    fn matches_conditions(row: &serde_json::Value, conditions: &[WhereCondition]) -> bool {
-        conditions.iter().all(|cond| {
-            if let serde_json::Value::Object(map) = row {
-                if let Some(field_value) = map.get(&cond.column) {
-                    Self::compare_values(field_value, &cond.value, &cond.operator)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        })
-    }
-
-    fn compare_values(left: &serde_json::Value, right: &serde_json::Value, operator: &str) -> bool {
-        // Handle NULL comparisons
-        if left.is_null() || right.is_null() {
-            match operator {
-                "=" | "==" => left.is_null() && right.is_null(),
-                "!=" | "<>" => !(left.is_null() && right.is_null()),
-                _ => false, // NULL comparisons with <, >, etc. always return false
-            }
-        } else {
-            match operator {
-                "=" | "==" => left == right,
-                "!=" | "<>" => left != right,
-                "<" => match (left.as_f64(), right.as_f64()) {
-                    (Some(l), Some(r)) => l < r,
-                    _ => match (left.as_str(), right.as_str()) {
-                        (Some(l), Some(r)) => l < r,
-                        _ => false,
-                    },
-                },
-                "<=" => match (left.as_f64(), right.as_f64()) {
-                    (Some(l), Some(r)) => l <= r,
-                    _ => match (left.as_str(), right.as_str()) {
-                        (Some(l), Some(r)) => l <= r,
-                        _ => false,
-                    },
-                },
-                ">" => match (left.as_f64(), right.as_f64()) {
-                    (Some(l), Some(r)) => l > r,
-                    _ => match (left.as_str(), right.as_str()) {
-                        (Some(l), Some(r)) => l > r,
-                        _ => false,
-                    },
-                },
-                ">=" => match (left.as_f64(), right.as_f64()) {
-                    (Some(l), Some(r)) => l >= r,
-                    _ => match (left.as_str(), right.as_str()) {
-                        (Some(l), Some(r)) => l >= r,
-                        _ => false,
-                    },
-                },
-                _ => false, // Unknown operator
-            }
         }
     }
 
