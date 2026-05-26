@@ -20,7 +20,6 @@ pub mod events;
 pub mod explain;
 pub mod failover;
 pub mod fk;
-pub mod foreign_keys;
 pub mod fulltext;
 pub mod index;
 pub mod index_strategies;
