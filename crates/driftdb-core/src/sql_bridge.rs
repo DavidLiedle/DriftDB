@@ -2840,23 +2840,23 @@ fn evaluate_expression_without_row(expr: &Expr) -> Result<Value> {
             let right_val = evaluate_expression_without_row(right)?;
             match op {
                 BinaryOperator::Eq => Ok(Value::Bool(
-                    compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Equal,
+                    crate::query::predicate::compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Equal,
                 )),
                 BinaryOperator::NotEq => Ok(Value::Bool(
-                    compare_json_values(&left_val, &right_val) != std::cmp::Ordering::Equal,
+                    crate::query::predicate::compare_json_values(&left_val, &right_val) != std::cmp::Ordering::Equal,
                 )),
                 BinaryOperator::Lt => Ok(Value::Bool(
-                    compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Less,
+                    crate::query::predicate::compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Less,
                 )),
                 BinaryOperator::LtEq => Ok(Value::Bool(matches!(
-                    compare_json_values(&left_val, &right_val),
+                    crate::query::predicate::compare_json_values(&left_val, &right_val),
                     std::cmp::Ordering::Less | std::cmp::Ordering::Equal
                 ))),
                 BinaryOperator::Gt => Ok(Value::Bool(
-                    compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Greater,
+                    crate::query::predicate::compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Greater,
                 )),
                 BinaryOperator::GtEq => Ok(Value::Bool(matches!(
-                    compare_json_values(&left_val, &right_val),
+                    crate::query::predicate::compare_json_values(&left_val, &right_val),
                     std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
                 ))),
                 BinaryOperator::And => Ok(Value::Bool(
@@ -3386,7 +3386,7 @@ fn compare_rows_by_expr(
 
     match (a_val, b_val) {
         (Some(a_val), Some(b_val)) => {
-            let ordering = compare_json_values(a_val, b_val);
+            let ordering = crate::query::predicate::compare_json_values(a_val, b_val);
 
             // Handle ASC/DESC
             if let Some(asc) = order_expr.asc {
@@ -3399,22 +3399,6 @@ fn compare_rows_by_expr(
         (None, Some(_)) => Some(std::cmp::Ordering::Greater), // NULLs last
         (Some(_), None) => Some(std::cmp::Ordering::Less),
         (None, None) => Some(std::cmp::Ordering::Equal),
-    }
-}
-
-fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {
-    match (a, b) {
-        (Value::Number(a_num), Value::Number(b_num)) => {
-            let a_f = a_num.as_f64().unwrap_or(0.0);
-            let b_f = b_num.as_f64().unwrap_or(0.0);
-            a_f.partial_cmp(&b_f).unwrap_or(std::cmp::Ordering::Equal)
-        }
-        (Value::String(a_str), Value::String(b_str)) => a_str.cmp(b_str),
-        (Value::Bool(a_bool), Value::Bool(b_bool)) => a_bool.cmp(b_bool),
-        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
-        (Value::Null, _) => std::cmp::Ordering::Greater, // NULLs last
-        (_, Value::Null) => std::cmp::Ordering::Less,
-        _ => std::cmp::Ordering::Equal,
     }
 }
 
