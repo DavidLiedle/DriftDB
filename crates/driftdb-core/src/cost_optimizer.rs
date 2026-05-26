@@ -89,6 +89,24 @@ pub enum PlanNode {
     },
     /// Materialize (force materialization point)
     Materialize { input: Box<PlanNode>, cost: Cost },
+    /// DISTINCT — duplicate elimination on the input's projection.
+    Distinct {
+        input: Box<PlanNode>,
+        /// Distinct keys; empty means full-row deduplication (`SELECT DISTINCT *`).
+        columns: Vec<String>,
+        cost: Cost,
+    },
+    /// UNION / INTERSECT / EXCEPT.
+    SetOperation {
+        left: Box<PlanNode>,
+        right: Box<PlanNode>,
+        /// Display name for the operation: "Union", "Intersect", "Except",
+        /// with " All" suffix for `ALL` variants. Free-form rather than an
+        /// enum so dialect quirks (MySQL `UNION DISTINCT` etc.) don't
+        /// require touching cost_optimizer when new ones land.
+        operation: String,
+        cost: Cost,
+    },
 }
 
 /// Cost model
@@ -163,14 +181,25 @@ pub enum PredicateValue {
     Constant(serde_json::Value),
     Column(String),
     Subquery(Box<PlanNode>),
+    /// Free-form expression text, used when the SQL predicate doesn't
+    /// reduce to one of the structured forms above (compound AND/OR,
+    /// function calls, arithmetic expressions). The expression is for
+    /// EXPLAIN display only — selectivity falls back to a default.
+    Raw(String),
 }
 
-/// Join condition
+/// Join condition. `left_col` / `right_col` / `op` are populated for
+/// simple `t1.a = t2.b` equi-joins, which cover most cases and feed the
+/// cost model. When the SQL join predicate is richer (compound AND,
+/// inequality, function calls), `raw_text` carries the full predicate
+/// for EXPLAIN display and the structured fields are placeholders.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinCondition {
     pub left_col: String,
     pub right_col: String,
     pub op: ComparisonOp,
+    #[serde(default)]
+    pub raw_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,8 +815,13 @@ impl CostOptimizer {
             | PlanNode::Sort { input, .. }
             | PlanNode::Aggregate { input, .. }
             | PlanNode::Limit { input, .. }
-            | PlanNode::Materialize { input, .. } => {
+            | PlanNode::Materialize { input, .. }
+            | PlanNode::Distinct { input, .. } => {
                 self.extract_joins_recursive(input, tables, joins);
+            }
+            PlanNode::SetOperation { left, right, .. } => {
+                self.extract_joins_recursive(left, tables, joins);
+                self.extract_joins_recursive(right, tables, joins);
             }
         }
     }
@@ -808,7 +842,8 @@ impl CostOptimizer {
             }
             PlanNode::HashJoin { left, right, .. }
             | PlanNode::NestedLoopJoin { left, right, .. }
-            | PlanNode::SortMergeJoin { left, right, .. } => {
+            | PlanNode::SortMergeJoin { left, right, .. }
+            | PlanNode::SetOperation { left, right, .. } => {
                 self.collect_tables_recursive(left, tables);
                 self.collect_tables_recursive(right, tables);
             }
@@ -817,7 +852,8 @@ impl CostOptimizer {
             | PlanNode::Sort { input, .. }
             | PlanNode::Aggregate { input, .. }
             | PlanNode::Limit { input, .. }
-            | PlanNode::Materialize { input, .. } => {
+            | PlanNode::Materialize { input, .. }
+            | PlanNode::Distinct { input, .. } => {
                 self.collect_tables_recursive(input, tables);
             }
         }
@@ -1332,6 +1368,7 @@ mod tests {
                 left_col: "users.id".to_string(),
                 right_col: "orders.user_id".to_string(),
                 op: ComparisonOp::Eq,
+                raw_text: None,
             },
             build_side: JoinSide::Right,
             cost: Cost::default(),

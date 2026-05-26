@@ -459,38 +459,95 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
             }
         }
         Statement::Explain {
-            statement, analyze, ..
+            statement,
+            analyze,
+            verbose,
+            format,
+            ..
         } => {
-            // Build the tree-shaped plan from the AST sqlparser already gave
-            // us. The previous stub returned a Debug-printed Statement; we
-            // now produce PostgreSQL-style indented plan rows so psql
-            // displays them one-per-line.
-            let plan = crate::sql_explain::build_plan(engine, statement)?;
-            let mut lines = crate::sql_explain::format_plan(&plan);
+            // Build the structured plan from the sqlparser AST, then hand it
+            // to `crate::explain::ExplainExecutor` — the same module that's
+            // had multi-format output (text / JSON / YAML), verbose-mode
+            // detail, and execution-time accuracy estimation since DriftDB
+            // 0.1 but had no SQL callers wired in. ANALYZE measures actual
+            // execution time and row counts via the inner SQL bridge,
+            // sidestepping the `Instant::now()` wrapping the previous
+            // session needed.
+            let planning_start = std::time::Instant::now();
+            let plan = crate::explain::build_plan_from_statement(engine, statement)?;
+            let planning_time = planning_start.elapsed();
 
-            // EXPLAIN ANALYZE: execute the wrapped statement and append the
-            // observed elapsed time. The execution result itself is
-            // discarded — `EXPLAIN ANALYZE SELECT ...` returns plan text,
-            // not the query rows, matching PostgreSQL.
-            if *analyze {
+            // `EXPLAIN (FORMAT JSON | TEXT)` survives the parser as
+            // `AnalyzeFormat`; anything else falls back to text. YAML isn't
+            // exposed via SQL parser today — it remains available via the
+            // programmatic `ExplainPlan::format_yaml` API.
+            let explain_format = match format {
+                Some(sqlparser::ast::AnalyzeFormat::JSON) => {
+                    crate::explain::ExplainFormat::Json
+                }
+                _ => crate::explain::ExplainFormat::Text,
+            };
+            let options = crate::explain::ExplainOptions {
+                format: explain_format,
+                verbose: *verbose,
+                costs: true,
+                buffers: false,
+                timing: *analyze,
+                analyze: *analyze,
+            };
+
+            let explain_plan = if *analyze {
+                // Execute the wrapped statement to measure real elapsed time
+                // and count returned rows. The result itself is discarded —
+                // PostgreSQL's EXPLAIN ANALYZE returns plan text, not the
+                // query's rows.
                 let sql_text = statement.to_string();
-                let start = std::time::Instant::now();
-                let _ = execute_sql_inner(engine, &sql_text)?;
-                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-                lines.push(String::new());
-                lines.push(format!("Execution Time: {:.3} ms", elapsed_ms));
-            }
+                crate::explain::ExplainExecutor::explain_analyze(
+                    plan,
+                    planning_time,
+                    || -> Result<usize> {
+                        let result = execute_sql_inner(engine, &sql_text)?;
+                        Ok(match &result {
+                            QueryResult::Rows { data } => data.len(),
+                            QueryResult::DriftHistory { events } => events.len(),
+                            _ => 0,
+                        })
+                    },
+                )?
+            } else {
+                crate::explain::ExplainExecutor::explain(plan, planning_time)
+            };
 
-            // Wrap each line as a row in a single-column `QUERY PLAN` result
-            // set — what psql expects from EXPLAIN.
-            let data: Vec<Value> = lines
-                .into_iter()
-                .map(|line| {
+            // Render with the requested format. JSON / YAML get a single row
+            // carrying the full document; text format splits on newlines so
+            // psql renders one plan line per result row.
+            let body = match options.format {
+                crate::explain::ExplainFormat::Json => explain_plan
+                    .format_json()
+                    .map_err(|e| DriftError::Other(format!("EXPLAIN JSON: {}", e)))?,
+                crate::explain::ExplainFormat::Yaml => explain_plan
+                    .format_yaml()
+                    .map_err(|e| DriftError::Other(format!("EXPLAIN YAML: {}", e)))?,
+                _ => explain_plan.format_text(&options),
+            };
+            let data: Vec<Value> = if matches!(
+                options.format,
+                crate::explain::ExplainFormat::Json | crate::explain::ExplainFormat::Yaml
+            ) {
+                vec![{
                     let mut row = serde_json::Map::new();
-                    row.insert("QUERY PLAN".to_string(), Value::String(line));
+                    row.insert("QUERY PLAN".to_string(), Value::String(body));
                     Value::Object(row)
-                })
-                .collect();
+                }]
+            } else {
+                body.lines()
+                    .map(|line| {
+                        let mut row = serde_json::Map::new();
+                        row.insert("QUERY PLAN".to_string(), Value::String(line.to_string()));
+                        Value::Object(row)
+                    })
+                    .collect()
+            };
             Ok(QueryResult::Rows { data })
         }
         Statement::Analyze { .. } => {
