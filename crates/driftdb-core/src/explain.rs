@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use crate::cost_optimizer::{Cost, PlanNode};
+use crate::optimizer::{Cost, PlanNode};
 use crate::errors::Result;
 
 /// EXPLAIN output format
@@ -474,8 +474,8 @@ impl fmt::Display for ExplainPlan {
 // the displayed Filter line still matches what the user wrote.
 // ----------------------------------------------------------------------------
 
-fn render_op(op: &crate::cost_optimizer::ComparisonOp) -> &'static str {
-    use crate::cost_optimizer::ComparisonOp;
+fn render_op(op: &crate::optimizer::ComparisonOp) -> &'static str {
+    use crate::optimizer::ComparisonOp;
     match op {
         ComparisonOp::Eq => "=",
         ComparisonOp::Ne => "!=",
@@ -488,8 +488,8 @@ fn render_op(op: &crate::cost_optimizer::ComparisonOp) -> &'static str {
     }
 }
 
-fn render_predicate_value(value: &crate::cost_optimizer::PredicateValue) -> String {
-    use crate::cost_optimizer::PredicateValue;
+fn render_predicate_value(value: &crate::optimizer::PredicateValue) -> String {
+    use crate::optimizer::PredicateValue;
     match value {
         PredicateValue::Constant(v) => match v {
             serde_json::Value::String(s) => format!("'{}'", s),
@@ -501,11 +501,11 @@ fn render_predicate_value(value: &crate::cost_optimizer::PredicateValue) -> Stri
     }
 }
 
-fn render_predicate(p: &crate::cost_optimizer::Predicate) -> String {
+fn render_predicate(p: &crate::optimizer::Predicate) -> String {
     // A predicate whose value is `Raw` came from a compound SQL expression
     // we couldn't structure further — render just the raw text and ignore
     // the placeholder column/op so the output reads like the user's SQL.
-    if let crate::cost_optimizer::PredicateValue::Raw(text) = &p.value {
+    if let crate::optimizer::PredicateValue::Raw(text) = &p.value {
         return text.clone();
     }
     format!(
@@ -516,7 +516,7 @@ fn render_predicate(p: &crate::cost_optimizer::Predicate) -> String {
     )
 }
 
-fn render_predicates(predicates: &[crate::cost_optimizer::Predicate]) -> String {
+fn render_predicates(predicates: &[crate::optimizer::Predicate]) -> String {
     predicates
         .iter()
         .map(render_predicate)
@@ -524,7 +524,7 @@ fn render_predicates(predicates: &[crate::cost_optimizer::Predicate]) -> String 
         .join(" AND ")
 }
 
-fn render_join_condition(c: &crate::cost_optimizer::JoinCondition) -> String {
+fn render_join_condition(c: &crate::optimizer::JoinCondition) -> String {
     if let Some(text) = &c.raw_text {
         return text.clone();
     }
@@ -587,7 +587,7 @@ use sqlparser::ast::{
     SelectItem, SetExpr, Statement as SqlStatement, TableFactor,
 };
 
-use crate::cost_optimizer::{
+use crate::optimizer::{
     AggregateFunc, ComparisonOp, JoinCondition, Predicate, PredicateValue, SortKey,
 };
 use crate::engine::Engine;
@@ -1071,7 +1071,7 @@ fn scan_cost(rows: usize) -> Cost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cost_optimizer::{ComparisonOp, Predicate, PredicateValue};
+    use crate::optimizer::{ComparisonOp, Predicate, PredicateValue};
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
     use tempfile::TempDir;

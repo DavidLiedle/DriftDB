@@ -10,7 +10,6 @@ pub mod compression;
 pub mod connection;
 pub mod consensus;
 pub mod constraints;
-pub mod cost_optimizer;
 pub mod distributed;
 pub mod distributed_coordinator;
 pub mod encryption;
