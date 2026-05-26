@@ -87,10 +87,13 @@ SELECT * FROM events;                -- Shows 'modified'
 ## ✨ Core Features
 
 ### SQL:2011 Temporal Queries
-- **`FOR SYSTEM_TIME AS OF`**: Query data at any point in time (timestamp or `@SEQ:N`)
+- **`FOR SYSTEM_TIME AS OF`**: Query data at any point in time — accepts both ISO-8601 timestamps and DriftDB's `@SEQ:N` extension, and resolves correctly through both the CLI/server SQL path and the read-only engine API used by FK validation
 - **`FOR SYSTEM_TIME ALL`**: Complete history of changes
 - **System-versioned tables**: Automatic history tracking
-- _Planned, not yet implemented:_ `FOR SYSTEM_TIME BETWEEN` and `FOR SYSTEM_TIME FROM ... TO` — currently return a clear "not yet supported" error
+
+### Known Limitations
+- **`FOR SYSTEM_TIME BETWEEN`** and **`FOR SYSTEM_TIME FROM ... TO`** are parsed but not yet executable — they return a clear "not yet supported" error rather than silently dropping the clause. Implementing them needs a range-aware engine query variant; tracked as a follow-up.
+- **Predicate semantics differ above ~1000 rows.** The sequential read path supports `=`, `!=`, `<`, `<=`, `>`, `>=`; the parallel path (used automatically for larger result sets) also handles `LIKE`, `IN`, `NOT IN`, and non-numeric ordering. Same query can return different rows depending on table size. Consolidating the two implementations is on the roadmap.
 
 ### Data Model & Storage
 - **Append-only storage**: Immutable events preserve complete history
@@ -664,7 +667,8 @@ DriftDB is currently in **alpha** stage with significant recent improvements but
 
 **Current Status:**
 - Core functionality implemented and working well
-- Time travel queries fully functional with `FOR SYSTEM_TIME AS OF @SEQ:N`
+- Time travel queries work end-to-end with `FOR SYSTEM_TIME AS OF @SEQ:N` and timestamp variants, through both the CLI/server SQL path and the read-only engine API (the engine's read-only path previously dropped timestamp variants — now resolves them correctly)
+- WHERE-clause operators (`=`, `!=`, `<`, `<=`, `>`, `>=`) honored consistently across both engine read paths (predicate logic is shared via a single module — previously the read-only API silently treated everything as equality)
 - PostgreSQL wire protocol fully implemented
 - SQL support for SELECT, INSERT, UPDATE, DELETE with WHERE clauses
 - Replication framework in place (tests fixed)
