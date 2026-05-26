@@ -42,33 +42,6 @@ pub enum Query {
     Compact {
         table: String,
     },
-    BackupDatabase {
-        destination: String,
-        compression: Option<String>,
-        incremental: bool,
-    },
-    BackupTable {
-        table: String,
-        destination: String,
-        compression: Option<String>,
-    },
-    RestoreDatabase {
-        source: String,
-        target: Option<String>,
-        verify: bool,
-    },
-    RestoreTable {
-        table: String,
-        source: String,
-        target: Option<String>,
-        verify: bool,
-    },
-    ShowBackups {
-        directory: Option<String>,
-    },
-    VerifyBackup {
-        backup_path: String,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
