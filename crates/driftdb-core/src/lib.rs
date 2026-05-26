@@ -37,7 +37,6 @@ pub mod procedures;
 pub mod query;
 pub mod query_cache;
 pub mod query_cancellation;
-pub mod query_optimizer;
 pub mod query_performance;
 pub mod query_plan;
 pub mod raft;
