@@ -414,12 +414,8 @@ impl QueryPlanVisualizer {
             output.push('\n');
         }
 
-        if self.show_actual_stats && node.actual_time_ms.is_some() {
-            output.push_str(&format!(
-                "{}   Time: {:.2}ms\n",
-                indent,
-                node.actual_time_ms.unwrap()
-            ));
+        if let Some(actual_time_ms) = node.actual_time_ms.filter(|_| self.show_actual_stats) {
+            output.push_str(&format!("{}   Time: {:.2}ms\n", indent, actual_time_ms));
         }
 
         if self.show_properties {

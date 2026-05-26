@@ -1129,7 +1129,7 @@ impl<'a> QueryExecutor<'a> {
                     .into_iter()
                     .map(|row| {
                         let mut map = serde_json::Map::new();
-                        for (col, val) in columns.iter().zip(row.into_iter()) {
+                        for (col, val) in columns.iter().zip(row) {
                             map.insert(col.clone(), val);
                         }
                         Value::Object(map)
@@ -4788,7 +4788,7 @@ impl<'a> QueryExecutor<'a> {
         if let Value::Object(map) = outer_row {
             // Sort keys longest-first so longer keys are replaced before shorter ones.
             let mut pairs: Vec<(&String, &Value)> = map.iter().collect();
-            pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+            pairs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
             // Word-boundary replacement helper (avoids matching substrings of identifiers).
             let replace_word_bounded = |haystack: &str, pattern: &str, replacement: &str| -> String {

@@ -544,11 +544,10 @@ impl MonitoringSystem {
         let failed_queries = metrics.queries_failed.load(Ordering::Relaxed);
         let total_latency = metrics.query_latency_us.load(Ordering::Relaxed);
 
-        let avg_latency = if total_queries > 0 {
-            (total_latency / total_queries) as f64 / 1000.0
-        } else {
-            0.0
-        };
+        let avg_latency = total_latency
+            .checked_div(total_queries)
+            .map(|v| v as f64 / 1000.0)
+            .unwrap_or(0.0);
 
         // Calculate queries per second
         let queries_per_second = self.query_rate_tracker.write().update(total_queries);

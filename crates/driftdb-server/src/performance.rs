@@ -113,8 +113,11 @@ impl PerformanceMonitor {
         for entry in self.query_times.iter() {
             let metrics = entry.value();
             let executions = metrics.total_executions.load(Ordering::Relaxed);
-            if executions > 0 {
-                let avg_ms = metrics.total_duration_ms.load(Ordering::Relaxed) / executions;
+            if let Some(avg_ms) = metrics
+                .total_duration_ms
+                .load(Ordering::Relaxed)
+                .checked_div(executions)
+            {
                 top_queries.push((
                     entry.key().clone(),
                     avg_ms,
@@ -125,7 +128,7 @@ impl PerformanceMonitor {
             }
         }
 
-        top_queries.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by avg time descending
+        top_queries.sort_by_key(|b| std::cmp::Reverse(b.1)); // Sort by avg time descending
         top_queries.truncate(10);
 
         let connection_stats = self.connection_stats.read();

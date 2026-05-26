@@ -277,8 +277,11 @@ impl QueryCancellationManager {
             stats.total_query_time_ms += elapsed_ms;
             stats.max_query_time_ms = stats.max_query_time_ms.max(elapsed_ms);
 
-            if stats.queries_completed > 0 {
-                stats.avg_query_time_ms = stats.total_query_time_ms / stats.queries_completed;
+            if let Some(avg) = stats
+                .total_query_time_ms
+                .checked_div(stats.queries_completed)
+            {
+                stats.avg_query_time_ms = avg;
             }
 
             Ok(())

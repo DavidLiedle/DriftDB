@@ -521,12 +521,10 @@ impl PartitionManager {
                 }
             }
 
-            PartitionStrategy::Hash(hash) => {
-                if hash.num_buckets == 0 {
-                    return Err(DriftError::Validation(
-                        "Hash partitioning requires at least one bucket".to_string(),
-                    ));
-                }
+            PartitionStrategy::Hash(hash) if hash.num_buckets == 0 => {
+                return Err(DriftError::Validation(
+                    "Hash partitioning requires at least one bucket".to_string(),
+                ));
             }
 
             PartitionStrategy::Composite(composite) => {

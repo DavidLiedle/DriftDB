@@ -418,14 +418,8 @@ impl Engine {
         } else {
             // Use sequential execution for small datasets
             let mut results: Vec<serde_json::Value> = state
-                .into_iter()
-                .filter_map(|(_, row)| {
-                    if Self::matches_conditions(&row, &conditions) {
-                        Some(row)
-                    } else {
-                        None
-                    }
-                })
+                .into_values()
+                .filter(|row| Self::matches_conditions(row, &conditions))
                 .collect();
 
             if let Some(limit) = limit {

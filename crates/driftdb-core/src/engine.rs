@@ -1291,11 +1291,7 @@ impl Engine {
 
         // Calculate average row size
         let total_size: usize = current_state.values().map(|v| v.to_string().len()).sum();
-        let avg_row_size = if row_count > 0 {
-            total_size / row_count
-        } else {
-            0
-        };
+        let avg_row_size = total_size.checked_div(row_count).unwrap_or(0);
 
         // Get actual storage size
         let total_size_bytes = storage.calculate_size_bytes()?;

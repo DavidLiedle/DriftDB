@@ -155,18 +155,18 @@ impl ConstraintManager {
 
         for constraint in table_constraints.unwrap() {
             match &constraint.constraint_type {
-                ConstraintType::NotNull { column } => {
-                    if record.get(column).is_none_or(|v| v.is_null()) {
-                        return Err(anyhow!(
-                            "NOT NULL constraint violation: column '{}' cannot be null",
-                            column
-                        ));
-                    }
+                ConstraintType::NotNull { column }
+                    if record.get(column).is_none_or(|v| v.is_null()) =>
+                {
+                    return Err(anyhow!(
+                        "NOT NULL constraint violation: column '{}' cannot be null",
+                        column
+                    ));
                 }
-                ConstraintType::Check { compiled_expr, .. } => {
-                    if !self.evaluate_check_expression(compiled_expr, record)? {
-                        return Err(anyhow!("CHECK constraint violation: {}", constraint.name));
-                    }
+                ConstraintType::Check { compiled_expr, .. }
+                    if !self.evaluate_check_expression(compiled_expr, record)? =>
+                {
+                    return Err(anyhow!("CHECK constraint violation: {}", constraint.name));
                 }
                 ConstraintType::Unique { columns } => {
                     self.validate_unique_constraint(table, columns, record, engine)?;
@@ -185,12 +185,12 @@ impl ConstraintManager {
                         engine,
                     )?;
                 }
-                ConstraintType::Default { column, value } => {
-                    // Apply default if column is missing or null
-                    if record.get(column).is_none_or(|v| v.is_null()) {
-                        if let Some(obj) = record.as_object_mut() {
-                            obj.insert(column.clone(), value.clone());
-                        }
+                ConstraintType::Default { column, value }
+                    if record.get(column).is_none_or(|v| v.is_null()) =>
+                {
+                    // Apply default for missing/null column
+                    if let Some(obj) = record.as_object_mut() {
+                        obj.insert(column.clone(), value.clone());
                     }
                 }
                 _ => {}
@@ -215,33 +215,29 @@ impl ConstraintManager {
 
         for constraint in table_constraints.unwrap() {
             match &constraint.constraint_type {
-                ConstraintType::Check { compiled_expr, .. } => {
-                    if !self.evaluate_check_expression(compiled_expr, new_record)? {
-                        return Err(anyhow!("CHECK constraint violation: {}", constraint.name));
-                    }
+                ConstraintType::Check { compiled_expr, .. }
+                    if !self.evaluate_check_expression(compiled_expr, new_record)? =>
+                {
+                    return Err(anyhow!("CHECK constraint violation: {}", constraint.name));
                 }
-                ConstraintType::Unique { columns } => {
-                    // Only validate if unique columns changed
-                    if self.columns_changed(columns, old_record, new_record) {
-                        self.validate_unique_constraint(table, columns, new_record, engine)?;
-                    }
+                ConstraintType::Unique { columns }
+                    if self.columns_changed(columns, old_record, new_record) =>
+                {
+                    self.validate_unique_constraint(table, columns, new_record, engine)?;
                 }
                 ConstraintType::ForeignKey {
                     columns,
                     reference_table,
                     reference_columns,
                     ..
-                } => {
-                    // Only validate if foreign key columns changed
-                    if self.columns_changed(columns, old_record, new_record) {
-                        self.validate_foreign_key(
-                            columns,
-                            reference_table,
-                            reference_columns,
-                            new_record,
-                            engine,
-                        )?;
-                    }
+                } if self.columns_changed(columns, old_record, new_record) => {
+                    self.validate_foreign_key(
+                        columns,
+                        reference_table,
+                        reference_columns,
+                        new_record,
+                        engine,
+                    )?;
                 }
                 _ => {}
             }
@@ -471,19 +467,17 @@ impl ConstraintManager {
                 columns,
                 reference_columns,
                 ..
-            } => {
-                if columns.len() != reference_columns.len() {
-                    return Err(anyhow!(
-                        "Foreign key column count mismatch: {} local columns vs {} reference columns",
-                        columns.len(),
-                        reference_columns.len()
-                    ));
-                }
+            } if columns.len() != reference_columns.len() => {
+                return Err(anyhow!(
+                    "Foreign key column count mismatch: {} local columns vs {} reference columns",
+                    columns.len(),
+                    reference_columns.len()
+                ));
             }
-            ConstraintType::Unique { columns } | ConstraintType::PrimaryKey { columns } => {
-                if columns.is_empty() {
-                    return Err(anyhow!("Constraint must specify at least one column"));
-                }
+            ConstraintType::Unique { columns } | ConstraintType::PrimaryKey { columns }
+                if columns.is_empty() =>
+            {
+                return Err(anyhow!("Constraint must specify at least one column"));
             }
             _ => {}
         }
