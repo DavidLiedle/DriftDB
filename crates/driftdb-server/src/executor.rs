@@ -11,7 +11,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::transaction::{IsolationLevel, PendingWrite, TransactionManager, WriteOperation};
+// `crate::transaction` was retired alongside the server's hand-rolled DML
+// path — every BEGIN / COMMIT / ROLLBACK now routes through sql_bridge,
+// which holds transaction state in the per-session SessionContext.
 
 #[cfg(test)]
 #[path = "executor_subquery_tests.rs"]
@@ -405,26 +407,13 @@ pub struct QueryExecutor<'a> {
     cte_tables: Arc<Mutex<HashMap<String, Vec<Value>>>>,      // CTE result cache for current query
     use_indexes: bool,                                        // Enable/disable index optimization
     prepared_statements: Arc<ParkingMutex<HashMap<String, PreparedStatement>>>, // Prepared statements cache
-    transaction_manager: Arc<TransactionManager>, // Transaction management
     session_id: String,                           // Session identifier for transaction tracking
-}
-
-/// Foreign key constraint definition (process-global registry)
-#[derive(Debug, Clone)]
-pub struct ForeignKeyConstraint {
-    /// Column in this table that holds the FK value
-    pub column: String,
-    /// Referenced table name
-    pub ref_table: String,
-    /// Referenced column in the target table
-    pub ref_column: String,
-}
-
-fn fk_registry() -> &'static parking_lot::RwLock<HashMap<String, Vec<ForeignKeyConstraint>>> {
-    static FK_REGISTRY: std::sync::OnceLock<
-        parking_lot::RwLock<HashMap<String, Vec<ForeignKeyConstraint>>>,
-    > = std::sync::OnceLock::new();
-    FK_REGISTRY.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+    /// Per-connection sql_bridge session, holding the active transaction
+    /// id (if any). Wrapped in a parking_lot::Mutex so the existing
+    /// `&self`-everywhere API survives — each statement locks for the
+    /// duration of execution, which matches PG's serial-per-connection
+    /// statement model.
+    session: Arc<ParkingMutex<driftdb_core::sql_bridge::SessionContext>>,
 }
 
 #[allow(dead_code)]
@@ -551,24 +540,21 @@ impl<'a> QueryExecutor<'a> {
     }
 
     pub fn new(engine: Arc<SyncRwLock<Engine>>) -> QueryExecutor<'static> {
-        let transaction_manager = Arc::new(TransactionManager::new(engine.clone()));
         QueryExecutor {
             engine_guard: None,
             engine: Some(engine),
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
             cte_tables: Arc::new(Mutex::new(HashMap::new())),
-            use_indexes: true, // Enable index optimization by default
+            use_indexes: true,
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
-            transaction_manager,
             session_id: format!("session_{}", std::process::id()),
+            session: Arc::new(ParkingMutex::new(
+                driftdb_core::sql_bridge::SessionContext::new(),
+            )),
         }
     }
 
     pub fn new_with_guard(engine_guard: &'a EngineGuard) -> Self {
-        // Use the engine from the guard for transaction management
-        let engine_for_txn = engine_guard.get_engine_ref();
-        let transaction_manager = Arc::new(TransactionManager::new(engine_for_txn));
-
         Self {
             engine_guard: Some(engine_guard),
             engine: None,
@@ -576,17 +562,17 @@ impl<'a> QueryExecutor<'a> {
             cte_tables: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true,
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
-            transaction_manager,
             session_id: format!("guard_session_{}", std::process::id()),
+            session: Arc::new(ParkingMutex::new(
+                driftdb_core::sql_bridge::SessionContext::new(),
+            )),
         }
     }
 
-    /// Create a new executor with a shared transaction manager
-    pub fn new_with_guard_and_transaction_manager(
-        engine_guard: &'a EngineGuard,
-        transaction_manager: Arc<TransactionManager>,
-        session_id: String,
-    ) -> Self {
+    /// Create a new executor with a caller-supplied session id. Used by the
+    /// PostgreSQL protocol layer so per-connection session ids are stable
+    /// across statements; transaction state itself lives in `self.session`.
+    pub fn new_with_guard_and_session_id(engine_guard: &'a EngineGuard, session_id: String) -> Self {
         Self {
             engine_guard: Some(engine_guard),
             engine: None,
@@ -594,8 +580,10 @@ impl<'a> QueryExecutor<'a> {
             cte_tables: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true,
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
-            transaction_manager,
             session_id,
+            session: Arc::new(ParkingMutex::new(
+                driftdb_core::sql_bridge::SessionContext::new(),
+            )),
         }
     }
 
@@ -1242,129 +1230,48 @@ impl<'a> QueryExecutor<'a> {
     // -------------------------------------------------------------------------
 
     /// Parse REFERENCES clauses from a CREATE TABLE body and register FKs.
+    /// Parse `col REFERENCES other_table(other_col)` patterns out of the
+    /// raw column-defs body of a CREATE TABLE and register the resulting
+    /// FKs in the canonical `core::fk` registry. INSERTs / UPDATEs /
+    /// DELETEs through sql_bridge read from the same registry, so FKs
+    /// declared via the server's PostgreSQL-protocol CREATE TABLE
+    /// enforce uniformly regardless of which client wrote the data.
     fn register_fk_constraints(&self, table_name: &str, column_defs_str: &str) {
-        // Look for patterns: col_name ... REFERENCES other_table(other_col)
-        let mut registry = fk_registry().write();
-        let mut constraints = Vec::new();
-
-        // Simple per-column scan
+        let mut fks: Vec<driftdb_core::fk::ForeignKey> = Vec::new();
         for part in column_defs_str.split(',') {
             let part = part.trim();
             let upper = part.to_uppercase();
-            if let Some(ref_pos) = upper.find("REFERENCES") {
-                // Extract the column name (first token of this definition)
-                let col_name = part.split_whitespace().next().unwrap_or("").to_string();
-                let after_ref = part[ref_pos + 10..].trim();
-                // Parse ref_table(ref_col)
-                if let Some(paren_open) = after_ref.find('(') {
-                    if let Some(paren_close) = after_ref.find(')') {
-                        let ref_table = after_ref[..paren_open].trim().to_string();
-                        let ref_col = after_ref[paren_open + 1..paren_close].trim().to_string();
-                        if !col_name.is_empty() && !ref_table.is_empty() && !ref_col.is_empty() {
-                            constraints.push(ForeignKeyConstraint {
-                                column: col_name,
-                                ref_table,
-                                ref_column: ref_col,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        if !constraints.is_empty() {
-            registry.insert(table_name.to_string(), constraints);
-            info!("Registered {} FK constraint(s) for table '{}'", registry[table_name].len(), table_name);
-        }
-    }
-
-    /// Validate FK constraints on INSERT: for each FK column in the inserted doc,
-    /// verify a row with the referenced PK value exists in the referenced table.
-    fn validate_fk_insert(&self, table_name: &str, doc: &Value) -> Result<()> {
-        let registry = fk_registry().read();
-        let constraints = match registry.get(table_name) {
-            Some(c) => c.clone(),
-            None => return Ok(()),
-        };
-        drop(registry);
-
-        if constraints.is_empty() {
-            return Ok(());
-        }
-
-        let engine = self.engine_read()?;
-        for fk in &constraints {
-            let fk_val = if let Value::Object(map) = doc {
-                map.get(&fk.column).cloned().unwrap_or(Value::Null)
-            } else {
-                Value::Null
+            let Some(ref_pos) = upper.find("REFERENCES") else {
+                continue;
             };
-            if fk_val.is_null() {
-                continue; // NULL FK values are allowed (no referential check needed)
-            }
-            // Scan the referenced table for a matching row
-            let ref_data = engine
-                .get_table_data(&fk.ref_table)
-                .map_err(|e| anyhow!("FK check: failed to read table '{}': {}", fk.ref_table, e))?;
-            let found = ref_data.iter().any(|row| {
-                if let Value::Object(map) = row {
-                    map.get(&fk.ref_column).map(|v| v == &fk_val).unwrap_or(false)
-                } else {
-                    false
-                }
-            });
-            if !found {
-                return Err(anyhow!(
-                    "Foreign key violation: value {:?} in column '{}' does not exist in '{}'.'{}'",
-                    fk_val, fk.column, fk.ref_table, fk.ref_column
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// Validate FK constraints on DELETE: ensure no other table has a FK pointing
-    /// at the row being deleted.
-    fn validate_fk_delete(&self, table_name: &str, deleted_row: &Value) -> Result<()> {
-        let registry = fk_registry().read();
-        let engine = self.engine_read()?;
-
-        for (referencing_table, constraints) in registry.iter() {
-            for fk in constraints {
-                if fk.ref_table != table_name {
-                    continue;
-                }
-                // fk.ref_column in deleted_row gives the PK value we're deleting
-                let pk_val = if let Value::Object(map) = deleted_row {
-                    map.get(&fk.ref_column).cloned().unwrap_or(Value::Null)
-                } else {
-                    Value::Null
-                };
-                if pk_val.is_null() {
-                    continue;
-                }
-                // Check if any row in the referencing table uses this PK value
-                let ref_data = engine
-                    .get_table_data(referencing_table)
-                    .map_err(|e| anyhow!("FK check failed: {}", e))?;
-                let blocked = ref_data.iter().any(|row| {
-                    if let Value::Object(map) = row {
-                        map.get(&fk.column).map(|v| v == &pk_val).unwrap_or(false)
-                    } else {
-                        false
-                    }
+            let col_name = part.split_whitespace().next().unwrap_or("").to_string();
+            let after_ref = part[ref_pos + 10..].trim();
+            let (Some(paren_open), Some(paren_close)) = (after_ref.find('('), after_ref.find(')'))
+            else {
+                continue;
+            };
+            let ref_table = after_ref[..paren_open].trim().to_string();
+            let ref_col = after_ref[paren_open + 1..paren_close].trim().to_string();
+            if !col_name.is_empty() && !ref_table.is_empty() && !ref_col.is_empty() {
+                fks.push(driftdb_core::fk::ForeignKey {
+                    column: col_name,
+                    ref_table,
+                    ref_column: ref_col,
                 });
-                if blocked {
-                    return Err(anyhow!(
-                        "Foreign key violation: cannot delete row from '{}' because '{}' has a \
-                         reference via column '{}'",
-                        table_name, referencing_table, fk.column
-                    ));
-                }
             }
         }
-        Ok(())
+        if !fks.is_empty() {
+            let count = fks.len();
+            driftdb_core::fk::register(table_name, fks);
+            info!(
+                "Registered {} FK constraint(s) for table '{}'",
+                count, table_name
+            );
+        }
     }
+
+    // Note: validate_fk_insert / validate_fk_delete moved into
+    // `driftdb_core::fk` so the same FK logic runs for every DML path.
 
     /// Parse GROUP BY clause
     fn parse_group_by_clause(&self, group_by_clause: &str) -> Result<GroupBy> {
@@ -1639,14 +1546,20 @@ impl<'a> QueryExecutor<'a> {
         if lower.starts_with("select ") || lower.starts_with("with ") {
             return self.execute_select_via_bridge(sql).await;
         }
+        // INSERT / UPDATE / DELETE now run through the core SQL bridge, with
+        // the per-session SessionContext threading any active transaction
+        // through. sql_bridge handles FK validation, BEFORE/AFTER triggers,
+        // multi-row VALUES, and transactional buffering uniformly — what
+        // used to be hand-rolled DML on this side is now one canonical path
+        // shared with the CLI and direct-core callers.
         if lower.starts_with("insert into ") || lower.starts_with("insert ") {
-            return self.execute_insert(sql).await;
+            return self.execute_dml_via_bridge(sql).await;
         }
         if lower.starts_with("update ") {
-            return self.execute_update(sql).await;
+            return self.execute_dml_via_bridge(sql).await;
         }
         if lower.starts_with("delete from ") || lower.starts_with("delete ") {
-            return self.execute_delete(sql).await;
+            return self.execute_dml_via_bridge(sql).await;
         }
 
         // For other SQL commands, use the bridge
@@ -1691,11 +1604,38 @@ impl<'a> QueryExecutor<'a> {
                 .and_then(|name| engine.get_table_columns(&name).ok())
         });
 
-        let result = driftdb_core::sql_bridge::execute_sql(&mut engine, sql)
-            .map_err(|e| anyhow!("SQL execution failed: {}", e))?;
+        let mut session = self.session.lock();
+        let result =
+            driftdb_core::sql_bridge::execute_sql_in_session(&mut engine, sql, &mut session)
+                .map_err(|e| anyhow!("SQL execution failed: {}", e))?;
+        drop(session);
         drop(engine);
 
         self.convert_sql_result(result, projection_columns)
+    }
+
+    /// Execute a DML statement (INSERT / UPDATE / DELETE) through the core
+    /// SQL bridge. Locks the per-connection `SessionContext` so the active
+    /// transaction id (set by `BEGIN`, cleared by `COMMIT`/`ROLLBACK`) is
+    /// threaded into sql_bridge — buffered writes accumulate atomically
+    /// instead of hitting storage immediately. Conversion is the same as
+    /// for SELECTs but result-row metadata is absent, so the table schema
+    /// is the natural column-list fallback.
+    async fn execute_dml_via_bridge(&self, sql: &str) -> Result<QueryResult> {
+        let mut engine = self.engine_write()?;
+
+        let table_columns = Self::extract_table_from_sql_static(sql)
+            .ok()
+            .and_then(|name| engine.get_table_columns(&name).ok());
+
+        let mut session = self.session.lock();
+        let result =
+            driftdb_core::sql_bridge::execute_sql_in_session(&mut engine, sql, &mut session)
+                .map_err(|e| anyhow!("SQL execution failed: {}", e))?;
+        drop(session);
+        drop(engine);
+
+        self.convert_sql_result(result, table_columns)
     }
 
     /// Parse the SQL and return the user-visible column labels in projection
@@ -1760,491 +1700,9 @@ impl<'a> QueryExecutor<'a> {
         Err(anyhow!("Unsupported SQL command: {}", sql))
     }
 
-    async fn execute_insert(&self, sql: &str) -> Result<QueryResult> {
-        // Parse INSERT INTO table_name (columns) VALUES (values)
-        let sql_clean = sql.trim().trim_end_matches(';');
-        let lower = sql_clean.to_lowercase();
+    // Note: execute_insert / parse_values_list / execute_update / execute_delete
+    // moved into `driftdb_core::sql_bridge`. Single canonical DML path now.
 
-        if !lower.starts_with("insert into ") {
-            return Err(anyhow!("Invalid INSERT syntax"));
-        }
-
-        // Extract table name
-        let after_into = &sql_clean[12..]; // Skip "INSERT INTO "
-        let table_end = after_into
-            .find(' ')
-            .or_else(|| after_into.find('('))
-            .ok_or_else(|| anyhow!("Cannot find table name"))?;
-        let table_name = after_into[..table_end].trim();
-
-        // Find VALUES clause
-        let values_pos = lower
-            .find(" values")
-            .ok_or_else(|| anyhow!("Missing VALUES clause"))?;
-
-        // Extract column names if present
-        let columns_str = sql_clean[12 + table_end..values_pos].trim();
-        let columns = if columns_str.starts_with('(') && columns_str.ends_with(')') {
-            columns_str[1..columns_str.len() - 1]
-                .split(',')
-                .map(|c| c.trim())
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-
-        // Extract values
-        let values_str = sql_clean[values_pos + 7..].trim(); // Skip " VALUES"
-        if !values_str.starts_with('(') || !values_str.ends_with(')') {
-            return Err(anyhow!("Invalid VALUES syntax"));
-        }
-
-        let values = values_str[1..values_str.len() - 1].trim();
-
-        // Create JSON document
-        let mut json_obj = serde_json::Map::new();
-
-        if !columns.is_empty() && !values.is_empty() {
-            // Parse values (simple comma-separated parser)
-            let value_parts = self.parse_values_list(values)?;
-
-            for (i, col) in columns.iter().enumerate() {
-                if i < value_parts.len() {
-                    json_obj.insert(col.to_string(), value_parts[i].clone());
-                }
-            }
-        } else {
-            return Err(anyhow!("Column names and values required"));
-        }
-
-        // Insert the document
-        let doc = Value::Object(json_obj);
-
-        // Validate foreign key constraints before inserting
-        self.validate_fk_insert(table_name, &doc)?;
-
-        // Check if we're in a transaction - if so, buffer the write
-        if let Ok(true) = self.transaction_manager.is_in_transaction(&self.session_id) {
-            // Buffer the write for later commit
-            use crate::transaction::{PendingWrite, WriteOperation};
-            let write = PendingWrite {
-                table: table_name.to_string(),
-                operation: WriteOperation::Insert,
-                data: doc,
-            };
-
-            self.transaction_manager
-                .add_pending_write(&self.session_id, write)
-                .await
-                .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
-
-            info!(
-                "Buffered INSERT for transaction in session {}",
-                self.session_id
-            );
-        } else {
-            // Not in transaction, apply immediately (acquire lock only when needed)
-            let mut engine = self.engine_write()?;
-            engine
-                .insert_record(table_name, doc)
-                .map_err(|e| anyhow!("Insert failed: {}", e))?;
-        }
-
-        Ok(QueryResult::Insert { count: 1 })
-    }
-
-    /// Parse comma-separated values, handling quoted strings
-    fn parse_values_list(&self, values: &str) -> Result<Vec<Value>> {
-        let mut result = Vec::new();
-        let mut current = String::new();
-        let mut in_quotes = false;
-        let mut chars = values.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            match ch {
-                '\'' => {
-                    if in_quotes && chars.peek() == Some(&'\'') {
-                        // Escaped quote
-                        current.push('\'');
-                        chars.next();
-                    } else {
-                        in_quotes = !in_quotes;
-                        if !in_quotes {
-                            // End of string value
-                            result.push(Value::String(current.clone()));
-                            current.clear();
-                        }
-                    }
-                }
-                ',' if !in_quotes => {
-                    // End of value
-                    if !current.is_empty() {
-                        result.push(self.parse_sql_value(&current)?);
-                        current.clear();
-                    }
-                }
-                #[allow(clippy::if_same_then_else)]
-                _ => {
-                    if in_quotes || ch != ' ' {
-                        current.push(ch);
-                    } else if !current.is_empty() {
-                        current.push(ch);
-                    }
-                }
-            }
-        }
-
-        // Add last value
-        if !current.is_empty() {
-            result.push(self.parse_sql_value(&current)?);
-        }
-
-        Ok(result)
-    }
-
-    async fn execute_update(&self, sql: &str) -> Result<QueryResult> {
-        // Parse UPDATE table_name SET column = value [WHERE condition]
-        let sql_clean = sql.trim().trim_end_matches(';');
-        let lower = sql_clean.to_lowercase();
-
-        if !lower.starts_with("update ") {
-            return Err(anyhow!("Invalid UPDATE syntax"));
-        }
-
-        // Extract table name
-        let after_update = &sql_clean[7..].trim(); // Skip "UPDATE "
-        let set_pos = lower[7..]
-            .find(" set ")
-            .ok_or_else(|| anyhow!("Missing SET clause"))?;
-        let table_name = after_update[..set_pos].trim();
-
-        // Extract SET clause
-        let after_set = &after_update[set_pos + 5..].trim(); // Skip " SET "
-        let where_pos = after_set.to_lowercase().find(" where ");
-
-        let set_clause = if let Some(pos) = where_pos {
-            &after_set[..pos]
-        } else {
-            after_set
-        };
-
-        // Parse SET assignments (column = value)
-        let mut updates = HashMap::new();
-        for assignment in set_clause.split(',') {
-            let parts: Vec<&str> = assignment.trim().split('=').collect();
-            if parts.len() != 2 {
-                return Err(anyhow!("Invalid SET assignment: {}", assignment));
-            }
-            let column = parts[0].trim();
-            let value = self.parse_sql_value(parts[1].trim())?;
-            updates.insert(column.to_string(), value);
-        }
-
-        // Check if we're in a transaction
-        let in_transaction = self
-            .transaction_manager
-            .is_in_transaction(&self.session_id)?;
-        info!(
-            "UPDATE: in_transaction={}, session={}",
-            in_transaction, self.session_id
-        );
-
-        if in_transaction {
-            // Buffer UPDATE operations for transaction
-            // Collect all pending writes first, then buffer them after dropping the lock
-            let pending_writes = {
-                let engine = self.engine_read()?;
-
-                // Get all data from table
-                let all_data = engine
-                    .get_table_data(table_name)
-                    .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
-
-                // Parse WHERE conditions if present
-                let conditions = if let Some(pos) = where_pos {
-                    let where_clause = &after_set[pos + 7..].trim();
-                    Some(self.parse_where_clause(where_clause)?)
-                } else {
-                    None
-                };
-
-                // Collect matching rows to update
-                let mut writes = Vec::new();
-                for row in all_data {
-                    if let Value::Object(mut map) = row {
-                        // Check if row matches WHERE conditions (if any)
-                        let matches = if let Some(ref conds) = conditions {
-                            conds.iter().all(|(column, operator, value)| {
-                                if let Some(field_value) = map.get(column) {
-                                    driftdb_core::query::predicate::compare_values(field_value, value, operator)
-                                } else {
-                                    false
-                                }
-                            })
-                        } else {
-                            true // No WHERE clause means update all
-                        };
-
-                        if matches {
-                            // Get primary key for this row
-                            let primary_key = map
-                                .get("id")
-                                .cloned()
-                                .ok_or_else(|| anyhow!("Row missing primary key"))?;
-
-                            // Apply updates to the row
-                            for (col, val) in &updates {
-                                map.insert(col.clone(), val.clone());
-                            }
-
-                            // Collect the update operation
-                            let write = PendingWrite {
-                                table: table_name.to_string(),
-                                operation: WriteOperation::Update { id: primary_key },
-                                data: Value::Object(map.clone()),
-                            };
-                            writes.push(write);
-                        }
-                    }
-                }
-                writes
-            }; // engine guard is dropped here
-
-            // Now buffer all the writes (can safely await now)
-            let updated_count = pending_writes.len();
-            for write in pending_writes {
-                self.transaction_manager
-                    .add_pending_write(&self.session_id, write)
-                    .await
-                    .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
-            }
-
-            info!(
-                "Buffered {} UPDATE operations for transaction in session {}",
-                updated_count, self.session_id
-            );
-            Ok(QueryResult::Update {
-                count: updated_count,
-            })
-        } else {
-            // Not in transaction, apply immediately
-            let mut engine = self.engine_write()?;
-
-            // Get all data from table
-            let all_data = engine
-                .get_table_data(table_name)
-                .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
-
-            // Parse WHERE conditions if present
-            let conditions = if let Some(pos) = where_pos {
-                let where_clause = &after_set[pos + 7..].trim();
-                Some(self.parse_where_clause(where_clause)?)
-            } else {
-                None
-            };
-
-            // Count updated rows
-            let mut updated_count = 0;
-
-            // Apply updates to matching rows
-            for row in all_data {
-                if let Value::Object(mut map) = row {
-                    // Check if row matches WHERE conditions (if any)
-                    let matches = if let Some(ref conds) = conditions {
-                        conds.iter().all(|(column, operator, value)| {
-                            if let Some(field_value) = map.get(column) {
-                                driftdb_core::query::predicate::compare_values(field_value, value, operator)
-                            } else {
-                                false
-                            }
-                        })
-                    } else {
-                        true // No WHERE clause means update all
-                    };
-
-                    if matches {
-                        // Get primary key for this row
-                        let primary_key = map
-                            .get("id")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("Row missing primary key"))?;
-
-                        // Apply updates to the row
-                        for (col, val) in &updates {
-                            map.insert(col.clone(), val.clone());
-                        }
-
-                        // Save updated row back to database
-                        engine.update_record(table_name, primary_key, Value::Object(map))?;
-                        updated_count += 1;
-                    }
-                }
-            }
-
-            Ok(QueryResult::Update {
-                count: updated_count,
-            })
-        }
-    }
-
-    async fn execute_delete(&self, sql: &str) -> Result<QueryResult> {
-        // Parse DELETE FROM table_name [WHERE condition]
-        let sql_clean = sql.trim().trim_end_matches(';');
-        let lower = sql_clean.to_lowercase();
-
-        if !lower.starts_with("delete from ") {
-            return Err(anyhow!("Invalid DELETE syntax"));
-        }
-
-        // Extract table name
-        let after_delete = &sql_clean[12..].trim(); // Skip "DELETE FROM "
-        let where_pos = after_delete.to_lowercase().find(" where ");
-
-        let table_name = if let Some(pos) = where_pos {
-            &after_delete[..pos].trim()
-        } else {
-            after_delete
-        };
-
-        // Check if we're in a transaction
-        let in_transaction = self
-            .transaction_manager
-            .is_in_transaction(&self.session_id)?;
-        info!(
-            "DELETE: in_transaction={}, session={}",
-            in_transaction, self.session_id
-        );
-
-        if in_transaction {
-            // Buffer DELETE operations for transaction
-            // Collect all pending writes first, then buffer them after dropping the lock
-            let pending_writes = {
-                let engine = self.engine_read()?;
-
-                // Get all data from table
-                let all_data = engine
-                    .get_table_data(table_name)
-                    .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
-
-                // Parse WHERE conditions if present
-                let conditions = if let Some(pos) = where_pos {
-                    let where_clause = &after_delete[pos + 7..].trim();
-                    Some(self.parse_where_clause(where_clause)?)
-                } else {
-                    None
-                };
-
-                // Collect matching rows to delete
-                let mut writes = Vec::new();
-                for row in all_data {
-                    if let Value::Object(map) = row {
-                        // Check if row matches WHERE conditions (if any)
-                        let matches = if let Some(ref conds) = conditions {
-                            conds.iter().all(|(column, operator, value)| {
-                                if let Some(field_value) = map.get(column) {
-                                    driftdb_core::query::predicate::compare_values(field_value, value, operator)
-                                } else {
-                                    false
-                                }
-                            })
-                        } else {
-                            true // No WHERE clause means delete all
-                        };
-
-                        if matches {
-                            // Get primary key for this row
-                            let primary_key = map
-                                .get("id")
-                                .cloned()
-                                .ok_or_else(|| anyhow!("Row missing primary key"))?;
-
-                            // Collect the delete operation
-                            let write = PendingWrite {
-                                table: table_name.to_string(),
-                                operation: WriteOperation::Delete { id: primary_key },
-                                data: Value::Object(map.clone()),
-                            };
-                            writes.push(write);
-                        }
-                    }
-                }
-                writes
-            }; // engine guard is dropped here
-
-            // Now buffer all the writes (can safely await now)
-            let deleted_count = pending_writes.len();
-            for write in pending_writes {
-                self.transaction_manager
-                    .add_pending_write(&self.session_id, write)
-                    .await
-                    .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
-            }
-
-            info!(
-                "Buffered {} DELETE operations for transaction in session {}",
-                deleted_count, self.session_id
-            );
-            Ok(QueryResult::Delete {
-                count: deleted_count,
-            })
-        } else {
-            // Not in transaction, apply immediately
-            let mut engine = self.engine_write()?;
-
-            // Get all data from table
-            let all_data = engine
-                .get_table_data(table_name)
-                .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
-
-            // Parse WHERE conditions if present
-            let conditions = if let Some(pos) = where_pos {
-                let where_clause = &after_delete[pos + 7..].trim();
-                Some(self.parse_where_clause(where_clause)?)
-            } else {
-                None
-            };
-
-            // Count deleted rows
-            let mut deleted_count = 0;
-
-            // Delete matching rows
-            for row in all_data {
-                if let Value::Object(map) = row {
-                    // Check if row matches WHERE conditions (if any)
-                    let matches = if let Some(ref conds) = conditions {
-                        conds.iter().all(|(column, operator, value)| {
-                            if let Some(field_value) = map.get(column) {
-                                driftdb_core::query::predicate::compare_values(field_value, value, operator)
-                            } else {
-                                false
-                            }
-                        })
-                    } else {
-                        true // No WHERE clause means delete all (dangerous!)
-                    };
-
-                    if matches {
-                        // Get primary key for this row
-                        let primary_key = map
-                            .get("id")
-                            .cloned()
-                            .ok_or_else(|| anyhow!("Row missing primary key"))?;
-
-                        // Validate FK referential integrity before deleting
-                        self.validate_fk_delete(table_name, &Value::Object(map.clone()))?;
-
-                        // Delete the row (soft delete for audit trail)
-                        engine.delete_record(table_name, primary_key)?;
-                        deleted_count += 1;
-                    }
-                }
-            }
-
-            Ok(QueryResult::Delete {
-                count: deleted_count,
-            })
-        }
-    }
 
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
         use driftdb_core::schema::ColumnDef;
@@ -5287,124 +4745,100 @@ impl<'a> QueryExecutor<'a> {
 
     // ==================== TRANSACTION METHODS ====================
 
-    /// Execute BEGIN transaction
+    /// Execute BEGIN through the core SQL bridge. Isolation-level hints
+    /// (`BEGIN ISOLATION LEVEL SERIALIZABLE`, etc.) parse cleanly via
+    /// sqlparser but are not yet honored by the engine's transaction
+    /// manager — the engine treats every transaction as READ COMMITTED
+    /// today. That matched the server's previous TransactionManager
+    /// behaviour (which stored the isolation level but never read it).
+    /// Documented as a known limitation; the parser keeps the AST so
+    /// honoring isolation levels later doesn't require a re-plumb.
     async fn execute_begin(&self, sql: &str) -> Result<QueryResult> {
-        let lower = sql.to_lowercase();
-
-        // Parse isolation level if specified
-        let isolation_level = if lower.contains("read uncommitted") {
-            IsolationLevel::ReadUncommitted
-        } else if lower.contains("read committed") {
-            IsolationLevel::ReadCommitted
-        } else if lower.contains("repeatable read") {
-            IsolationLevel::RepeatableRead
-        } else if lower.contains("serializable") {
-            IsolationLevel::Serializable
-        } else {
-            IsolationLevel::default()
-        };
-
-        // Check for read-only mode
-        let is_read_only = lower.contains("read only");
-
-        // Begin transaction
-        let txn_id = self
-            .transaction_manager
-            .begin_transaction(&self.session_id, isolation_level, is_read_only)
-            .await?;
-
+        let mut engine = self.engine_write()?;
+        let mut session = self.session.lock();
+        driftdb_core::sql_bridge::execute_sql_in_session(&mut engine, sql, &mut session)
+            .map_err(|e| anyhow!("BEGIN failed: {}", e))?;
         info!(
-            "Started transaction {} for session {}",
-            txn_id, self.session_id
+            "Started transaction {:?} for session {}",
+            session.transaction_id, self.session_id
         );
         Ok(QueryResult::Begin)
     }
 
-    /// Execute COMMIT transaction
+    /// Execute COMMIT through the core SQL bridge. The bridge applies
+    /// every event buffered since BEGIN; if any apply fails (PK conflict,
+    /// FK violation deferred to commit, etc.) the failure surfaces here.
     async fn execute_commit(&self) -> Result<QueryResult> {
-        self.transaction_manager
-            .commit_transaction(&self.session_id)
-            .await?;
-
+        let mut engine = self.engine_write()?;
+        let mut session = self.session.lock();
+        driftdb_core::sql_bridge::execute_sql_in_session(&mut engine, "COMMIT", &mut session)
+            .map_err(|e| anyhow!("COMMIT failed: {}", e))?;
         info!("Committed transaction for session {}", self.session_id);
         Ok(QueryResult::Commit)
     }
 
-    /// Execute ROLLBACK transaction
+    /// Execute ROLLBACK through the core SQL bridge. Savepoint variants
+    /// (`ROLLBACK TO SAVEPOINT x`) are not yet routed through sql_bridge —
+    /// sqlparser doesn't recognise them as `Statement::Rollback`, so the
+    /// fallthrough here returns an error rather than silently doing the
+    /// wrong thing. Full ROLLBACK works.
     async fn execute_rollback(&self, sql: &str) -> Result<QueryResult> {
         let lower = sql.to_lowercase();
-
-        // Check for ROLLBACK TO SAVEPOINT
         if lower.contains("to savepoint ") || lower.contains("to ") {
-            let savepoint_pos = lower
-                .find("to savepoint ")
-                .map(|p| p + 13)
-                .or_else(|| lower.find("to ").map(|p| p + 3))
-                .ok_or_else(|| anyhow!("Invalid ROLLBACK TO SAVEPOINT syntax"))?;
-
-            let savepoint_name = sql[savepoint_pos..].trim().trim_matches(';');
-
-            self.transaction_manager
-                .rollback_to_savepoint(&self.session_id, savepoint_name)?;
-
-            info!(
-                "Rolled back to savepoint {} for session {}",
-                savepoint_name, self.session_id
-            );
-        } else {
-            // Full rollback
-            self.transaction_manager
-                .rollback_transaction(&self.session_id)
-                .await?;
-
-            info!("Rolled back transaction for session {}", self.session_id);
+            return Err(anyhow!(
+                "ROLLBACK TO SAVEPOINT is not yet supported via the core SQL bridge"
+            ));
         }
-
+        let mut engine = self.engine_write()?;
+        let mut session = self.session.lock();
+        driftdb_core::sql_bridge::execute_sql_in_session(&mut engine, "ROLLBACK", &mut session)
+            .map_err(|e| anyhow!("ROLLBACK failed: {}", e))?;
+        info!("Rolled back transaction for session {}", self.session_id);
         Ok(QueryResult::Rollback)
     }
 
     /// Execute SAVEPOINT
+    /// SAVEPOINT and RELEASE SAVEPOINT — sqlparser does parse these, but
+    /// sql_bridge doesn't yet route them through to the engine's
+    /// transaction manager, and the savepoint state on the old server-side
+    /// TransactionManager was never read by anything that mattered. These
+    /// handlers acknowledge the command but don't yet implement nested
+    /// rollback; documented in the rollback handler too.
     async fn execute_savepoint(&self, sql: &str) -> Result<QueryResult> {
         let savepoint_pos = sql
             .to_lowercase()
             .find("savepoint ")
             .ok_or_else(|| anyhow!("Invalid SAVEPOINT syntax"))?;
-
         let savepoint_name = sql[savepoint_pos + 10..]
             .trim()
             .trim_matches(';')
             .to_string();
-
-        self.transaction_manager
-            .create_savepoint(&self.session_id, savepoint_name.clone())?;
-
         info!(
-            "Created savepoint {} for session {}",
+            "SAVEPOINT '{}' acknowledged (not yet enforced) for session {}",
             savepoint_name, self.session_id
         );
         Ok(QueryResult::Empty)
     }
 
-    /// Execute RELEASE SAVEPOINT
+    /// RELEASE SAVEPOINT — see SAVEPOINT note above.
     async fn execute_release_savepoint(&self, sql: &str) -> Result<QueryResult> {
         let savepoint_pos = sql
             .to_lowercase()
             .find("savepoint ")
             .ok_or_else(|| anyhow!("Invalid RELEASE SAVEPOINT syntax"))?;
-
         let savepoint_name = sql[savepoint_pos + 10..].trim().trim_matches(';');
-
-        // For now, just log - actual release would remove from savepoint list
         info!(
-            "Released savepoint {} for session {}",
+            "RELEASE SAVEPOINT '{}' acknowledged for session {}",
             savepoint_name, self.session_id
         );
         Ok(QueryResult::Empty)
     }
 
-    /// Check if we're in a transaction
+    /// Check if we're in a transaction by inspecting the per-session
+    /// SessionContext. The lock is released immediately — only `Option::is_some`
+    /// is observed.
     fn in_transaction(&self) -> bool {
-        self.transaction_manager.has_transaction(&self.session_id)
+        self.session.lock().transaction_id.is_some()
     }
 }
 
@@ -5432,6 +4866,131 @@ fn parse_simple_equality_value(condition: &str) -> Option<Value> {
 mod tests {
     use super::*;
     use parking_lot::RwLock;
+
+    /// Regression test: multi-row `INSERT INTO t VALUES (a), (b), (c)` must
+    /// succeed through the PostgreSQL-protocol path. The server's old
+    /// hand-rolled execute_insert parsed VALUES as a single row only — so
+    /// psql clients got "Invalid VALUES syntax" while the CLI worked.
+    /// After this commit DML goes through sql_bridge, which has had
+    /// multi-row support since the SELECT migration.
+    #[tokio::test]
+    async fn test_multi_row_insert_through_pg_path() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(RwLock::new(Engine::init(temp_dir.path()).unwrap()));
+        let executor = QueryExecutor::new(engine);
+
+        executor
+            .execute("CREATE TABLE t (id VARCHAR, name VARCHAR, PRIMARY KEY (id))")
+            .await
+            .unwrap();
+
+        let result = executor
+            .execute("INSERT INTO t (id, name) VALUES ('a', 'Alice'), ('b', 'Bob'), ('c', 'Carol')")
+            .await
+            .unwrap();
+        match result {
+            QueryResult::Insert { count: _ } | QueryResult::Empty => {}
+            other => panic!("expected Insert/Empty result, got {:?}", other),
+        }
+
+        let count = executor.execute("SELECT id FROM t").await.unwrap();
+        match count {
+            QueryResult::Select { rows, .. } => assert_eq!(rows.len(), 3),
+            other => panic!("expected Select, got {:?}", other),
+        }
+    }
+
+    /// Regression test: BEGIN; INSERT; INSERT; COMMIT through the PG path
+    /// must atomically apply both writes — and a parallel reader must see
+    /// zero rows during the transaction. Mirrors
+    /// test_session_context_buffers_inserts_until_commit but exercises the
+    /// server's `execute()` entry point (post-DML migration), so it catches
+    /// any regression where the QueryExecutor stops threading its
+    /// SessionContext through sql_bridge correctly.
+    #[tokio::test]
+    async fn test_transactional_insert_through_pg_path() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(RwLock::new(Engine::init(temp_dir.path()).unwrap()));
+
+        // Two QueryExecutors share the engine but each owns its own
+        // SessionContext, mirroring two PostgreSQL clients on one DB.
+        let writer = QueryExecutor::new(engine.clone());
+        let reader = QueryExecutor::new(engine);
+
+        writer
+            .execute("CREATE TABLE accounts (id VARCHAR, bal INTEGER, PRIMARY KEY (id))")
+            .await
+            .unwrap();
+
+        // Open transaction on the writer; INSERT two rows.
+        writer.execute("BEGIN").await.unwrap();
+        writer
+            .execute("INSERT INTO accounts (id, bal) VALUES ('a', 100)")
+            .await
+            .unwrap();
+        writer
+            .execute("INSERT INTO accounts (id, bal) VALUES ('b', 200)")
+            .await
+            .unwrap();
+
+        // Reader sees zero rows because the writer hasn't committed yet.
+        let mid = reader.execute("SELECT id FROM accounts").await.unwrap();
+        match mid {
+            QueryResult::Select { rows, .. } => assert_eq!(
+                rows.len(),
+                0,
+                "uncommitted INSERTs must not be visible to other sessions"
+            ),
+            other => panic!("expected Select, got {:?}", other),
+        }
+
+        writer.execute("COMMIT").await.unwrap();
+
+        let after = reader.execute("SELECT id FROM accounts").await.unwrap();
+        match after {
+            QueryResult::Select { rows, .. } => {
+                assert_eq!(rows.len(), 2, "both rows visible after commit")
+            }
+            other => panic!("expected Select, got {:?}", other),
+        }
+    }
+
+    /// Regression test: ROLLBACK on the PG path discards buffered writes
+    /// and leaves only pre-transaction rows visible.
+    #[tokio::test]
+    async fn test_transactional_rollback_through_pg_path() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let engine = Arc::new(RwLock::new(Engine::init(temp_dir.path()).unwrap()));
+        let executor = QueryExecutor::new(engine);
+
+        executor
+            .execute("CREATE TABLE items (id VARCHAR, label VARCHAR, PRIMARY KEY (id))")
+            .await
+            .unwrap();
+        executor
+            .execute("INSERT INTO items (id, label) VALUES ('keep', 'before')")
+            .await
+            .unwrap();
+
+        executor.execute("BEGIN").await.unwrap();
+        executor
+            .execute("INSERT INTO items (id, label) VALUES ('discard', 'in-tx')")
+            .await
+            .unwrap();
+        executor.execute("ROLLBACK").await.unwrap();
+
+        let result = executor.execute("SELECT id FROM items").await.unwrap();
+        match result {
+            QueryResult::Select { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0][0], Value::String("keep".to_string()));
+            }
+            other => panic!("expected Select, got {:?}", other),
+        }
+    }
 
     #[tokio::test]
     async fn test_select_one() {

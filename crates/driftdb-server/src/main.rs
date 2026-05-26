@@ -23,7 +23,6 @@ mod security_audit;
 mod session;
 mod slow_query_log;
 mod tls;
-mod transaction;
 mod transaction_buffer;
 
 use std::net::{IpAddr, SocketAddr};

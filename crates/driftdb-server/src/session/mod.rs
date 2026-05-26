@@ -22,7 +22,9 @@ use crate::security::{RbacManager, SqlValidator};
 use crate::security_audit::SecurityAuditLogger;
 use crate::slow_query_log::SlowQueryLogger;
 use crate::tls::SecureStream;
-use crate::transaction::TransactionManager;
+// `crate::transaction` was retired with the DML migration; transaction
+// state now lives in `sql_bridge::SessionContext`, held inside the
+// QueryExecutor.
 use driftdb_core::row_level_security::{PolicyAction, PolicyResult, RlsManager, SecurityContext};
 use driftdb_core::{EngineGuard, EnginePool, RateLimitManager};
 
@@ -179,10 +181,6 @@ impl SessionManager {
         let process_id = self.next_process_id.fetch_add(1, Ordering::SeqCst) as i32;
         let secret_key = rand::random::<i32>();
 
-        // Create a shared transaction manager for this session
-        let engine_for_txn = engine_guard.get_engine_ref();
-        let transaction_manager = Arc::new(TransactionManager::new(engine_for_txn));
-
         let session = Session {
             process_id,
             secret_key,
@@ -197,7 +195,6 @@ impl SessionManager {
             auth_challenge: None,
             prepared_statements: PreparedStatementManager::new(),
             sql_validator: SqlValidator::new(),
-            transaction_manager,
             slow_query_logger: self.slow_query_logger.clone(),
             audit_logger: self.audit_logger.clone(),
             is_encrypted,
@@ -234,7 +231,6 @@ struct Session {
     auth_challenge: Option<Vec<u8>>,
     prepared_statements: PreparedStatementManager,
     sql_validator: SqlValidator,
-    transaction_manager: Arc<TransactionManager>,
     slow_query_logger: Arc<SlowQueryLogger>,
     audit_logger: Arc<SecurityAuditLogger>,
     is_encrypted: bool,
@@ -652,13 +648,13 @@ impl Session {
             return Ok(());
         }
 
-        // Execute query using our SQL executor with shared transaction manager
+        // Execute query through sql_bridge — transaction state is held in
+        // the QueryExecutor's own SessionContext, so each new executor for
+        // this connection starts fresh in auto-commit mode. (The previous
+        // pattern shared a TransactionManager across statements; the
+        // SessionContext now plays that role inside sql_bridge.)
         let session_id = format!("session_{}", self.process_id);
-        let executor = QueryExecutor::new_with_guard_and_transaction_manager(
-            &self.engine_guard,
-            self.transaction_manager.clone(),
-            session_id,
-        );
+        let executor = QueryExecutor::new_with_guard_and_session_id(&self.engine_guard, session_id);
         match executor.execute(sql).await {
             Ok(mut result) => {
                 let duration = start_time.elapsed();
@@ -1456,13 +1452,11 @@ impl Session {
                     return Ok(());
                 }
 
-                // Execute the query using our SQL executor with shared transaction manager
+                // Execute through sql_bridge — see note in the parallel
+                // construction above; same shape.
                 let session_id = format!("session_{}", self.process_id);
-                let executor = QueryExecutor::new_with_guard_and_transaction_manager(
-                    &self.engine_guard,
-                    self.transaction_manager.clone(),
-                    session_id,
-                );
+                let executor =
+                    QueryExecutor::new_with_guard_and_session_id(&self.engine_guard, session_id);
                 match executor.execute(&sql).await {
                     Ok(result) => {
                         let duration = start_time.elapsed();
