@@ -569,20 +569,11 @@ impl QueryOptimizer {
         self.compare_values(value, lower) >= 0 && self.compare_values(value, upper) <= 0
     }
 
-    /// Compare two JSON values
+    /// Compare two JSON values for cardinality-estimation interpolation.
+    /// Delegates to the canonical predicate ordering so the optimizer's
+    /// cost model sees the same value order as actual query execution.
     fn compare_values(&self, a: &serde_json::Value, b: &serde_json::Value) -> i32 {
-        // Simple comparison for common types
-        match (a, b) {
-            (serde_json::Value::Number(n1), serde_json::Value::Number(n2)) => {
-                if let (Some(f1), Some(f2)) = (n1.as_f64(), n2.as_f64()) {
-                    f1.partial_cmp(&f2).map(|o| o as i32).unwrap_or(0)
-                } else {
-                    0
-                }
-            }
-            (serde_json::Value::String(s1), serde_json::Value::String(s2)) => s1.cmp(s2) as i32,
-            _ => 0,
-        }
+        crate::query::predicate::compare_json_values(a, b) as i32
     }
 
     /// Interpolate value position between min and max

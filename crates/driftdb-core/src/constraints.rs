@@ -344,36 +344,21 @@ impl ConstraintManager {
         }
     }
 
-    /// Compare two JSON values
+    /// Compare two JSON values for CHECK-constraint evaluation. Routes
+    /// through the canonical predicate so constraint semantics match the
+    /// rest of the engine — in particular, ordered comparisons on mixed
+    /// types now produce a defined boolean (via the string fallback in
+    /// `compare_json_values`) rather than silently false.
     fn compare_values(&self, left: &Value, op: &ComparisonOp, right: &Value) -> bool {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                let l_val = l.as_f64().unwrap_or(0.0);
-                let r_val = r.as_f64().unwrap_or(0.0);
-                match op {
-                    ComparisonOp::Equal => l_val == r_val,
-                    ComparisonOp::NotEqual => l_val != r_val,
-                    ComparisonOp::LessThan => l_val < r_val,
-                    ComparisonOp::LessThanOrEqual => l_val <= r_val,
-                    ComparisonOp::GreaterThan => l_val > r_val,
-                    ComparisonOp::GreaterThanOrEqual => l_val >= r_val,
-                }
-            }
-            (Value::String(l), Value::String(r)) => match op {
-                ComparisonOp::Equal => l == r,
-                ComparisonOp::NotEqual => l != r,
-                ComparisonOp::LessThan => l < r,
-                ComparisonOp::LessThanOrEqual => l <= r,
-                ComparisonOp::GreaterThan => l > r,
-                ComparisonOp::GreaterThanOrEqual => l >= r,
-            },
-            (Value::Bool(l), Value::Bool(r)) => match op {
-                ComparisonOp::Equal => l == r,
-                ComparisonOp::NotEqual => l != r,
-                _ => false,
-            },
-            _ => left == right && matches!(op, ComparisonOp::Equal),
-        }
+        let op_str = match op {
+            ComparisonOp::Equal => "=",
+            ComparisonOp::NotEqual => "!=",
+            ComparisonOp::LessThan => "<",
+            ComparisonOp::LessThanOrEqual => "<=",
+            ComparisonOp::GreaterThan => ">",
+            ComparisonOp::GreaterThanOrEqual => ">=",
+        };
+        crate::query::predicate::compare_values(left, right, op_str)
     }
 
     /// Validate unique constraint

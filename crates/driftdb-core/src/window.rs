@@ -294,32 +294,17 @@ impl WindowExecutor {
         Ordering::Equal
     }
 
-    /// Compare two JSON values
+    /// Compare two JSON values for window-function ORDER BY. Delegates to
+    /// the canonical `predicate::compare_json_values` (NULLs-last) and
+    /// flips NULL ordering when the user explicitly asked for NULLS FIRST.
     fn compare_values(&self, a: &Value, b: &Value, nulls_first: bool) -> Ordering {
-        match (a, b) {
-            (Value::Null, Value::Null) => Ordering::Equal,
-            (Value::Null, _) => {
-                if nulls_first {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                }
-            }
-            (_, Value::Null) => {
-                if nulls_first {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                }
-            }
-            (Value::Number(n1), Value::Number(n2)) => {
-                let f1 = n1.as_f64().unwrap_or(0.0);
-                let f2 = n2.as_f64().unwrap_or(0.0);
-                f1.partial_cmp(&f2).unwrap_or(Ordering::Equal)
-            }
-            (Value::String(s1), Value::String(s2)) => s1.cmp(s2),
-            (Value::Bool(b1), Value::Bool(b2)) => b1.cmp(b2),
-            _ => Ordering::Equal, // Default for uncomparable types
+        let cmp = crate::query::predicate::compare_json_values(a, b);
+        // NULLs-first inverts only the cases where exactly one side is null;
+        // two non-NULLs and two NULLs follow the canonical ordering unchanged.
+        if nulls_first && (a.is_null() ^ b.is_null()) {
+            cmp.reverse()
+        } else {
+            cmp
         }
     }
 

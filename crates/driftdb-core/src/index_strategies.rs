@@ -287,16 +287,12 @@ impl BPlusTreeIndex {
     }
 
     fn compare_values(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
-        // Compare JSON values for ordering
-        match (a, b) {
-            (Value::Number(n1), Value::Number(n2)) => {
-                let f1 = n1.as_f64().unwrap_or(0.0);
-                let f2 = n2.as_f64().unwrap_or(0.0);
-                f1.partial_cmp(&f2).unwrap_or(std::cmp::Ordering::Equal)
-            }
-            (Value::String(s1), Value::String(s2)) => s1.cmp(s2),
-            _ => std::cmp::Ordering::Equal,
-        }
+        // Route through the canonical predicate ordering so B-tree range
+        // scans see the same ordering as ORDER BY and predicate evaluation.
+        // The old local impl collapsed mixed types to Equal, which made
+        // range queries over heterogeneous columns include rows that should
+        // have been excluded.
+        crate::query::predicate::compare_json_values(a, b)
     }
 
     fn in_range(&self, key: &Value, start: &Bound<Value>, end: &Bound<Value>) -> bool {
