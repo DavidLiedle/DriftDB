@@ -79,6 +79,71 @@ impl Drop for TemporalAsOfGuard {
     }
 }
 
+/// Per-session execution context that survives across multiple
+/// `execute_sql_in_session` calls. The PostgreSQL protocol layer holds
+/// one of these per connection so its `BEGIN` / `INSERT` / `COMMIT`
+/// statements share the same transaction id. CLI / direct callers use
+/// a default (auto-commit) context.
+///
+/// The only state today is the active engine transaction id, but the
+/// type is structured so future per-session needs (search-path, time
+/// zone, prepared statement names) can land here without churning every
+/// call site.
+#[derive(Debug, Default, Clone)]
+pub struct SessionContext {
+    /// Engine transaction id when an interactive transaction is active.
+    /// `BEGIN` sets it; `COMMIT` / `ROLLBACK` clear it. DML reads it to
+    /// decide whether to buffer through the engine's transaction manager
+    /// or apply events immediately.
+    pub transaction_id: Option<u64>,
+}
+
+impl SessionContext {
+    /// Construct a fresh context with no active transaction. Equivalent
+    /// to `SessionContext::default()` but reads more clearly at call
+    /// sites that want auto-commit semantics.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// RAII guard that mirrors `SessionContext.transaction_id` into the
+/// thread-local `CURRENT_TRANSACTION` for the duration of one
+/// `execute_sql_in_session` call, then writes any changes (set by
+/// `BEGIN`, cleared by `COMMIT` / `ROLLBACK`) back into the caller's
+/// context on drop.
+///
+/// The thread-local exists so the existing internal sql_bridge code
+/// — and the engine-side DML dispatch — can keep reading transaction
+/// state from a single well-known location without threading
+/// `&mut SessionContext` through every helper.
+struct SessionGuard<'ctx> {
+    prev_txn_id: Option<u64>,
+    ctx: &'ctx mut SessionContext,
+}
+
+impl<'ctx> SessionGuard<'ctx> {
+    fn enter(ctx: &'ctx mut SessionContext) -> Self {
+        let prev_txn_id = CURRENT_TRANSACTION.with(|c| c.replace(ctx.transaction_id));
+        Self { prev_txn_id, ctx }
+    }
+}
+
+impl Drop for SessionGuard<'_> {
+    fn drop(&mut self) {
+        // Write any transaction-state changes back to the caller's context,
+        // then restore the outer thread-local (so nested `execute_sql_in_session`
+        // calls — e.g. through view materialisation — don't leak state).
+        let final_txn_id = CURRENT_TRANSACTION.with(|c| c.replace(self.prev_txn_id));
+        self.ctx.transaction_id = final_txn_id;
+    }
+}
+
+/// Read the current session's active transaction id, if any.
+fn current_transaction() -> Option<u64> {
+    CURRENT_TRANSACTION.with(|c| *c.borrow())
+}
+
 /// Execute SQL query with parameters (prevents SQL injection)
 pub fn execute_sql_with_params(
     engine: &mut Engine,
@@ -125,8 +190,37 @@ pub fn execute_sql_with_params(
     result
 }
 
-/// Execute SQL query (legacy - use execute_sql_with_params for safety)
+/// Execute a SQL statement against `engine` with no caller-supplied
+/// session state — every call starts and ends with an empty
+/// `SessionContext`, so `BEGIN` / `COMMIT` / `ROLLBACK` issued via this
+/// entry point won't carry transaction state across statements. Suitable
+/// for one-shot CLI use and direct core callers; PostgreSQL-protocol
+/// servers should use [`execute_sql_in_session`] instead.
 pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
+    let mut ctx = SessionContext::new();
+    execute_sql_in_session(engine, sql, &mut ctx)
+}
+
+/// Execute a SQL statement against `engine`, threading `ctx` for the
+/// duration of the call so transaction state set by `BEGIN` survives
+/// to the next statement and so DML lands either in the engine's
+/// transaction buffer (when `ctx.transaction_id` is `Some`) or as an
+/// immediate apply (when `None`).
+pub fn execute_sql_in_session(
+    engine: &mut Engine,
+    sql: &str,
+    ctx: &mut SessionContext,
+) -> Result<QueryResult> {
+    let _guard = SessionGuard::enter(ctx);
+    execute_sql_inner(engine, sql)
+}
+
+/// The original `execute_sql` body — kept private so both
+/// `execute_sql` and `execute_sql_in_session` can share dispatch logic
+/// without duplicating it. Reads the active transaction id (if any)
+/// via the `CURRENT_TRANSACTION` thread-local that `SessionGuard`
+/// keeps in sync with the caller's `SessionContext`.
+fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
     let trimmed = sql.trim();
     let upper = trimmed.to_uppercase();
 
@@ -1809,12 +1903,36 @@ fn execute_insert_values(
         crate::triggers::TriggerResult::Continue => new_row,
     };
 
-    let query = Query::Insert {
-        table: table.to_string(),
-        data: final_data.clone(),
+    // Route based on transaction state. When the session is inside a
+    // transaction we buffer the event in the engine's transaction manager;
+    // the actual storage write happens at COMMIT. When auto-committing,
+    // `execute_query(Query::Insert)` handles both the PK uniqueness check
+    // and the immediate apply. Transactional INSERTs intentionally skip the
+    // PK uniqueness check until commit time — matching PostgreSQL, where
+    // unique-constraint violation surfaces on commit for deferred contexts
+    // and is the same shape of pre-existing limitation as the server's
+    // transaction buffer had.
+    let result = if let Some(txn_id) = current_transaction() {
+        let pk_field = engine.get_table_primary_key(table)?;
+        let primary_key = final_data.get(&pk_field).cloned().ok_or_else(|| {
+            DriftError::InvalidQuery(format!("Missing primary key field '{}'", pk_field))
+        })?;
+        let event = crate::events::Event::new_insert(
+            table.to_string(),
+            primary_key,
+            final_data.clone(),
+        );
+        engine.apply_event_in_transaction(txn_id, event)?;
+        QueryResult::Success {
+            message: "Buffered insert in transaction".to_string(),
+        }
+    } else {
+        let query = Query::Insert {
+            table: table.to_string(),
+            data: final_data.clone(),
+        };
+        engine.execute_query(query)?
     };
-
-    let result = engine.execute_query(query)?;
 
     // Execute AFTER INSERT triggers
     engine.execute_triggers(
@@ -3703,14 +3821,24 @@ fn execute_sql_update(
             Value::Null
         };
 
-        // Use PATCH to update the row
-        let patch_query = Query::Patch {
-            table: table_name.clone(),
-            primary_key,
-            updates: final_row.clone(),
-        };
-
-        engine.execute_query(patch_query)?;
+        // Buffer through the transaction manager when inside a transaction;
+        // otherwise apply immediately via Query::Patch (which goes through
+        // the engine's normal apply_event path).
+        if let Some(txn_id) = current_transaction() {
+            let event = crate::events::Event::new_patch(
+                table_name.clone(),
+                primary_key,
+                final_row.clone(),
+            );
+            engine.apply_event_in_transaction(txn_id, event)?;
+        } else {
+            let patch_query = Query::Patch {
+                table: table_name.clone(),
+                primary_key,
+                updates: final_row.clone(),
+            };
+            engine.execute_query(patch_query)?;
+        }
 
         // Execute AFTER UPDATE triggers
         engine.execute_triggers(
@@ -4088,13 +4216,19 @@ fn execute_sql_delete(
             // Get the primary key value (assuming "id" for now)
             let primary_key = row_obj.get("id").cloned().unwrap_or(Value::Null);
 
-            // Use SOFT_DELETE to delete the row
-            let delete_query = Query::SoftDelete {
-                table: table_name.clone(),
-                primary_key: primary_key.clone(),
-            };
-
-            engine.execute_query(delete_query)?;
+            // Buffer through the transaction manager when inside a
+            // transaction; otherwise apply the soft-delete immediately.
+            if let Some(txn_id) = current_transaction() {
+                let event =
+                    crate::events::Event::new_soft_delete(table_name.clone(), primary_key.clone());
+                engine.apply_event_in_transaction(txn_id, event)?;
+            } else {
+                let delete_query = Query::SoftDelete {
+                    table: table_name.clone(),
+                    primary_key: primary_key.clone(),
+                };
+                engine.execute_query(delete_query)?;
+            }
 
             // Execute AFTER DELETE triggers
             engine.execute_triggers(

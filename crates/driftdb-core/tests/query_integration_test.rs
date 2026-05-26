@@ -524,6 +524,174 @@ fn test_order_by_mixed_types_is_stable() {
     }
 }
 
+/// Regression test for the SessionContext addition. Transactional
+/// INSERTs through sql_bridge::execute_sql_in_session must:
+///   - buffer until COMMIT (intermediate reads via a separate session
+///     do not see uncommitted rows),
+///   - apply atomically on COMMIT (all rows visible afterwards),
+///   - discard on ROLLBACK (no rows survive).
+#[test]
+fn test_session_context_buffers_inserts_until_commit() {
+    use driftdb_core::sql_bridge::{execute_sql, execute_sql_in_session, SessionContext};
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut engine = Engine::init(temp_dir.path()).unwrap();
+
+    execute_sql(
+        &mut engine,
+        "CREATE TABLE accounts (id VARCHAR, balance INTEGER, PRIMARY KEY (id))",
+    )
+    .unwrap();
+
+    // Session 1: BEGIN, INSERT two rows, but don't commit yet.
+    let mut s1 = SessionContext::new();
+    execute_sql_in_session(&mut engine, "BEGIN", &mut s1).unwrap();
+    assert!(
+        s1.transaction_id.is_some(),
+        "BEGIN should populate transaction_id"
+    );
+    execute_sql_in_session(
+        &mut engine,
+        "INSERT INTO accounts (id, balance) VALUES ('a', 100)",
+        &mut s1,
+    )
+    .unwrap();
+    execute_sql_in_session(
+        &mut engine,
+        "INSERT INTO accounts (id, balance) VALUES ('b', 200)",
+        &mut s1,
+    )
+    .unwrap();
+
+    // A separate session reads the table — must see zero rows because
+    // session 1's writes are buffered in the transaction manager, not
+    // yet applied to storage.
+    let mut s_reader = SessionContext::new();
+    let pre_commit = execute_sql_in_session(
+        &mut engine,
+        "SELECT id FROM accounts",
+        &mut s_reader,
+    )
+    .unwrap();
+    match pre_commit {
+        QueryResult::Rows { data } => {
+            assert_eq!(
+                data.len(),
+                0,
+                "uncommitted INSERTs must not be visible to other sessions"
+            );
+        }
+        other => panic!("expected Rows, got {:?}", other),
+    }
+
+    // COMMIT — buffered writes apply atomically.
+    execute_sql_in_session(&mut engine, "COMMIT", &mut s1).unwrap();
+    assert!(
+        s1.transaction_id.is_none(),
+        "COMMIT should clear transaction_id"
+    );
+
+    let post_commit =
+        execute_sql_in_session(&mut engine, "SELECT id FROM accounts", &mut s_reader).unwrap();
+    match post_commit {
+        QueryResult::Rows { data } => assert_eq!(data.len(), 2, "both rows visible after commit"),
+        other => panic!("expected Rows, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_session_context_rollback_discards_buffered_writes() {
+    use driftdb_core::sql_bridge::{execute_sql, execute_sql_in_session, SessionContext};
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut engine = Engine::init(temp_dir.path()).unwrap();
+
+    execute_sql(
+        &mut engine,
+        "CREATE TABLE items (id VARCHAR, name VARCHAR, PRIMARY KEY (id))",
+    )
+    .unwrap();
+    execute_sql(
+        &mut engine,
+        "INSERT INTO items (id, name) VALUES ('keep', 'before-tx')",
+    )
+    .unwrap();
+
+    let mut s = SessionContext::new();
+    execute_sql_in_session(&mut engine, "BEGIN", &mut s).unwrap();
+    execute_sql_in_session(
+        &mut engine,
+        "INSERT INTO items (id, name) VALUES ('discard', 'in-tx')",
+        &mut s,
+    )
+    .unwrap();
+    execute_sql_in_session(&mut engine, "ROLLBACK", &mut s).unwrap();
+    assert!(s.transaction_id.is_none());
+
+    let after = execute_sql(&mut engine, "SELECT id FROM items").unwrap();
+    match after {
+        QueryResult::Rows { data } => {
+            // Only the pre-transaction row survived.
+            assert_eq!(data.len(), 1);
+            assert_eq!(data[0]["id"], serde_json::json!("keep"));
+        }
+        other => panic!("expected Rows, got {:?}", other),
+    }
+}
+
+/// Regression test: each `SessionContext` is independent. Two parallel
+/// transactions on the same engine must have distinct transaction ids
+/// and their buffered writes mustn't leak into each other's snapshot.
+#[test]
+fn test_two_session_contexts_isolate() {
+    use driftdb_core::sql_bridge::{execute_sql, execute_sql_in_session, SessionContext};
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut engine = Engine::init(temp_dir.path()).unwrap();
+
+    execute_sql(
+        &mut engine,
+        "CREATE TABLE nums (id VARCHAR, v INTEGER, PRIMARY KEY (id))",
+    )
+    .unwrap();
+
+    let mut s1 = SessionContext::new();
+    let mut s2 = SessionContext::new();
+
+    execute_sql_in_session(&mut engine, "BEGIN", &mut s1).unwrap();
+    execute_sql_in_session(&mut engine, "BEGIN", &mut s2).unwrap();
+    assert_ne!(
+        s1.transaction_id, s2.transaction_id,
+        "distinct sessions must get distinct txn ids"
+    );
+
+    execute_sql_in_session(
+        &mut engine,
+        "INSERT INTO nums (id, v) VALUES ('s1', 1)",
+        &mut s1,
+    )
+    .unwrap();
+    execute_sql_in_session(
+        &mut engine,
+        "INSERT INTO nums (id, v) VALUES ('s2', 2)",
+        &mut s2,
+    )
+    .unwrap();
+
+    // Commit s1, roll back s2 — only s1's row survives.
+    execute_sql_in_session(&mut engine, "COMMIT", &mut s1).unwrap();
+    execute_sql_in_session(&mut engine, "ROLLBACK", &mut s2).unwrap();
+
+    let result = execute_sql(&mut engine, "SELECT id FROM nums").unwrap();
+    match result {
+        QueryResult::Rows { data } => {
+            assert_eq!(data.len(), 1);
+            assert_eq!(data[0]["id"], serde_json::json!("s1"));
+        }
+        other => panic!("expected Rows, got {:?}", other),
+    }
+}
+
 #[test]
 fn test_soft_delete() {
     let temp_dir = TempDir::new().unwrap();
