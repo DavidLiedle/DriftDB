@@ -1776,8 +1776,14 @@ fn execute_insert_values(
         }
     }
 
-    // Execute BEFORE INSERT triggers
     let new_row = json!(data);
+
+    // Validate FK constraints before the trigger runs. PostgreSQL evaluates
+    // referential-integrity constraints before BEFORE-INSERT triggers fire,
+    // so an FK violation rejects the row without invoking user code.
+    crate::fk::validate_insert(engine, table, &new_row)?;
+
+    // Execute BEFORE INSERT triggers
     let trigger_result = engine.execute_triggers(
         table,
         crate::triggers::TriggerEvent::Insert,
@@ -3662,6 +3668,12 @@ fn execute_sql_update(
             }
         }
 
+        // Validate FK constraints before BEFORE-UPDATE triggers fire. Only
+        // re-checks parents for FK columns whose value actually changed (an
+        // UPDATE that leaves the FK column alone is always safe). PG runs
+        // these constraint checks before triggers; matches that ordering.
+        crate::fk::validate_update(engine, &table_name, &old_row, &updated_row)?;
+
         // Execute BEFORE UPDATE triggers
         let trigger_result = engine.execute_triggers(
             &table_name,
@@ -3762,6 +3774,9 @@ fn execute_drop_table(
     let table_name = name.to_string();
 
     engine.drop_table(&table_name)?;
+    // Forget any FK constraints declared on the dropped table so they can't
+    // bleed through to a future CREATE TABLE with the same name.
+    crate::fk::forget(&table_name);
 
     Ok(QueryResult::Success {
         message: format!("Table '{}' dropped", table_name),
@@ -3909,11 +3924,35 @@ fn execute_create_table(
     // Create the table with full column definitions
     engine.create_table_with_columns(&table_name, &primary_key, drift_columns)?;
 
-    // Register foreign key constraints with the constraint manager
-    // TODO: Add add_constraint method to Engine
+    // Register FK constraints into the process-wide FK registry so subsequent
+    // INSERT / UPDATE / DELETE through this same sql_bridge enforce them.
+    // We translate from the rich `crate::constraints::Constraint` AST (which
+    // carries cascade actions we don't yet implement) into the simpler
+    // `crate::fk::ForeignKey` per-column form actually used by validation.
     if !foreign_keys.is_empty() {
-        // For now, just log that foreign keys were defined
-        // engine.add_constraint(fk)?;
+        let mut fks = Vec::new();
+        for c in &foreign_keys {
+            if let crate::constraints::ConstraintType::ForeignKey {
+                columns,
+                reference_table,
+                reference_columns,
+                ..
+            } = &c.constraint_type
+            {
+                // Pair child columns with parent columns positionally. SQL allows
+                // composite FKs (multiple columns), so unzip into one ForeignKey
+                // entry per column pair — the runtime check treats each column
+                // independently with MATCH SIMPLE semantics.
+                for (child_col, parent_col) in columns.iter().zip(reference_columns.iter()) {
+                    fks.push(crate::fk::ForeignKey {
+                        column: child_col.clone(),
+                        ref_table: reference_table.clone(),
+                        ref_column: parent_col.clone(),
+                    });
+                }
+            }
+        }
+        crate::fk::register(&table_name, fks);
     }
 
     Ok(QueryResult::Success {
@@ -4018,6 +4057,13 @@ fn execute_sql_delete(
     let mut delete_count = 0;
     for row in rows_to_delete {
         if let Some(row_obj) = row.as_object() {
+            // Validate FK constraints before triggers. If any other table has
+            // a row referencing this one, the delete is blocked (RESTRICT).
+            // Cascade actions are parsed by CREATE TABLE but not yet executed
+            // — that's a follow-up; for now we conservatively reject deletes
+            // that would orphan child rows.
+            crate::fk::validate_delete(engine, &table_name, &row)?;
+
             // Execute BEFORE DELETE triggers
             let trigger_result = engine.execute_triggers(
                 &table_name,
