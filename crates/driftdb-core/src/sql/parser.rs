@@ -47,7 +47,10 @@ impl TemporalSqlParser {
     }
 
     /// Extract FOR SYSTEM_TIME clause from SQL
-    fn extract_temporal_clause(&self, sql: &str) -> Result<(String, Option<SystemTimeClause>)> {
+    pub fn extract_temporal_clause(
+        &self,
+        sql: &str,
+    ) -> Result<(String, Option<SystemTimeClause>)> {
         // Look for FOR SYSTEM_TIME patterns
         if let Some(pos) = sql.to_uppercase().find("FOR SYSTEM_TIME") {
             let before = &sql[..pos];

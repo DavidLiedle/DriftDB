@@ -231,12 +231,15 @@ fn main() -> Result<()> {
             let mut engine = Engine::open(&data).context("Failed to open database")?;
 
             let mut sql = format!("SELECT * FROM {}", table);
-            if let Some(where_clause) = r#where {
-                sql += &format!(" WHERE {}", where_clause);
-            }
+            // `FOR SYSTEM_TIME AS OF ...` must come right after the table reference,
+            // before WHERE — otherwise sqlparser sees a bare `FOR ...` after WHERE
+            // and rejects it as not being `FOR UPDATE`/`FOR SHARE`.
             if let Some(as_of_str) = as_of {
                 let temporal = parse_as_of_to_temporal(&as_of_str)?;
                 sql += &format!(" {}", temporal);
+            }
+            if let Some(where_clause) = r#where {
+                sql += &format!(" WHERE {}", where_clause);
             }
             if let Some(n) = limit {
                 sql += &format!(" LIMIT {}", n);

@@ -23,6 +23,60 @@ thread_local! {
     static CURRENT_TRANSACTION: RefCell<Option<u64>> = const { RefCell::new(None) };
     static OUTER_ROW_CONTEXT: RefCell<Option<Value>> = const { RefCell::new(None) };
     static IN_RECURSIVE_CTE: RefCell<bool> = const { RefCell::new(false) };
+    /// Active `FOR SYSTEM_TIME AS OF ...` clause for the current `execute_sql` call.
+    /// Set by `execute_sql` after extracting the temporal prefix; read by every
+    /// `Query::Select` build site so time-travel reads reach the engine.
+    static TEMPORAL_AS_OF: RefCell<Option<crate::query::AsOf>> = const { RefCell::new(None) };
+}
+
+/// Return a clone of the active `FOR SYSTEM_TIME AS OF ...` clause, if any.
+fn current_temporal_as_of() -> Option<crate::query::AsOf> {
+    TEMPORAL_AS_OF.with(|c| c.borrow().clone())
+}
+
+/// Convert a parsed `SystemTimeClause` into the engine's `AsOf` representation.
+///
+/// `ALL` is handled by a fast-path earlier in `execute_sql` and never reaches here.
+/// `BETWEEN` and `FROM ... TO` aren't expressible as `AsOf` — they need their own
+/// engine query type — so reject them with a clear error rather than silently
+/// dropping the clause.
+fn system_time_to_as_of(
+    clause: &crate::sql::SystemTimeClause,
+) -> Result<Option<crate::query::AsOf>> {
+    use crate::query::AsOf;
+    use crate::sql::{SystemTimeClause, TemporalPoint};
+    match clause {
+        SystemTimeClause::AsOf(TemporalPoint::Sequence(seq)) => Ok(Some(AsOf::Sequence(*seq))),
+        SystemTimeClause::AsOf(TemporalPoint::CurrentTimestamp) => Ok(Some(AsOf::Now)),
+        SystemTimeClause::AsOf(TemporalPoint::Timestamp(dt)) => {
+            let nanos = dt.timestamp_nanos_opt().ok_or_else(|| {
+                DriftError::InvalidQuery(
+                    "Timestamp out of range for FOR SYSTEM_TIME AS OF".to_string(),
+                )
+            })?;
+            let odt = time::OffsetDateTime::from_unix_timestamp_nanos(nanos as i128)
+                .map_err(|e| DriftError::InvalidQuery(format!("Invalid timestamp: {}", e)))?;
+            Ok(Some(AsOf::Timestamp(odt)))
+        }
+        SystemTimeClause::All => Ok(None),
+        SystemTimeClause::Between { .. } | SystemTimeClause::FromTo { .. } => {
+            Err(DriftError::InvalidQuery(
+                "FOR SYSTEM_TIME BETWEEN / FROM ... TO is not yet supported".to_string(),
+            ))
+        }
+    }
+}
+
+/// RAII guard that restores the previous `TEMPORAL_AS_OF` value on drop, so
+/// the thread-local can't leak across `execute_sql` calls if one returns early
+/// via `?`.
+struct TemporalAsOfGuard(Option<crate::query::AsOf>);
+
+impl Drop for TemporalAsOfGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        TEMPORAL_AS_OF.with(|c| *c.borrow_mut() = prev);
+    }
 }
 
 /// Execute SQL query with parameters (prevents SQL injection)
@@ -107,9 +161,22 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
         return execute_for_system_time_all(engine, trimmed);
     }
 
+    // Peel off any `FOR SYSTEM_TIME AS OF ...` clause before handing the SQL to
+    // sqlparser, which doesn't recognize SQL:2011 temporal syntax. The clause is
+    // stashed in a thread-local that `Query::Select` build sites read.
+    let temporal_parser = crate::sql::TemporalSqlParser::new();
+    let (base_sql, system_time) = temporal_parser.extract_temporal_clause(trimmed)?;
+    let as_of = match &system_time {
+        Some(clause) => system_time_to_as_of(clause)?,
+        None => None,
+    };
+    let prev_as_of = TEMPORAL_AS_OF.with(|c| c.replace(as_of));
+    let _temporal_guard = TemporalAsOfGuard(prev_as_of);
+    let base_sql = base_sql.trim();
+
     let dialect = GenericDialect {};
     let ast =
-        Parser::parse_sql(&dialect, trimmed).map_err(|e| DriftError::Parse(e.to_string()))?;
+        Parser::parse_sql(&dialect, base_sql).map_err(|e| DriftError::Parse(e.to_string()))?;
 
     if ast.is_empty() {
         return Err(DriftError::InvalidQuery("Empty SQL statement".to_string()));
@@ -931,7 +998,7 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     let query = Query::Select {
         table: table_name.clone(),
         conditions: engine_conditions,
-        as_of: None,
+        as_of: current_temporal_as_of(),
         limit: None,
     };
 
@@ -1048,7 +1115,7 @@ fn execute_join_select_with_ctes(
             let left_query = Query::Select {
                 table: left_table.clone(),
                 conditions: vec![],
-                as_of: None,
+                as_of: current_temporal_as_of(),
                 limit: None,
             };
 
@@ -1073,7 +1140,7 @@ fn execute_join_select_with_ctes(
             let right_query = Query::Select {
                 table: right_table.clone(),
                 conditions: vec![],
-                as_of: None,
+                as_of: current_temporal_as_of(),
                 limit: None,
             };
 
@@ -1182,7 +1249,7 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
         let left_query = Query::Select {
             table: left_table.clone(),
             conditions: vec![],
-            as_of: None,
+            as_of: current_temporal_as_of(),
             limit: None,
         };
 
@@ -1226,7 +1293,7 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
             let right_query = Query::Select {
                 table: right_table.clone(),
                 conditions: vec![],
-                as_of: None,
+                as_of: current_temporal_as_of(),
                 limit: None,
             };
 
