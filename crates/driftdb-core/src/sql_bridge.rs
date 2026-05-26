@@ -491,7 +491,6 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 format: explain_format,
                 verbose: *verbose,
                 costs: true,
-                buffers: false,
                 timing: *analyze,
                 analyze: *analyze,
             };

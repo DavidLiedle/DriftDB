@@ -12,7 +12,13 @@ use std::time::{Duration, Instant};
 use crate::optimizer::{Cost, PlanNode};
 use crate::errors::Result;
 
-/// EXPLAIN output format
+/// EXPLAIN output format. PostgreSQL recognises `TEXT | JSON | YAML |
+/// XML` via the FORMAT option; we expose the three text-like formats
+/// here. There is no `Tree` variant — the text format is already a
+/// tree-shaped render (root then indented `->` children), so a
+/// separate enum variant would just be a synonym with no behavioural
+/// difference. If a graphical Graphviz-style format ever lands it
+/// gets its own variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExplainFormat {
     /// Human-readable text format
@@ -22,24 +28,29 @@ pub enum ExplainFormat {
     Json,
     /// YAML format
     Yaml,
-    /// Tree-structured format
-    Tree,
 }
 
-/// EXPLAIN options
+/// EXPLAIN options. Mirrors the subset of `EXPLAIN (option …)` flags
+/// PostgreSQL accepts that we actually consume today.
+///
+/// There is intentionally no `buffers` field — PostgreSQL's `BUFFERS`
+/// reports buffer-pool hits / reads / writes, statistics DriftDB
+/// doesn't track yet. Adding the flag here would be performative;
+/// it'll come back when buffer-pool metrics exist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplainOptions {
-    /// Output format
+    /// Output format.
     pub format: ExplainFormat,
-    /// Show verbose information
+    /// Verbose mode: print extra detail (Hash build-side, aggregate
+    /// alias list, full Project column list, etc.).
     pub verbose: bool,
-    /// Show cost estimates
+    /// Whether to show cost / row estimates next to each operator.
     pub costs: bool,
-    /// Show buffer usage
-    pub buffers: bool,
-    /// Show actual timing (requires ANALYZE)
+    /// Whether to include actual timing — only meaningful with
+    /// `analyze: true`.
     pub timing: bool,
-    /// Actually execute the query (EXPLAIN ANALYZE)
+    /// Whether to execute the wrapped statement and measure actual
+    /// rows / timing (EXPLAIN ANALYZE).
     pub analyze: bool,
 }
 
@@ -49,7 +60,6 @@ impl Default for ExplainOptions {
             format: ExplainFormat::Text,
             verbose: false,
             costs: true,
-            buffers: false,
             timing: false,
             analyze: false,
         }
