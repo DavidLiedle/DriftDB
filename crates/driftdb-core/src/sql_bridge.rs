@@ -2319,18 +2319,18 @@ fn evaluate_where_expression_with_engine(
                     match op {
                         BinaryOperator::Eq => Ok(left_val == *right_val),
                         BinaryOperator::NotEq => Ok(left_val != *right_val),
-                        BinaryOperator::Lt => compare_values(&left_val, right_val, |cmp| {
-                            cmp == std::cmp::Ordering::Less
-                        }),
-                        BinaryOperator::LtEq => compare_values(&left_val, right_val, |cmp| {
-                            cmp != std::cmp::Ordering::Greater
-                        }),
-                        BinaryOperator::Gt => compare_values(&left_val, right_val, |cmp| {
-                            cmp == std::cmp::Ordering::Greater
-                        }),
-                        BinaryOperator::GtEq => compare_values(&left_val, right_val, |cmp| {
-                            cmp != std::cmp::Ordering::Less
-                        }),
+                        BinaryOperator::Lt => Ok(crate::query::predicate::compare_values(
+                            &left_val, right_val, "<",
+                        )),
+                        BinaryOperator::LtEq => Ok(crate::query::predicate::compare_values(
+                            &left_val, right_val, "<=",
+                        )),
+                        BinaryOperator::Gt => Ok(crate::query::predicate::compare_values(
+                            &left_val, right_val, ">",
+                        )),
+                        BinaryOperator::GtEq => Ok(crate::query::predicate::compare_values(
+                            &left_val, right_val, ">=",
+                        )),
                         BinaryOperator::And => {
                             Ok(evaluate_where_expression_with_engine(engine, left, row)?
                                 && evaluate_where_expression_with_engine(engine, right, row)?)
@@ -2352,18 +2352,26 @@ fn evaluate_where_expression_with_engine(
                     match op {
                         BinaryOperator::Eq => Ok(left_val == right_val),
                         BinaryOperator::NotEq => Ok(left_val != right_val),
-                        BinaryOperator::Lt => compare_values(&left_val, &right_val, |cmp| {
-                            cmp == std::cmp::Ordering::Less
-                        }),
-                        BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| {
-                            cmp != std::cmp::Ordering::Greater
-                        }),
-                        BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| {
-                            cmp == std::cmp::Ordering::Greater
-                        }),
-                        BinaryOperator::GtEq => compare_values(&left_val, &right_val, |cmp| {
-                            cmp != std::cmp::Ordering::Less
-                        }),
+                        BinaryOperator::Lt => Ok(crate::query::predicate::compare_values(
+                            &left_val,
+                            &right_val,
+                            "<",
+                        )),
+                        BinaryOperator::LtEq => Ok(crate::query::predicate::compare_values(
+                            &left_val,
+                            &right_val,
+                            "<=",
+                        )),
+                        BinaryOperator::Gt => Ok(crate::query::predicate::compare_values(
+                            &left_val,
+                            &right_val,
+                            ">",
+                        )),
+                        BinaryOperator::GtEq => Ok(crate::query::predicate::compare_values(
+                            &left_val,
+                            &right_val,
+                            ">=",
+                        )),
                         BinaryOperator::And => {
                             Ok(evaluate_where_expression_with_engine(engine, left, row)?
                                 && evaluate_where_expression_with_engine(engine, right, row)?)
@@ -2486,18 +2494,26 @@ fn evaluate_where_expression(expr: &Expr, row: &Value) -> Result<bool> {
             match op {
                 BinaryOperator::Eq => Ok(left_val == right_val),
                 BinaryOperator::NotEq => Ok(left_val != right_val),
-                BinaryOperator::Lt => {
-                    compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less)
-                }
-                BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| {
-                    cmp != std::cmp::Ordering::Greater
-                }),
-                BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| {
-                    cmp == std::cmp::Ordering::Greater
-                }),
-                BinaryOperator::GtEq => {
-                    compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less)
-                }
+                BinaryOperator::Lt => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    "<",
+                )),
+                BinaryOperator::LtEq => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    "<=",
+                )),
+                BinaryOperator::Gt => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    ">",
+                )),
+                BinaryOperator::GtEq => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    ">=",
+                )),
                 BinaryOperator::And => {
                     Ok(evaluate_where_expression(left, row)?
                         && evaluate_where_expression(right, row)?)
@@ -2557,18 +2573,26 @@ fn evaluate_having_expression(expr: &Expr, row: &Value) -> Result<bool> {
             match op {
                 BinaryOperator::Eq => Ok(left_val == right_val),
                 BinaryOperator::NotEq => Ok(left_val != right_val),
-                BinaryOperator::Lt => {
-                    compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less)
-                }
-                BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| {
-                    cmp != std::cmp::Ordering::Greater
-                }),
-                BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| {
-                    cmp == std::cmp::Ordering::Greater
-                }),
-                BinaryOperator::GtEq => {
-                    compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less)
-                }
+                BinaryOperator::Lt => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    "<",
+                )),
+                BinaryOperator::LtEq => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    "<=",
+                )),
+                BinaryOperator::Gt => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    ">",
+                )),
+                BinaryOperator::GtEq => Ok(crate::query::predicate::compare_values(
+                    &left_val,
+                    &right_val,
+                    ">=",
+                )),
                 _ => Err(DriftError::InvalidQuery(
                     "Unsupported HAVING operator".to_string(),
                 )),
@@ -3142,19 +3166,6 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
     }
 
     Ok(projected_rows)
-}
-
-fn compare_values<F>(left: &Value, right: &Value, op: F) -> Result<bool>
-where
-    F: Fn(std::cmp::Ordering) -> bool,
-{
-    match (left.as_f64(), right.as_f64()) {
-        (Some(l), Some(r)) => Ok(op(l.partial_cmp(&r).unwrap_or(std::cmp::Ordering::Equal))),
-        _ => match (left.as_str(), right.as_str()) {
-            (Some(l), Some(r)) => Ok(op(l.cmp(r))),
-            _ => Ok(false),
-        },
-    }
 }
 
 fn process_scalar_subqueries(
