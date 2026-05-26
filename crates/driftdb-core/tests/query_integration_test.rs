@@ -222,6 +222,71 @@ fn test_time_travel_queries() {
     }
 }
 
+/// Regression test for the Engine::query path silently dropping
+/// `AsOf::Timestamp(_)`. Before the fix, this returned current state
+/// (price 15.0) for a historical timestamp; now it correctly resolves
+/// the timestamp to the largest sequence at or before that instant
+/// and returns the historical state (price 10.0).
+#[test]
+fn test_query_path_resolves_as_of_timestamp() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut engine = Engine::init(temp_dir.path()).unwrap();
+
+    engine
+        .execute_query(Query::CreateTable {
+            name: "products".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
+
+    engine
+        .execute_query(Query::Insert {
+            table: "products".to_string(),
+            data: json!({ "id": "prod1", "name": "Widget", "price": 10.0 }),
+        })
+        .unwrap();
+
+    // Capture a timestamp between the insert and the patch. Sleep 10ms on
+    // each side so OffsetDateTime::now_utc() lands strictly between the
+    // two events' write timestamps regardless of clock granularity.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let mid_ts = time::OffsetDateTime::now_utc();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    engine
+        .execute_query(Query::Patch {
+            table: "products".to_string(),
+            primary_key: json!("prod1"),
+            updates: json!({ "price": 15.0 }),
+        })
+        .unwrap();
+
+    // Hit Engine::query (the read-only path used by FK validation),
+    // not execute_query, since that's the path with the regression.
+    let result = engine
+        .query(&Query::Select {
+            table: "products".to_string(),
+            conditions: vec![],
+            as_of: Some(driftdb_core::query::AsOf::Timestamp(mid_ts)),
+            limit: None,
+        })
+        .unwrap();
+
+    match result {
+        QueryResult::Rows { data } => {
+            assert_eq!(data.len(), 1);
+            assert_eq!(
+                data[0]["price"],
+                json!(10.0),
+                "AsOf::Timestamp on Engine::query must return historical state, \
+                 not silently fall through to current state",
+            );
+        }
+        other => panic!("Expected Rows result, got {:?}", other),
+    }
+}
+
 #[test]
 fn test_soft_delete() {
     let temp_dir = TempDir::new().unwrap();

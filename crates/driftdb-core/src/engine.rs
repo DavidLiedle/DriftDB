@@ -912,13 +912,19 @@ impl Engine {
                     .get(table)
                     .ok_or_else(|| DriftError::TableNotFound(table.clone()))?;
 
-                // Determine the target sequence number based on as_of clause
+                // Determine the target sequence number based on as_of clause.
+                // For Timestamp, find the largest sequence whose event timestamp is
+                // at or before the requested instant. Returning `None` here would
+                // silently fall through to "current state" — a wrong-data result
+                // for a temporal database.
                 let target_sequence = match as_of {
                     Some(crate::query::AsOf::Sequence(seq)) => Some(*seq),
-                    Some(crate::query::AsOf::Timestamp(_)) => {
-                        // Would need to map timestamp to sequence in production
-                        None
-                    }
+                    Some(crate::query::AsOf::Timestamp(ts)) => storage
+                        .read_all_events()?
+                        .iter()
+                        .filter(|e| e.timestamp <= *ts)
+                        .map(|e| e.sequence)
+                        .max(),
                     Some(crate::query::AsOf::Now) | None => None,
                 };
 
