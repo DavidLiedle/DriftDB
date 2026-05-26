@@ -199,14 +199,6 @@ impl<'a> QueryExecutor<'a> {
                     rows: events.into_iter().map(|e| vec![e]).collect(),
                 })
             }
-            CoreResult::Plan { plan } => {
-                // Convert query plan to JSON representation for display
-                let plan_json = serde_json::to_value(&plan)?;
-                Ok(QueryResult::Select {
-                    columns: vec!["query_plan".to_string()],
-                    rows: vec![vec![plan_json]],
-                })
-            }
             CoreResult::Error { message } => Err(anyhow!("SQL execution error: {}", message)),
         }
     }

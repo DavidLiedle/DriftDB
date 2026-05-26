@@ -297,10 +297,6 @@ impl QueryCache {
             QueryResult::Error { message } => {
                 message.len() + 50 // Message plus overhead
             }
-            QueryResult::Plan { plan } => {
-                // Query plans are relatively small
-                plan.steps.len() * 50 + 100
-            }
         }
     }
 

@@ -80,7 +80,6 @@ pub struct Engine {
     security_monitor: Option<Arc<SecurityMonitor>>,
     query_performance: Option<Arc<QueryPerformanceOptimizer>>,
     query_cancellation: Arc<QueryCancellationManager>,
-    pub(crate) query_optimizer: Arc<crate::query::optimizer::QueryOptimizer>,
 }
 
 impl Engine {
@@ -118,9 +117,6 @@ impl Engine {
         let query_cancellation =
             Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
 
-        // Create query optimizer
-        let query_optimizer = Arc::new(crate::query::optimizer::QueryOptimizer::new());
-
         let mut engine = Self {
             base_path: base_path.clone(),
             tables: HashMap::new(),
@@ -150,7 +146,6 @@ impl Engine {
             security_monitor: None,
             query_performance: None,
             query_cancellation,
-            query_optimizer,
         };
 
         let tables_dir = base_path.join("tables");
@@ -216,9 +211,6 @@ impl Engine {
         let query_cancellation =
             Arc::new(QueryCancellationManager::new(CancellationConfig::default()));
 
-        // Create query optimizer
-        let query_optimizer = Arc::new(crate::query::optimizer::QueryOptimizer::new());
-
         Ok(Self {
             base_path: base_path.clone(),
             tables: HashMap::new(),
@@ -248,7 +240,6 @@ impl Engine {
             security_monitor: None,
             query_performance: None,
             query_cancellation,
-            query_optimizer,
         })
     }
 

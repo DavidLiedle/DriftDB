@@ -346,25 +346,6 @@ impl Engine {
                     ),
                 })
             }
-            Query::Explain { query } => {
-                // Generate query plan without executing
-                match query.as_ref() {
-                    Query::Select {
-                        table,
-                        conditions,
-                        as_of,
-                        limit,
-                    } => {
-                        // Use query optimizer to generate plan
-                        let optimizer = super::optimizer::QueryOptimizer::new();
-                        let plan = optimizer.optimize_select(table, conditions, as_of, *limit)?;
-                        Ok(QueryResult::Plan { plan })
-                    }
-                    _ => Ok(QueryResult::Error {
-                        message: "EXPLAIN only supports SELECT queries".to_string(),
-                    }),
-                }
-            }
         }
     }
 
@@ -375,13 +356,10 @@ impl Engine {
         as_of: Option<AsOf>,
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
-        // Use query optimizer to create execution plan
-        let _plan = self
-            .query_optimizer
-            .optimize_select(table, &conditions, &as_of, limit)?;
-        // Note: In a production system, we would use the plan to guide execution
-        // For now, we use the plan for cost estimation and proceed with standard execution
-
+        // EXPLAIN flows through `sql_bridge::execute_sql` → `crate::explain`
+        // now; the legacy `Query::Explain` variant and its produced-then-
+        // discarded plan are gone with the retired `crate::query::optimizer`
+        // module. The select path proceeds directly to storage.
         let storage = self
             .tables
             .get(table)
