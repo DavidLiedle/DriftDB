@@ -4,16 +4,12 @@
 //! including psql, pgAdmin, DBeaver, and all PostgreSQL drivers.
 
 mod advanced_pool;
-mod advanced_pool_routes;
 mod alert_routes;
 mod alerting;
 mod errors;
 mod executor;
 mod health;
 mod metrics;
-mod monitoring;
-mod optimized_executor;
-mod ordered_columns;
 mod performance;
 mod performance_routes;
 mod protocol;
