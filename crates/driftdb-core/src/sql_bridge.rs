@@ -3925,22 +3925,48 @@ fn execute_create_table(
     let mut primary_key = String::new();
     let mut drift_columns = Vec::new();
 
+    // Inline FK constraints declared as `dept_id VARCHAR REFERENCES dept(id)`
+    // are surfaced by sqlparser as `ColumnOption::ForeignKey` on the column,
+    // *not* as a `TableConstraint::ForeignKey`. We collect them here so the
+    // FK registration loop below can treat both shapes uniformly.
+    let mut inline_fks: Vec<crate::fk::ForeignKey> = Vec::new();
+
     // Process column definitions
     for column in columns {
         let col_name = column.name.value.clone();
         let col_type = column.data_type.to_string();
-        let is_index = false;
+        // Treat inline `UNIQUE` (and inline `PRIMARY KEY`, which implies unique)
+        // as a request to build a secondary index on the column. PostgreSQL
+        // builds an implicit unique index for UNIQUE columns; we honor that
+        // with our existing secondary-index mechanism even though uniqueness
+        // itself isn't enforced beyond the PK today.
+        let mut is_index = false;
 
-        // Check for PRIMARY KEY in column options
         for option in &column.options {
-            if let sqlparser::ast::ColumnOption::Unique { is_primary, .. } = &option.option {
-                if *is_primary {
-                    primary_key = col_name.clone();
+            match &option.option {
+                sqlparser::ast::ColumnOption::Unique { is_primary, .. } => {
+                    is_index = true;
+                    if *is_primary {
+                        primary_key = col_name.clone();
+                    }
                 }
+                sqlparser::ast::ColumnOption::ForeignKey {
+                    foreign_table,
+                    referred_columns,
+                    ..
+                } => {
+                    if let Some(ref_col) = referred_columns.first() {
+                        inline_fks.push(crate::fk::ForeignKey {
+                            column: col_name.clone(),
+                            ref_table: foreign_table.to_string(),
+                            ref_column: ref_col.value.clone(),
+                        });
+                    }
+                }
+                _ => {}
             }
         }
 
-        // Create column definition
         drift_columns.push(DriftColumnDef {
             name: col_name,
             col_type,
@@ -4054,33 +4080,34 @@ fn execute_create_table(
 
     // Register FK constraints into the process-wide FK registry so subsequent
     // INSERT / UPDATE / DELETE through this same sql_bridge enforce them.
-    // We translate from the rich `crate::constraints::Constraint` AST (which
-    // carries cascade actions we don't yet implement) into the simpler
-    // `crate::fk::ForeignKey` per-column form actually used by validation.
-    if !foreign_keys.is_empty() {
-        let mut fks = Vec::new();
-        for c in &foreign_keys {
-            if let crate::constraints::ConstraintType::ForeignKey {
-                columns,
-                reference_table,
-                reference_columns,
-                ..
-            } = &c.constraint_type
-            {
-                // Pair child columns with parent columns positionally. SQL allows
-                // composite FKs (multiple columns), so unzip into one ForeignKey
-                // entry per column pair — the runtime check treats each column
-                // independently with MATCH SIMPLE semantics.
-                for (child_col, parent_col) in columns.iter().zip(reference_columns.iter()) {
-                    fks.push(crate::fk::ForeignKey {
-                        column: child_col.clone(),
-                        ref_table: reference_table.clone(),
-                        ref_column: parent_col.clone(),
-                    });
-                }
+    // Both table-level FKs (`FOREIGN KEY (a) REFERENCES b(c)`) and inline FKs
+    // (`a VARCHAR REFERENCES b(c)`) flow into the same registry — the parser
+    // hands the latter back as ColumnOption::ForeignKey, which we collected
+    // above into `inline_fks`.
+    let mut all_fks: Vec<crate::fk::ForeignKey> = inline_fks;
+    for c in &foreign_keys {
+        if let crate::constraints::ConstraintType::ForeignKey {
+            columns,
+            reference_table,
+            reference_columns,
+            ..
+        } = &c.constraint_type
+        {
+            // Pair child columns with parent columns positionally. SQL allows
+            // composite FKs (multiple columns), so unzip into one ForeignKey
+            // entry per column pair — the runtime check treats each column
+            // independently with MATCH SIMPLE semantics.
+            for (child_col, parent_col) in columns.iter().zip(reference_columns.iter()) {
+                all_fks.push(crate::fk::ForeignKey {
+                    column: child_col.clone(),
+                    ref_table: reference_table.clone(),
+                    ref_column: parent_col.clone(),
+                });
             }
         }
-        crate::fk::register(&table_name, fks);
+    }
+    if !all_fks.is_empty() {
+        crate::fk::register(&table_name, all_fks);
     }
 
     Ok(QueryResult::Success {

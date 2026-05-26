@@ -1229,49 +1229,10 @@ impl<'a> QueryExecutor<'a> {
     // FK constraint helpers
     // -------------------------------------------------------------------------
 
-    /// Parse REFERENCES clauses from a CREATE TABLE body and register FKs.
-    /// Parse `col REFERENCES other_table(other_col)` patterns out of the
-    /// raw column-defs body of a CREATE TABLE and register the resulting
-    /// FKs in the canonical `core::fk` registry. INSERTs / UPDATEs /
-    /// DELETEs through sql_bridge read from the same registry, so FKs
-    /// declared via the server's PostgreSQL-protocol CREATE TABLE
-    /// enforce uniformly regardless of which client wrote the data.
-    fn register_fk_constraints(&self, table_name: &str, column_defs_str: &str) {
-        let mut fks: Vec<driftdb_core::fk::ForeignKey> = Vec::new();
-        for part in column_defs_str.split(',') {
-            let part = part.trim();
-            let upper = part.to_uppercase();
-            let Some(ref_pos) = upper.find("REFERENCES") else {
-                continue;
-            };
-            let col_name = part.split_whitespace().next().unwrap_or("").to_string();
-            let after_ref = part[ref_pos + 10..].trim();
-            let (Some(paren_open), Some(paren_close)) = (after_ref.find('('), after_ref.find(')'))
-            else {
-                continue;
-            };
-            let ref_table = after_ref[..paren_open].trim().to_string();
-            let ref_col = after_ref[paren_open + 1..paren_close].trim().to_string();
-            if !col_name.is_empty() && !ref_table.is_empty() && !ref_col.is_empty() {
-                fks.push(driftdb_core::fk::ForeignKey {
-                    column: col_name,
-                    ref_table,
-                    ref_column: ref_col,
-                });
-            }
-        }
-        if !fks.is_empty() {
-            let count = fks.len();
-            driftdb_core::fk::register(table_name, fks);
-            info!(
-                "Registered {} FK constraint(s) for table '{}'",
-                count, table_name
-            );
-        }
-    }
-
-    // Note: validate_fk_insert / validate_fk_delete moved into
-    // `driftdb_core::fk` so the same FK logic runs for every DML path.
+    // Note: register_fk_constraints / validate_fk_insert / validate_fk_delete
+    // moved into `driftdb_core::fk` and `driftdb_core::sql_bridge`. CREATE
+    // TABLE on this side now falls through to sql_bridge, which parses both
+    // table-level and inline `REFERENCES` constraints and registers them.
 
     /// Parse GROUP BY clause
     fn parse_group_by_clause(&self, group_by_clause: &str) -> Result<GroupBy> {
@@ -1531,13 +1492,13 @@ impl<'a> QueryExecutor<'a> {
             return self.execute_legacy(sql).await;
         }
 
-        // Route CREATE INDEX and CREATE TABLE to dedicated handlers
-        if lower.starts_with("create index") {
-            return self.execute_create_index(sql).await;
-        }
-        if lower.starts_with("create table") {
-            return self.execute_create_table(sql).await;
-        }
+        // CREATE TABLE / CREATE INDEX fall through to the bridge-backed
+        // dispatch at the bottom of this function. sql_bridge::execute_sql
+        // handles standard SQL CREATE TABLE (including inline PRIMARY KEY,
+        // inline REFERENCES, and table-level FK constraints) and CREATE
+        // INDEX uniformly — there's no need for a server-local handler.
+        // The legacy `(pk = id, INDEX(col))` form is no longer supported;
+        // it was deprecated as part of this migration.
 
         // SELECT and WITH (CTE) queries are executed through the core SQL bridge.
         // The bridge handles temporal queries, aggregation, GROUP BY/HAVING,
@@ -1704,169 +1665,8 @@ impl<'a> QueryExecutor<'a> {
     // moved into `driftdb_core::sql_bridge`. Single canonical DML path now.
 
 
-    async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
-        use driftdb_core::schema::ColumnDef;
-        use sqlparser::ast::{ColumnOption, Statement, TableConstraint};
-        use sqlparser::dialect::GenericDialect;
-        use sqlparser::parser::Parser;
 
-        // Try standard SQL parsing first; fall back to legacy pk=id syntax if it fails
-        let dialect = GenericDialect {};
-        if let Ok(mut ast) = Parser::parse_sql(&dialect, sql) {
-            if let Some(Statement::CreateTable(create)) = ast.pop() {
-                let table_name = create.name.to_string();
 
-                // Extract PRIMARY KEY: table-level constraint takes precedence
-                let mut primary_key = "id".to_string();
-                for constraint in &create.constraints {
-                    if let TableConstraint::PrimaryKey { columns, .. } = constraint {
-                        if let Some(col) = columns.first() {
-                            primary_key = col.value.clone();
-                            break;
-                        }
-                    }
-                }
-                // Column-level inline PRIMARY KEY (only if no table-level PK found yet)
-                if primary_key == "id" {
-                    'outer: for col in &create.columns {
-                        for opt in &col.options {
-                            if let ColumnOption::Unique { is_primary: true, .. } = opt.option {
-                                primary_key = col.name.value.clone();
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-
-                // Build engine ColumnDef list
-                let columns: Vec<ColumnDef> = create.columns.iter().map(|c| {
-                    let indexed = c.options.iter().any(|o| matches!(o.option, ColumnOption::Unique { .. }));
-                    ColumnDef {
-                        name: c.name.value.clone(),
-                        col_type: c.data_type.to_string(),
-                        index: indexed,
-                    }
-                }).collect();
-
-                let mut engine = self.engine_write()?;
-                engine
-                    .create_table_with_columns(&table_name, &primary_key, columns)
-                    .map_err(|e| anyhow!("Create table failed: {}", e))?;
-                drop(engine);
-
-                // Register FK constraints if REFERENCES keyword present in SQL
-                let lower = sql.to_lowercase();
-                if lower.contains("references") {
-                    if let (Some(open), Some(close)) = (sql.find('('), sql.rfind(')')) {
-                        self.register_fk_constraints(&table_name, &sql[open + 1..close]);
-                    }
-                }
-
-                info!("Table {} created (pk={})", table_name, primary_key);
-                return Ok(QueryResult::CreateTable);
-            }
-        }
-
-        // Legacy fallback: pk=id syntax (e.g. CREATE TABLE t (pk=id, INDEX(col)))
-        self.execute_create_table_legacy(sql).await
-    }
-
-    async fn execute_create_table_legacy(&self, sql: &str) -> Result<QueryResult> {
-        let lower = sql.to_lowercase();
-        if !lower.starts_with("create table") {
-            return Err(anyhow!("Not a CREATE TABLE statement"));
-        }
-
-        // Find table name
-        let after_create = sql[12..].trim(); // Skip "CREATE TABLE"
-        let table_end = after_create
-            .find('(')
-            .ok_or_else(|| anyhow!("Invalid CREATE TABLE syntax"))?;
-        let table_name = after_create[..table_end].trim();
-
-        // Extract the column definitions body (inside the outer parentheses)
-        let paren_open = table_end;
-        let col_body = {
-            let s = &after_create[paren_open + 1..];
-            let mut depth = 1usize;
-            let mut end = 0;
-            for (i, ch) in s.char_indices() {
-                match ch {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            end = i;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            &s[..end]
-        };
-
-        // Parse pk=id or PRIMARY KEY syntax
-        let mut primary_key = "id".to_string();
-        for part in col_body.split(',') {
-            let trimmed = part.trim();
-            let trimmed_upper = trimmed.to_uppercase();
-            // Legacy: pk=col_name
-            if trimmed_upper.starts_with("PK=") || trimmed.to_lowercase().starts_with("pk=") {
-                let pk_val = trimmed.split_once('=').map(|x| x.1).unwrap_or("id").trim();
-                primary_key = pk_val.to_string();
-                break;
-            }
-            // Standard: col_name ... PRIMARY KEY
-            if trimmed_upper.contains("PRIMARY KEY") {
-                let col_name = trimmed.split_whitespace().next().unwrap_or("id");
-                primary_key = col_name.to_string();
-                break;
-            }
-        }
-
-        let mut engine = self.engine_write()?;
-        engine
-            .create_table(table_name, &primary_key, vec![])
-            .map_err(|e| anyhow!("Create table failed: {}", e))?;
-        drop(engine);
-
-        // Register FK constraints if present
-        self.register_fk_constraints(table_name, col_body);
-
-        info!("Table {} created (pk={}, legacy syntax)", table_name, primary_key);
-        Ok(QueryResult::CreateTable)
-    }
-
-    async fn execute_create_index(&self, sql: &str) -> Result<QueryResult> {
-        // Handles: CREATE INDEX ON table_name (col1, col2)
-        //          CREATE INDEX idx_name ON table_name (col)
-        let lower = sql.to_lowercase();
-        let on_pos = lower
-            .find(" on ")
-            .ok_or_else(|| anyhow!("CREATE INDEX missing ON clause"))?;
-        let after_on = sql[on_pos + 4..].trim();
-        let paren_pos = after_on
-            .find('(')
-            .ok_or_else(|| anyhow!("CREATE INDEX missing column list"))?;
-        let table_name = after_on[..paren_pos].trim();
-        let cols_str = after_on[paren_pos + 1..]
-            .trim_end_matches([')', ';'])
-            .trim();
-
-        let mut engine = self.engine_write()?;
-        for col in cols_str.split(',') {
-            let col = col.trim();
-            if !col.is_empty() {
-                engine
-                    .create_index(table_name, col, None)
-                    .map_err(|e| anyhow!("CREATE INDEX failed: {}", e))?;
-            }
-        }
-
-        info!("Index created on {}", table_name);
-        Ok(QueryResult::CreateIndex)
-    }
 
     async fn execute_show(&self, sql: &str) -> Result<QueryResult> {
         let engine = self.engine_read()?;
@@ -5107,7 +4907,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE users (pk = id)")
+            .execute("CREATE TABLE users (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5206,7 +5006,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE users (pk = id)")
+            .execute("CREATE TABLE users (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5247,7 +5047,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE users (pk = id)")
+            .execute("CREATE TABLE users (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5288,7 +5088,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5329,7 +5129,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE test_scores (pk = id)")
+            .execute("CREATE TABLE test_scores (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5376,7 +5176,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE users (pk = id)")
+            .execute("CREATE TABLE users (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5432,7 +5232,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5494,7 +5294,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE users (pk = id)")
+            .execute("CREATE TABLE users (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5549,7 +5349,7 @@ mod tests {
 
         // Create a test table but don't insert any data
         let result = executor
-            .execute("CREATE TABLE empty_table (pk = id)")
+            .execute("CREATE TABLE empty_table (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5592,7 +5392,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE users (pk = id)")
+            .execute("CREATE TABLE users (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5635,7 +5435,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5687,7 +5487,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5751,7 +5551,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5795,7 +5595,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5849,7 +5649,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5897,7 +5697,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -5954,7 +5754,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -6027,7 +5827,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
@@ -6175,7 +5975,7 @@ mod tests {
 
         // Create a test table
         let result = executor
-            .execute("CREATE TABLE employees (pk = id)")
+            .execute("CREATE TABLE employees (id VARCHAR PRIMARY KEY)")
             .await
             .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
