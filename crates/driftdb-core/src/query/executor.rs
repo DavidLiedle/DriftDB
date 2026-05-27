@@ -4,6 +4,7 @@ use super::{AsOf, Query, QueryResult, WhereCondition};
 use crate::engine::Engine;
 use crate::errors::Result;
 use crate::events::Event;
+use crate::optimizer::PlanStep;
 use crate::parallel::{ParallelConfig, ParallelExecutor};
 
 impl Engine {
@@ -112,10 +113,79 @@ impl Engine {
         as_of: Option<AsOf>,
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
-        // EXPLAIN flows through `sql_bridge::execute_sql` → `crate::explain`
-        // now; the legacy `Query::Explain` variant and its produced-then-
-        // discarded plan are gone with the retired `crate::query::optimizer`
-        // module. The select path proceeds directly to storage.
+        // Ask the optimizer for a plan. The plan tells us:
+        //   (a) which access method to use (index lookup vs. table scan);
+        //   (b) the order in which residual `Filter` predicates should
+        //       be evaluated against each candidate row.
+        //
+        // Both dimensions are honored below for single-table SELECTs with
+        // no time travel. Time-travel queries skip the indexed path
+        // (indexes track current state only) but still benefit from
+        // ordered predicate evaluation.
+        let plan_query = Query::Select {
+            table: table.to_string(),
+            conditions: conditions.clone(),
+            as_of: as_of.clone(),
+            limit,
+        };
+        let plan = self.query_optimizer.optimize(&plan_query).ok();
+
+        let no_time_travel = matches!(as_of, None | Some(AsOf::Now));
+        if no_time_travel {
+            if let Some(plan) = plan.as_ref() {
+                if let Some(rows) =
+                    self.try_indexed_access_path(table, &conditions, plan, limit)?
+                {
+                    return Ok(rows);
+                }
+            }
+        }
+
+        // Full-scan path. Pull residual predicates from the plan in the
+        // optimizer's chosen order. If the plan's access step was an
+        // IndexLookup/IndexScan but we're not honoring it (e.g. time
+        // travel), that step "absorbed" some predicates — equality for
+        // IndexLookup, range bounds for IndexScan — that are therefore
+        // absent from the Filter list. We re-prepend them so they still
+        // get applied. Falls back to source order when no plan was
+        // produced.
+        let ordered_conditions: Vec<WhereCondition> = if let Some(p) = plan.as_ref() {
+            let mut ordered = Vec::with_capacity(conditions.len());
+            for step in &p.steps {
+                match step {
+                    PlanStep::IndexLookup { index, .. } => {
+                        if let Some(c) = conditions
+                            .iter()
+                            .find(|c| c.column == *index && (c.operator == "=" || c.operator == "=="))
+                        {
+                            ordered.push(c.clone());
+                        }
+                    }
+                    PlanStep::IndexScan { index, .. } => {
+                        // Re-add every range predicate on the indexed
+                        // column. There can be more than one (e.g.
+                        // `age > 30 AND age < 50` → two predicates), all
+                        // folded into a single IndexScan step.
+                        for c in conditions.iter().filter(|c| {
+                            c.column == *index
+                                && matches!(c.operator.as_str(), ">" | ">=" | "<" | "<=")
+                        }) {
+                            ordered.push(c.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ordered.extend(predicates_from_filter_steps(p));
+            if ordered.is_empty() {
+                conditions.clone()
+            } else {
+                ordered
+            }
+        } else {
+            conditions.clone()
+        };
+
         let storage = self
             .tables
             .get(table)
@@ -148,12 +218,12 @@ impl Engine {
                 .collect();
 
             // Execute query in parallel
-            parallel_executor.parallel_select(data, &conditions, limit)
+            parallel_executor.parallel_select(data, &ordered_conditions, limit)
         } else {
             // Use sequential execution for small datasets
             let mut results: Vec<serde_json::Value> = state
                 .into_values()
-                .filter(|row| super::predicate::matches_conditions(row, &conditions))
+                .filter(|row| super::predicate::matches_conditions(row, &ordered_conditions))
                 .collect();
 
             if let Some(limit) = limit {
@@ -162,6 +232,96 @@ impl Engine {
 
             Ok(results)
         }
+    }
+
+    /// If the optimizer chose an `IndexLookup` or `IndexScan`, fetch the
+    /// candidate PKs through the index and apply residual predicates.
+    ///
+    /// - `IndexLookup` resolves to `Engine::lookup_by_index` (point query).
+    /// - `IndexScan` resolves to `Engine::range_by_index` (range walk).
+    ///
+    /// Residual predicates come from the plan's `Filter` steps in the
+    /// optimizer's chosen order (see the second wiring slice). They
+    /// exclude whatever the access step already covered.
+    ///
+    /// Returns `Ok(None)` to signal "fall back to full scan" for any
+    /// situation we can't honor cleanly: plan didn't use an index, plan
+    /// has a shape we don't recognize, or the index call errored
+    /// (likely a transient race with index changes). We never surface
+    /// index-side errors to the user — full scan always produces a
+    /// correct answer.
+    fn try_indexed_access_path(
+        &self,
+        table: &str,
+        conditions: &[WhereCondition],
+        plan: &crate::optimizer::QueryPlan,
+        limit: Option<usize>,
+    ) -> Result<Option<Vec<serde_json::Value>>> {
+        if !plan.uses_index {
+            return Ok(None);
+        }
+        let access = plan.steps.iter().find(|s| {
+            matches!(
+                s,
+                PlanStep::IndexLookup { .. } | PlanStep::IndexScan { .. }
+            )
+        });
+        let Some(access) = access else {
+            return Ok(None);
+        };
+
+        let pks: Vec<String> = match access {
+            PlanStep::IndexLookup { index, .. } => {
+                // Pull the JSON-typed value from the original condition
+                // list rather than reparsing the plan's stringified key
+                // (which would lose JSON type info, especially around
+                // string-vs-number ambiguity).
+                let Some(eq_cond) = conditions
+                    .iter()
+                    .find(|c| c.column == *index && (c.operator == "=" || c.operator == "=="))
+                else {
+                    return Ok(None);
+                };
+                match self.lookup_by_index(table, index, &eq_cond.value) {
+                    Ok(set) => set.into_iter().collect(),
+                    Err(_) => return Ok(None),
+                }
+            }
+            PlanStep::IndexScan {
+                index, start, end, ..
+            } => {
+                let start_tuple = start.as_ref().map(|b| (&b.value, b.inclusive));
+                let end_tuple = end.as_ref().map(|b| (&b.value, b.inclusive));
+                match self.range_by_index(table, index, start_tuple, end_tuple) {
+                    Ok(set) => set.into_iter().collect(),
+                    Err(_) => return Ok(None),
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        // Reconstruct current state once; PK lookups are O(1) from here.
+        let storage = self
+            .tables
+            .get(table)
+            .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
+        let state = storage.reconstruct_state_at(None)?;
+
+        let residual = predicates_from_filter_steps(plan);
+
+        let mut results = Vec::new();
+        for pk in pks {
+            let Some(row) = state.get(&pk) else { continue };
+            if super::predicate::matches_conditions(row, &residual) {
+                results.push(row.clone());
+                if let Some(lim) = limit {
+                    if results.len() >= lim {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(Some(results))
     }
 
     fn get_drift_history(
@@ -214,4 +374,17 @@ impl Engine {
         Ok(schema.columns.iter().map(|c| c.name.clone()).collect())
     }
 
+}
+
+/// Extract residual predicates from a plan in the order the optimizer
+/// chose. Walks `plan.steps`, picking each `PlanStep::Filter`'s predicate.
+/// The optimizer is responsible for ordering Filter steps cheapest-first.
+fn predicates_from_filter_steps(plan: &crate::optimizer::QueryPlan) -> Vec<WhereCondition> {
+    plan.steps
+        .iter()
+        .filter_map(|s| match s {
+            PlanStep::Filter { predicate, .. } => Some(predicate.clone()),
+            _ => None,
+        })
+        .collect()
 }

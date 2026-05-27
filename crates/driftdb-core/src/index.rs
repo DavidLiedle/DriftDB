@@ -118,6 +118,65 @@ impl Index {
         self.entries.get(value)
     }
 
+    /// Find all primary keys whose indexed value falls within the given
+    /// JSON bounds. Either bound may be `None` (half-open range).
+    ///
+    /// # Why this iterates instead of using `BTreeMap::range`
+    ///
+    /// The underlying map is keyed by `String` (each row's JSON-stringified
+    /// value), so its built-in range query gives lexicographic order — which
+    /// matches semantic order for string columns but NOT for numeric columns
+    /// (e.g. `"10" < "2"` lexicographically, but `10 > 2` numerically). To
+    /// stay correct for both, we walk every distinct key and compare via
+    /// `compare_json_values`, which numbers numerically and strings
+    /// lexicographically.
+    ///
+    /// This is O(distinct_keys), not O(log n) — but still asymptotically
+    /// better than a full table scan, since the index has at most one entry
+    /// per distinct value while the table has one row per primary key. A
+    /// future migration to a sort-preserving key encoding could promote
+    /// this to true ordered iteration.
+    pub fn range(
+        &self,
+        start: Option<(&serde_json::Value, /*inclusive:*/ bool)>,
+        end: Option<(&serde_json::Value, /*inclusive:*/ bool)>,
+    ) -> HashSet<String> {
+        use std::cmp::Ordering;
+        let mut result: HashSet<String> = HashSet::new();
+        for (key_str, key_pks) in &self.entries {
+            // Reconstruct a JSON value from the stored string key. Numeric
+            // values round-trip through serde_json; strings (which were
+            // stored without quotes) fall back to Value::String.
+            let key_value = serde_json::from_str::<serde_json::Value>(key_str)
+                .unwrap_or_else(|_| serde_json::Value::String(key_str.clone()));
+
+            if let Some((lo, lo_incl)) = start {
+                let ord = crate::query::predicate::compare_json_values(&key_value, lo);
+                let inside = match ord {
+                    Ordering::Greater => true,
+                    Ordering::Equal => lo_incl,
+                    Ordering::Less => false,
+                };
+                if !inside {
+                    continue;
+                }
+            }
+            if let Some((hi, hi_incl)) = end {
+                let ord = crate::query::predicate::compare_json_values(&key_value, hi);
+                let inside = match ord {
+                    Ordering::Less => true,
+                    Ordering::Equal => hi_incl,
+                    Ordering::Greater => false,
+                };
+                if !inside {
+                    continue;
+                }
+            }
+            result.extend(key_pks.iter().cloned());
+        }
+        result
+    }
+
     /// Get the number of unique indexed values
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -236,6 +295,14 @@ impl IndexManager {
 
     pub fn get_index(&self, column: &str) -> Option<&Index> {
         self.indexes.get(column)
+    }
+
+    /// Names of all columns this manager currently has indexes for.
+    /// Used as the authoritative set when applying events, since the
+    /// table schema's `index: bool` flag isn't updated by post-creation
+    /// `CREATE INDEX` calls.
+    pub fn indexed_column_names(&self) -> HashSet<String> {
+        self.indexes.keys().cloned().collect()
     }
 
     /// Add a new index for a column

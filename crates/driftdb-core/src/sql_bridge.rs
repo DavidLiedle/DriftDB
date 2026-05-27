@@ -21,6 +21,10 @@ use crate::window::{
 thread_local! {
     static IN_VIEW_EXECUTION: RefCell<bool> = const { RefCell::new(false) };
     static CURRENT_TRANSACTION: RefCell<Option<u64>> = const { RefCell::new(None) };
+    /// PostgreSQL-style aborted-transaction state, surfaced into the
+    /// `SessionContext.aborted` field by `SessionGuard` on drop. Lives
+    /// for the duration of one `execute_sql_in_session` call.
+    static CURRENT_TXN_ABORTED: RefCell<bool> = const { RefCell::new(false) };
     static OUTER_ROW_CONTEXT: RefCell<Option<Value>> = const { RefCell::new(None) };
     static IN_RECURSIVE_CTE: RefCell<bool> = const { RefCell::new(false) };
     /// Active `FOR SYSTEM_TIME AS OF ...` clause for the current `execute_sql` call.
@@ -96,6 +100,13 @@ pub struct SessionContext {
     /// decide whether to buffer through the engine's transaction manager
     /// or apply events immediately.
     pub transaction_id: Option<u64>,
+    /// PostgreSQL-style aborted-transaction state. Set by any statement
+    /// inside a transaction that surfaces a constraint violation (PK
+    /// uniqueness today; range will grow). Once set, every statement
+    /// except `ROLLBACK` returns the canonical
+    /// "current transaction is aborted, commands ignored until end of
+    /// transaction block" error. Cleared by `COMMIT` or `ROLLBACK`.
+    pub aborted: bool,
 }
 
 impl SessionContext {
@@ -119,13 +130,19 @@ impl SessionContext {
 /// `&mut SessionContext` through every helper.
 struct SessionGuard<'ctx> {
     prev_txn_id: Option<u64>,
+    prev_aborted: bool,
     ctx: &'ctx mut SessionContext,
 }
 
 impl<'ctx> SessionGuard<'ctx> {
     fn enter(ctx: &'ctx mut SessionContext) -> Self {
         let prev_txn_id = CURRENT_TRANSACTION.with(|c| c.replace(ctx.transaction_id));
-        Self { prev_txn_id, ctx }
+        let prev_aborted = CURRENT_TXN_ABORTED.with(|c| c.replace(ctx.aborted));
+        Self {
+            prev_txn_id,
+            prev_aborted,
+            ctx,
+        }
     }
 }
 
@@ -135,13 +152,31 @@ impl Drop for SessionGuard<'_> {
         // then restore the outer thread-local (so nested `execute_sql_in_session`
         // calls — e.g. through view materialisation — don't leak state).
         let final_txn_id = CURRENT_TRANSACTION.with(|c| c.replace(self.prev_txn_id));
+        let final_aborted = CURRENT_TXN_ABORTED.with(|c| c.replace(self.prev_aborted));
         self.ctx.transaction_id = final_txn_id;
+        self.ctx.aborted = final_aborted;
     }
 }
 
 /// Read the current session's active transaction id, if any.
 fn current_transaction() -> Option<u64> {
     CURRENT_TRANSACTION.with(|c| *c.borrow())
+}
+
+/// Whether the current transaction is in the aborted state. Set by a
+/// constraint violation (PK uniqueness, FK violation, etc.); cleared
+/// by `COMMIT` or `ROLLBACK`. Inner code reads this before executing
+/// any statement other than `ROLLBACK`.
+fn current_txn_aborted() -> bool {
+    CURRENT_TXN_ABORTED.with(|c| *c.borrow())
+}
+
+fn mark_txn_aborted() {
+    CURRENT_TXN_ABORTED.with(|c| *c.borrow_mut() = true);
+}
+
+fn clear_txn_aborted() {
+    CURRENT_TXN_ABORTED.with(|c| *c.borrow_mut() = false);
 }
 
 /// Execute SQL query with parameters (prevents SQL injection)
@@ -212,7 +247,23 @@ pub fn execute_sql_in_session(
     ctx: &mut SessionContext,
 ) -> Result<QueryResult> {
     let _guard = SessionGuard::enter(ctx);
-    execute_sql_inner(engine, sql)
+    let result = execute_sql_inner(engine, sql);
+    // PostgreSQL semantics: any error mid-transaction aborts the
+    // transaction. Slices 1 and 2 already set the abort flag at their
+    // specific constraint-check sites — those stay as documentation
+    // of intent. This is the backstop for every other error surface:
+    // syntax errors, unknown table, missing column, FK violations,
+    // arithmetic errors, etc.
+    //
+    // Auto-commit errors don't touch the abort state (there's no
+    // transaction to poison). The thread-local is read here before
+    // `SessionGuard::drop` syncs it back to `ctx.aborted`, so a
+    // set-then-drop sequence here flows through to the caller's
+    // session for the next statement's pre-dispatch gate.
+    if result.is_err() && current_transaction().is_some() {
+        mark_txn_aborted();
+    }
+    result
 }
 
 /// The original `execute_sql` body — kept private so both
@@ -274,6 +325,24 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
 
     if ast.is_empty() {
         return Err(DriftError::InvalidQuery("Empty SQL statement".to_string()));
+    }
+
+    // PostgreSQL-style aborted-transaction gate. After a constraint
+    // violation inside a transaction, every statement except
+    // `ROLLBACK` (and the no-op `COMMIT`, which Postgres treats as
+    // rollback in this state) surfaces the canonical aborted error.
+    // The check sits here so it covers every dispatch arm uniformly.
+    if current_txn_aborted() {
+        match &ast[0] {
+            Statement::Rollback { .. } | Statement::Commit { .. } => {
+                // Allow termination paths to clear the abort.
+            }
+            _ => {
+                return Err(DriftError::InvalidQuery(
+                    "current transaction is aborted, commands ignored until end of transaction block".to_string(),
+                ));
+            }
+        }
     }
 
     match &ast[0] {
@@ -409,15 +478,28 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
             let txn_id = CURRENT_TRANSACTION.with(|txn| *txn.borrow());
 
             if let Some(transaction_id) = txn_id {
-                engine.commit_transaction(transaction_id)?;
+                // PostgreSQL behavior: COMMIT against an aborted
+                // transaction is treated as ROLLBACK. We don't apply
+                // any buffered writes; we just clear state.
+                let was_aborted = current_txn_aborted();
+                if was_aborted {
+                    engine.rollback_transaction(transaction_id)?;
+                } else {
+                    engine.commit_transaction(transaction_id)?;
+                }
 
-                // Clear transaction from session
+                // Clear transaction + abort from session.
                 CURRENT_TRANSACTION.with(|txn| {
                     *txn.borrow_mut() = None;
                 });
+                clear_txn_aborted();
 
                 Ok(QueryResult::Success {
-                    message: format!("Transaction {} committed", transaction_id),
+                    message: if was_aborted {
+                        format!("ROLLBACK (transaction {} was aborted)", transaction_id)
+                    } else {
+                        format!("Transaction {} committed", transaction_id)
+                    },
                 })
             } else {
                 // No active transaction - just succeed (no-op)
@@ -426,26 +508,63 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 })
             }
         }
-        Statement::Rollback { .. } => {
-            // Get current transaction ID from session
+        Statement::Rollback { savepoint, .. } => {
+            // Two cases dispatched here:
+            //   - `ROLLBACK` (no savepoint) → end the transaction.
+            //   - `ROLLBACK TO [SAVEPOINT] name` → partial rollback;
+            //     transaction stays open, abort cleared, writes since
+            //     the named savepoint are discarded.
             let txn_id = CURRENT_TRANSACTION.with(|txn| *txn.borrow());
+            let transaction_id = txn_id.ok_or_else(|| {
+                DriftError::InvalidQuery("No active transaction to rollback".to_string())
+            })?;
 
-            if let Some(transaction_id) = txn_id {
+            if let Some(sp_name) = savepoint {
+                // ROLLBACK TO SAVEPOINT — partial rollback.
+                let name = sp_name.value.clone();
+                engine.rollback_to_savepoint(transaction_id, &name)?;
+                // PostgreSQL: ROLLBACK TO inside an aborted transaction
+                // clears the abort and lets the transaction continue
+                // from the savepoint's state. Slice 1's abort gate
+                // already allowed Rollback-variant statements in
+                // aborted state for exactly this reason.
+                clear_txn_aborted();
+                Ok(QueryResult::Success {
+                    message: format!("ROLLBACK TO SAVEPOINT {}", name),
+                })
+            } else {
+                // Full ROLLBACK — end the transaction.
                 engine.rollback_transaction(transaction_id)?;
-
-                // Clear transaction from session
                 CURRENT_TRANSACTION.with(|txn| {
                     *txn.borrow_mut() = None;
                 });
-
+                clear_txn_aborted();
                 Ok(QueryResult::Success {
                     message: format!("Transaction {} rolled back", transaction_id),
                 })
-            } else {
-                Err(DriftError::InvalidQuery(
-                    "No active transaction to rollback".to_string(),
-                ))
             }
+        }
+        Statement::Savepoint { name } => {
+            let txn_id = CURRENT_TRANSACTION.with(|txn| *txn.borrow()).ok_or_else(|| {
+                DriftError::InvalidQuery(
+                    "SAVEPOINT can only be used in transaction blocks".to_string(),
+                )
+            })?;
+            engine.create_savepoint(txn_id, &name.value)?;
+            Ok(QueryResult::Success {
+                message: format!("SAVEPOINT {}", name.value),
+            })
+        }
+        Statement::ReleaseSavepoint { name } => {
+            let txn_id = CURRENT_TRANSACTION.with(|txn| *txn.borrow()).ok_or_else(|| {
+                DriftError::InvalidQuery(
+                    "RELEASE SAVEPOINT can only be used in transaction blocks".to_string(),
+                )
+            })?;
+            engine.release_savepoint(txn_id, &name.value)?;
+            Ok(QueryResult::Success {
+                message: format!("RELEASE {}", name.value),
+            })
         }
         Statement::AlterTable {
             name, operations, ..
@@ -549,14 +668,35 @@ fn execute_sql_inner(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
             };
             Ok(QueryResult::Rows { data })
         }
-        Statement::Analyze { .. } => {
-            // Run ANALYZE on all tables to update statistics
-            for table in engine.list_tables() {
-                let _ = engine.collect_table_statistics(&table);
+        Statement::Analyze { table_name, .. } => {
+            // ANALYZE table_name: scan one table and push the result
+            // into QueryOptimizer's statistics map. This is what
+            // activates the dormant signals in slices 2 (within-class
+            // selectivity tiebreaker) and 6 (cost-based multi-join
+            // seed selection) — without ANALYZE, both fall back to
+            // source order because `statistics_row_count` returns 0.
+            let table = table_name.to_string();
+            let known: Vec<String> = engine.list_tables();
+            if !table.is_empty() && known.contains(&table) {
+                let stats = engine.collect_table_statistics(&table)?;
+                engine.query_optimizer().update_statistics(&table, stats);
+                Ok(QueryResult::Success {
+                    message: format!("ANALYZE {}", table),
+                })
+            } else {
+                // Bare ANALYZE or unknown table: PostgreSQL behavior
+                // for the bare form is "every table". We do the same;
+                // unknown table falls through to that path rather than
+                // erroring, matching `let _ = ...`'s prior tolerance.
+                for t in known {
+                    if let Ok(stats) = engine.collect_table_statistics(&t) {
+                        engine.query_optimizer().update_statistics(&t, stats);
+                    }
+                }
+                Ok(QueryResult::Success {
+                    message: "ANALYZE".to_string(),
+                })
             }
-            Ok(QueryResult::Success {
-                message: "Statistics updated for all tables".to_string(),
-            })
         }
         Statement::Truncate { table_names, .. } => {
             if table_names.is_empty() {
@@ -1159,19 +1299,17 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     let (engine_conditions, sql_filter) = if has_subqueries || is_correlated {
         (vec![], select.selection.clone())
     } else {
-        // Convert WHERE clause to WhereConditions for engine optimization
-        let conditions = if let Some(selection) = &select.selection {
-            match parse_where_clause(selection) {
-                Ok(conds) => conds,
-                Err(_) => {
-                    // If parsing fails, fall back to SQL filtering
-                    return Ok(QueryResult::Rows { data: vec![] });
-                }
-            }
-        } else {
-            vec![]
-        };
-        (conditions, None)
+        match select.selection.as_ref() {
+            Some(selection) => match parse_where_clause(selection) {
+                Ok(conds) if !conds.is_empty() => (conds, None),
+                // Parser didn't structurally lower the expression
+                // (unknown operator, OR, function call, etc.) — fall
+                // back to row-level SQL evaluation with all rows.
+                Ok(_) => (vec![], Some(selection.clone())),
+                Err(_) => (vec![], Some(selection.clone())),
+            },
+            None => (vec![], None),
+        }
     };
 
     // Execute SQL query to get base data
@@ -1309,43 +1447,53 @@ fn execute_join_select_with_ctes(
 
     // Process all JOINs sequentially
     for join in &select.from[0].joins {
-        let right_table = extract_table_name_from_join(&join.relation)?;
+        let (right_table, right_explicit_alias) = match extract_table_with_alias(&join.relation) {
+            Ok(pair) => pair,
+            Err(_) => (extract_table_name_from_join(&join.relation)?, None),
+        };
+        // Alias for collision-prefixing falls back to the table name
+        // when the SQL didn't provide one. Standard SQL: a bare table
+        // name acts as its own alias.
+        let right_alias = right_explicit_alias.unwrap_or_else(|| right_table.clone());
 
         // Check if right table is a CTE or regular table
         let right_rows = if let Some(cte_data) = cte_results.get(&right_table) {
-            // Use CTE data as right table
             cte_data.clone()
         } else {
-            // Get data from regular table
             let right_query = Query::Select {
                 table: right_table.clone(),
                 conditions: vec![],
                 as_of: current_temporal_as_of(),
                 limit: None,
             };
-
-            let right_result = engine.execute_query(right_query)?;
-            match right_result {
+            match engine.execute_query(right_query)? {
                 QueryResult::Rows { data } => data,
                 _ => vec![],
             }
         };
 
-        // Perform the JOIN with current accumulated result
+        // Same ON-orientation fix as the non-CTE legacy loop below.
+        let orient_ref = |constraint: &sqlparser::ast::JoinConstraint| {
+            orient_constraint_for_right_alias(constraint, &right_alias)
+                .unwrap_or_else(|| constraint.clone())
+        };
         joined_rows = match &join.join_operator {
             JoinOperator::Inner(constraint) => {
-                perform_inner_join(joined_rows, right_rows, constraint)?
+                perform_inner_join(joined_rows, right_rows, &orient_ref(constraint), &right_alias)?
             }
             JoinOperator::LeftOuter(constraint) => {
-                perform_left_join(joined_rows, right_rows, constraint)?
+                perform_left_join(joined_rows, right_rows, &orient_ref(constraint), &right_alias)?
             }
-            JoinOperator::CrossJoin => perform_cross_join(joined_rows, right_rows),
+            JoinOperator::CrossJoin => {
+                perform_cross_join(joined_rows, right_rows, &right_alias)
+            }
             JoinOperator::RightOuter(constraint) => {
-                // RIGHT JOIN is LEFT JOIN with swapped tables
-                perform_left_join(right_rows, joined_rows, constraint)?
+                let oriented = orient_constraint_for_right_alias(constraint, &right_alias)
+                    .unwrap_or_else(|| constraint.clone());
+                perform_left_join(right_rows, joined_rows, &oriented, &right_alias)?
             }
             JoinOperator::FullOuter(constraint) => {
-                perform_full_outer_join(joined_rows, right_rows, constraint)?
+                perform_full_outer_join(joined_rows, right_rows, &orient_ref(constraint), &right_alias)?
             }
             _ => {
                 return Err(DriftError::InvalidQuery(
@@ -1397,6 +1545,24 @@ fn execute_join_select_with_ctes(
 }
 
 fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResult> {
+    // Optimized fast path: single INNER JOIN over two tables (not views).
+    // Routes the algorithm choice through `QueryOptimizer::plan_single_join`
+    // and pushes table-prefixed WHERE predicates down to per-side
+    // `Engine::select` calls (which already honor index selection,
+    // predicate order, and range scans from earlier slices). Returns
+    // `Ok(None)` if anything doesn't fit (views, multi-join, OUTER JOIN,
+    // complex join condition) — then we fall through to the legacy
+    // implementation below.
+    if let Some(result) = try_optimized_single_join(engine, select)? {
+        return Ok(result);
+    }
+    // Multi-join (3+ tables, all INNER) goes through the reordering
+    // planner. Mixed INNER+OUTER chains fall through to legacy
+    // (correctness-preserving; reordering across OUTER boundaries is
+    // a separate slice).
+    if let Some(result) = try_optimized_multi_join(engine, select)? {
+        return Ok(result);
+    }
     // Get left table data
     let left_table = extract_table_name(&select.from[0].relation)?;
 
@@ -1442,7 +1608,11 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
 
     // Process all JOINs sequentially
     for join in &select.from[0].joins {
-        let right_table = extract_table_name_from_join(&join.relation)?;
+        let (right_table, right_explicit_alias) = match extract_table_with_alias(&join.relation) {
+            Ok(pair) => pair,
+            Err(_) => (extract_table_name_from_join(&join.relation)?, None),
+        };
+        let right_alias = right_explicit_alias.unwrap_or_else(|| right_table.clone());
 
         // Check if right table is a view
         let right_view = engine
@@ -1458,8 +1628,7 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
 
             if !view_ast.is_empty() {
                 if let Statement::Query(view_query) = &view_ast[0] {
-                    let view_result = execute_sql_query(engine, view_query)?;
-                    match view_result {
+                    match execute_sql_query(engine, view_query)? {
                         QueryResult::Rows { data } => data,
                         _ => vec![],
                     }
@@ -1476,29 +1645,44 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
                 as_of: current_temporal_as_of(),
                 limit: None,
             };
-
-            let right_result = engine.execute_query(right_query)?;
-            match right_result {
+            match engine.execute_query(right_query)? {
                 QueryResult::Rows { data } => data,
                 _ => vec![],
             }
         };
 
-        // Perform the JOIN with current accumulated result
+        // Legacy ON-orientation fix: the underlying perform_*_join
+        // functions extract columns in source-text order, which is
+        // wrong when ON is written with the new right table on the
+        // LEFT of `=` (e.g. `ON o.customer_id = c.id` where the
+        // accumulator holds `c` and the new right is `o`). The
+        // optimized single-join path already handles this via
+        // `orient_join_columns_to_from`; this is the missing
+        // counterpart for multi-join legacy.
+        let orient_ref = |constraint: &sqlparser::ast::JoinConstraint| {
+            orient_constraint_for_right_alias(constraint, &right_alias)
+                .unwrap_or_else(|| constraint.clone())
+        };
         joined_rows = match &join.join_operator {
             JoinOperator::Inner(constraint) => {
-                perform_inner_join(joined_rows, right_rows, constraint)?
+                perform_inner_join(joined_rows, right_rows, &orient_ref(constraint), &right_alias)?
             }
             JoinOperator::LeftOuter(constraint) => {
-                perform_left_join(joined_rows, right_rows, constraint)?
+                perform_left_join(joined_rows, right_rows, &orient_ref(constraint), &right_alias)?
             }
-            JoinOperator::CrossJoin => perform_cross_join(joined_rows, right_rows),
+            JoinOperator::CrossJoin => {
+                perform_cross_join(joined_rows, right_rows, &right_alias)
+            }
             JoinOperator::RightOuter(constraint) => {
-                // RIGHT JOIN is LEFT JOIN with swapped tables
-                perform_left_join(right_rows, joined_rows, constraint)?
+                // RIGHT JOIN flips sides; orient against the swapped
+                // layout (accumulator becomes the new "right" of the
+                // underlying LEFT join).
+                let oriented = orient_constraint_for_right_alias(constraint, &right_alias)
+                    .unwrap_or_else(|| constraint.clone());
+                perform_left_join(right_rows, joined_rows, &oriented, &right_alias)?
             }
             JoinOperator::FullOuter(constraint) => {
-                perform_full_outer_join(joined_rows, right_rows, constraint)?
+                perform_full_outer_join(joined_rows, right_rows, &orient_ref(constraint), &right_alias)?
             }
             _ => {
                 return Err(DriftError::InvalidQuery(
@@ -1555,48 +1739,19 @@ fn perform_inner_join(
     left_rows: Vec<Value>,
     right_rows: Vec<Value>,
     constraint: &sqlparser::ast::JoinConstraint,
+    right_alias: &str,
 ) -> Result<Vec<Value>> {
     let (left_col, right_col) = extract_join_columns(constraint)?;
     let mut result = Vec::new();
 
     for left_row in &left_rows {
         for right_row in &right_rows {
-            // Handle both unprefixed and prefixed column names in join condition
-            let left_val = left_row.get(&left_col).or_else(|| {
-                // Try with various table prefixes
-                left_row.as_object().and_then(|obj| {
-                    obj.iter()
-                        .find(|(k, _)| k.ends_with(&format!("_{}", left_col)))
-                        .map(|(_, v)| v)
-                })
-            });
+            let left_val = lookup_join_value(left_row, &left_col);
             let right_val = right_row.get(&right_col);
 
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
-                    // Merge rows - use table prefixes for disambiguation
-                    let mut merged = left_row.as_object().cloned().unwrap_or_default();
-
-                    if let Some(right_obj) = right_row.as_object() {
-                        for (key, value) in right_obj {
-                            // For multiple JOINs, create unique prefixes
-                            let new_key = if merged.contains_key(key) {
-                                // Find a unique prefix
-                                let mut counter = 1;
-                                let mut unique_key = format!("t{}_{}", counter, key);
-                                while merged.contains_key(&unique_key) {
-                                    counter += 1;
-                                    unique_key = format!("t{}_{}", counter, key);
-                                }
-                                unique_key
-                            } else {
-                                key.clone()
-                            };
-                            merged.insert(new_key, value.clone());
-                        }
-                    }
-
-                    result.push(json!(merged));
+                    result.push(merge_join_rows(left_row, right_row, right_alias));
                 }
             }
         }
@@ -1605,51 +1760,175 @@ fn perform_inner_join(
     Ok(result)
 }
 
+/// Sample the union of all keys across a set of rows. Used to drive
+/// NULL-padding for unmatched rows on the opposing side of an OUTER
+/// join — without an explicit schema, this is the most reliable signal
+/// for "what columns does the other side have?".
+fn collect_row_keys(rows: &[Value]) -> std::collections::HashSet<String> {
+    let mut keys = std::collections::HashSet::new();
+    for row in rows {
+        if let Some(obj) = row.as_object() {
+            for k in obj.keys() {
+                keys.insert(k.clone());
+            }
+        }
+    }
+    keys
+}
+
+/// Build a NULL-padded merged row for the unmatched-left case of an
+/// OUTER join. Left columns appear bare; the right's columns appear
+/// as explicit `Value::Null` — either bare (no collision) or
+/// `{right_alias}.{col}` (collision with a left key). This matches
+/// `merge_join_rows`'s key scheme so resolution (which tries
+/// `alias.col` then bare) sees consistent shape across matched and
+/// unmatched rows.
+///
+/// Without explicit NULL-padding, alias-aware resolution of
+/// `d.colliding_col` on an unmatched-left row would fall back to the
+/// left's bare `colliding_col` (the same as a matched-left collision
+/// would have hidden). That made `WHERE d.col IS NULL` silently
+/// behave wrong: the anti-join pattern's whole point is for those
+/// rows to surface.
+fn null_pad_right_into(left_row: &Value, right_keys: &std::collections::HashSet<String>, right_alias: &str) -> Value {
+    let mut merged = left_row.as_object().cloned().unwrap_or_default();
+    for col in right_keys {
+        let key = if merged.contains_key(col) {
+            format!("{}.{}", right_alias, col)
+        } else {
+            col.clone()
+        };
+        merged.entry(key).or_insert(Value::Null);
+    }
+    json!(merged)
+}
+
+/// Same as `null_pad_right_into`, but for unmatched-RIGHT rows in a
+/// FULL OUTER join. Right columns stay bare (no collision since left
+/// columns are absent); left columns appear as bare null entries
+/// (which collision-prefixing would have moved aside in a matched
+/// row, but we can't reproduce the matched row's positional choice
+/// here without left's actual values — instead, we just NULL the
+/// known left columns).
+fn null_pad_left_into(right_row: &Value, left_keys: &std::collections::HashSet<String>) -> Value {
+    let mut merged = right_row.as_object().cloned().unwrap_or_default();
+    for col in left_keys {
+        if !merged.contains_key(col) {
+            merged.insert(col.clone(), Value::Null);
+        }
+    }
+    json!(merged)
+}
+
+/// Unified row-merge for all join variants. Left columns stay bare;
+/// right columns are inserted under TWO keys: always the qualified
+/// `{right_alias}.{col}` form, and additionally the bare `col` form
+/// when no left-side collision exists.
+///
+/// The double-keying is what makes multi-join (slice 6) work: at each
+/// join step in the reordered chain, the join condition may reference
+/// a column on a non-seed table that's already in the accumulator.
+/// Without the qualified key being present unconditionally, a bare
+/// lookup would hit the seed's value when the seed also had that
+/// column name. Storage cost: ~2x for non-colliding right-side cols,
+/// which is acceptable for correctness across arbitrary tree shapes.
+///
+/// For collisions the bare key already belongs to the left and we
+/// skip the second insert, preserving the slice-3 left-precedence
+/// rule for unqualified column references.
+///
+/// The separator is `.` — SQL identifiers can't contain `.`, so the
+/// qualified key never collides with a legitimate column name.
+fn merge_join_rows(left_row: &Value, right_row: &Value, right_alias: &str) -> Value {
+    let mut merged = left_row.as_object().cloned().unwrap_or_default();
+    if let Some(right_obj) = right_row.as_object() {
+        for (key, value) in right_obj {
+            let qualified = format!("{}.{}", right_alias, key);
+            merged.insert(qualified, value.clone());
+            if !merged.contains_key(key) {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    json!(merged)
+}
+
+/// Look up a join-column value on a row, handling alias-prefixed names
+/// from earlier joins in a multi-join chain. The left side of an
+/// `(A JOIN B) JOIN C` is itself a merged row whose collision keys are
+/// of the form `B.col`; resolution checks bare `col` first, then any
+/// suffix matching `.col`.
+fn lookup_join_value<'a>(row: &'a Value, col: &str) -> Option<&'a Value> {
+    if let Some(v) = row.get(col) {
+        return Some(v);
+    }
+    let obj = row.as_object()?;
+    let needle = format!(".{}", col);
+    obj.iter()
+        .find(|(k, _)| k.ends_with(&needle))
+        .map(|(_, v)| v)
+}
+
+/// Resolve a `CompoundIdentifier`-shaped column reference (`alias.col`)
+/// against a (possibly merged) row. Tries `{alias}.{col}` first (the
+/// key right-side collisions get from `merge_join_rows`), then falls
+/// back to bare `{col}`. Single-part references degenerate to the bare
+/// lookup.
+///
+/// This is the projection-side counterpart of the resolution rule in
+/// `evaluate_value_expression`'s `CompoundIdentifier` branch — both
+/// MUST stay in sync or the value seen by WHERE differs from the value
+/// seen by SELECT.
+fn resolve_qualified_column(
+    idents: &[sqlparser::ast::Ident],
+    row: &Value,
+) -> Option<Value> {
+    let row_obj = row.as_object()?;
+    if idents.len() >= 2 {
+        let alias = &idents[0].value;
+        let column = &idents[1].value;
+        let qualified = format!("{}.{}", alias, column);
+        if let Some(v) = row_obj.get(&qualified) {
+            return Some(v.clone());
+        }
+        return row_obj.get(column).cloned();
+    }
+    let column = &idents.last()?.value;
+    row_obj.get(column).cloned()
+}
+
 fn perform_left_join(
     left_rows: Vec<Value>,
     right_rows: Vec<Value>,
     constraint: &sqlparser::ast::JoinConstraint,
+    right_alias: &str,
 ) -> Result<Vec<Value>> {
     let (left_col, right_col) = extract_join_columns(constraint)?;
     let mut result = Vec::new();
+    // Compute the right's column set once so unmatched-left rows get
+    // explicit NULL-padding for the right side (`d.col = null`). This
+    // lets alias-aware resolution distinguish "right was absent" from
+    // "right's col happens to be falsy" — anti-join queries
+    // (`WHERE d.col IS NULL`) depend on it.
+    let right_keys = collect_row_keys(&right_rows);
 
     for left_row in &left_rows {
         let mut matched = false;
 
         for right_row in &right_rows {
-            // Handle both unprefixed and prefixed column names in join condition
-            let left_val = left_row
-                .get(&left_col)
-                .or_else(|| left_row.get(format!("right_{}", left_col)));
-            let right_val = right_row
-                .get(&right_col)
-                .or_else(|| right_row.get(format!("right_{}", right_col)));
+            let left_val = lookup_join_value(left_row, &left_col);
+            let right_val = lookup_join_value(right_row, &right_col);
 
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
-                    // Merge rows
-                    let mut merged = left_row.as_object().cloned().unwrap_or_default();
-
-                    if let Some(right_obj) = right_row.as_object() {
-                        for (key, value) in right_obj {
-                            // Only prefix if key already exists to avoid conflicts
-                            if merged.contains_key(key) && !key.starts_with("right_") {
-                                merged.insert(format!("right_{}", key), value.clone());
-                            } else {
-                                merged.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-
-                    result.push(json!(merged));
+                    result.push(merge_join_rows(left_row, right_row, right_alias));
                     matched = true;
                 }
             }
         }
 
-        // If no match found, still include left row (with NULLs for right)
         if !matched {
-            result.push(left_row.clone());
+            result.push(null_pad_right_into(left_row, &right_keys, right_alias));
         }
     }
 
@@ -1660,74 +1939,1402 @@ fn perform_full_outer_join(
     left_rows: Vec<Value>,
     right_rows: Vec<Value>,
     constraint: &sqlparser::ast::JoinConstraint,
+    right_alias: &str,
 ) -> Result<Vec<Value>> {
     let (left_col, right_col) = extract_join_columns(constraint)?;
     let mut result = Vec::new();
     let mut matched_right = std::collections::HashSet::new();
+    let right_keys = collect_row_keys(&right_rows);
+    let left_keys = collect_row_keys(&left_rows);
 
-    // First, do a LEFT JOIN
     for left_row in &left_rows {
         let mut matched = false;
-
         for (right_idx, right_row) in right_rows.iter().enumerate() {
-            let left_val = left_row.get(&left_col);
-            let right_val = right_row.get(&right_col);
-
+            let left_val = lookup_join_value(left_row, &left_col);
+            let right_val = lookup_join_value(right_row, &right_col);
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
-                    // Merge rows
-                    let mut merged = left_row.as_object().cloned().unwrap_or_default();
-
-                    if let Some(right_obj) = right_row.as_object() {
-                        for (key, value) in right_obj {
-                            if merged.contains_key(key) && !key.starts_with("right_") {
-                                merged.insert(format!("right_{}", key), value.clone());
-                            } else {
-                                merged.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-
-                    result.push(json!(merged));
+                    result.push(merge_join_rows(left_row, right_row, right_alias));
                     matched = true;
                     matched_right.insert(right_idx);
                 }
             }
         }
-
-        // If no match found, still include left row (with NULLs for right)
         if !matched {
-            result.push(left_row.clone());
+            result.push(null_pad_right_into(left_row, &right_keys, right_alias));
         }
     }
 
-    // Then add unmatched right rows (with NULLs for left)
+    // Unmatched-right phase. Pad with NULL for left's columns so
+    // `SELECT u.col` from an unmatched-right row resolves to NULL
+    // rather than falling back to bare and silently hitting the
+    // right's value. Note this only NULL-pads the LEFT keys that
+    // don't already appear on the right (the right's columns stay
+    // bare since left's are absent — no collision possible).
     for (right_idx, right_row) in right_rows.iter().enumerate() {
         if !matched_right.contains(&right_idx) {
-            result.push(right_row.clone());
+            result.push(null_pad_left_into(right_row, &left_keys));
         }
     }
 
     Ok(result)
 }
 
-fn perform_cross_join(left_rows: Vec<Value>, right_rows: Vec<Value>) -> Vec<Value> {
-    let mut result = Vec::new();
+/// Optimizer-driven single-join path covering INNER, LEFT/RIGHT OUTER,
+/// and FULL OUTER. RIGHT OUTER is normalized to LEFT OUTER by swapping
+/// sides; the planner only sees `JoinType::{Inner, LeftOuter, FullOuter}`.
+///
+/// Returns `Ok(None)` for shapes outside scope (views, multi-join,
+/// CROSS JOIN, complex ON conditions), letting the caller fall through
+/// to the legacy implementation, which is correctness-preserving.
+///
+/// Wiring active in this path:
+/// - Per-side `Engine::select` honors slices 1–3 (index selection,
+///   predicate order, range scans) — for predicates pushed to the
+///   *preserving* side.
+/// - The join itself picks algorithm via `plan_single_join` (slice 4)
+///   and respects the OUTER-join build-side constraint.
+/// - Alias-aware row merging from the bug-fix slice keeps
+///   `{right_alias}.{col}` collisions resolvable post-join.
+fn try_optimized_single_join(
+    engine: &mut Engine,
+    select: &Select,
+) -> Result<Option<QueryResult>> {
+    // Shape gate.
+    if select.from.len() != 1 || select.from[0].joins.len() != 1 {
+        return Ok(None);
+    }
+    let join = &select.from[0].joins[0];
 
-    for left_row in &left_rows {
-        for right_row in &right_rows {
-            let mut merged = left_row.as_object().cloned().unwrap_or_default();
+    // Decode the SQL join type and any side-swap. RIGHT OUTER → LEFT
+    // OUTER with sides swapped (PostgreSQL convention). CROSS JOIN and
+    // anything else falls through.
+    use crate::optimizer::JoinType as JT;
+    let (sql_constraint, plan_join_type, swap_sides) = match &join.join_operator {
+        JoinOperator::Inner(c) => (c, JT::Inner, false),
+        JoinOperator::LeftOuter(c) => (c, JT::LeftOuter, false),
+        JoinOperator::RightOuter(c) => (c, JT::LeftOuter, true),
+        JoinOperator::FullOuter(c) => (c, JT::FullOuter, false),
+        _ => return Ok(None),
+    };
 
-            if let Some(right_obj) = right_row.as_object() {
-                for (key, value) in right_obj {
-                    merged.insert(format!("right_{}", key), value.clone());
+    // Both sides must be real tables (not views, not subqueries).
+    let (sql_left_table, sql_left_alias) =
+        match extract_table_with_alias(&select.from[0].relation) {
+            Ok(pair) => pair,
+            Err(_) => return Ok(None),
+        };
+    let (sql_right_table, sql_right_alias) = match extract_table_with_alias(&join.relation) {
+        Ok(pair) => pair,
+        Err(_) => return Ok(None),
+    };
+    let known_views: Vec<String> = engine.list_views().into_iter().map(|v| v.name).collect();
+    if known_views.contains(&sql_left_table) || known_views.contains(&sql_right_table) {
+        return Ok(None);
+    }
+
+    // Extract join columns AND their alias prefixes from the ON
+    // expression. `extract_join_columns` returns columns in the order
+    // they appear in `=`, which isn't necessarily the FROM order
+    // (e.g. `ON u.dept_id = d.id` extracts (dept_id, id) even when the
+    // SQL is `FROM depts d LEFT JOIN users u ...`). We use the prefix
+    // to map each column to its actual table.
+    let (sql_left_col, sql_right_col) =
+        match orient_join_columns_to_from(sql_constraint, &sql_left_alias, &sql_right_alias) {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+
+    // After the RIGHT→LEFT rewrite, `plan_*` and the executor see the
+    // swapped layout. We still apply the user's original WHERE post-
+    // join to the merged row (which is keyed by the original SQL
+    // aliases), so we do NOT swap aliases for the alias_to_table map.
+    let (left_table, right_table, left_col, right_col, _left_alias, right_alias) = if swap_sides {
+        (
+            sql_right_table.clone(),
+            sql_left_table.clone(),
+            sql_right_col.clone(),
+            sql_left_col.clone(),
+            sql_right_alias.clone(),
+            sql_left_alias.clone(),
+        )
+    } else {
+        (
+            sql_left_table.clone(),
+            sql_right_table.clone(),
+            sql_left_col.clone(),
+            sql_right_col.clone(),
+            sql_left_alias.clone(),
+            sql_right_alias.clone(),
+        )
+    };
+
+    // Predicate pushdown — only to the *preserving* side(s).
+    //
+    // - INNER: both sides preserve no nulls; push to either.
+    // - LEFT OUTER: only the LEFT side preserves; pushing to right
+    //   would filter rows the join is supposed to NULL-pad.
+    // - FULL OUTER: both sides can be NULL-padded; no pushdown.
+    //
+    // The original WHERE always runs post-join, so a missed pushdown
+    // is a perf loss only. The pushdown POLICY here is about
+    // correctness: pushing a predicate to a side that could be
+    // NULL-padded would silently drop rows that should appear with
+    // NULLs and then be filtered (or not) by the post-join WHERE.
+    let pushdown_targets: &[&str] = match plan_join_type {
+        JT::Inner => &["left", "right"],
+        JT::LeftOuter => &["left"],
+        JT::FullOuter => &[],
+    };
+    let mut alias_to_table: HashMap<String, String> = HashMap::new();
+    alias_to_table.insert(sql_left_table.clone(), sql_left_table.clone());
+    if let Some(a) = &sql_left_alias {
+        alias_to_table.insert(a.clone(), sql_left_table.clone());
+    }
+    alias_to_table.insert(sql_right_table.clone(), sql_right_table.clone());
+    if let Some(a) = &sql_right_alias {
+        alias_to_table.insert(a.clone(), sql_right_table.clone());
+    }
+    let mut pushdown: HashMap<String, Vec<WhereCondition>> = HashMap::new();
+    if let Some(selection) = &select.selection {
+        collect_pushdown_predicates(selection, &alias_to_table, &mut pushdown);
+    }
+    // Drop pushdown for the NULL-padded side(s).
+    if !pushdown_targets.contains(&"left") {
+        pushdown.remove(&sql_left_table);
+    }
+    if !pushdown_targets.contains(&"right") {
+        pushdown.remove(&sql_right_table);
+    }
+
+    // Fetch via `Engine::select` (slices 1–3 wiring applies per-side).
+    let left_rows = fetch_table_rows(
+        engine,
+        &left_table,
+        pushdown.remove(&left_table).unwrap_or_default(),
+    )?;
+    let right_rows = fetch_table_rows(
+        engine,
+        &right_table,
+        pushdown.remove(&right_table).unwrap_or_default(),
+    )?;
+
+    let join_node = engine.query_optimizer().plan_single_join(
+        &left_table,
+        &right_table,
+        &left_col,
+        &right_col,
+        plan_join_type,
+    );
+
+    let right_alias_str = right_alias.unwrap_or_else(|| right_table.clone());
+    // Always synthesize an oriented constraint for the NL helpers.
+    // They call `extract_join_columns(constraint)`, which returns
+    // columns in source-text order — that order may not match the
+    // FROM-clause table order (`FROM A JOIN B ON B.x = A.y`). The
+    // hash variants take columns directly so this only matters for
+    // NL, but we synthesize unconditionally for shape consistency.
+    let effective_constraint = synthesize_eq_constraint(&left_col, &right_col);
+
+    let joined_rows = run_join_algorithm(
+        &join_node,
+        plan_join_type,
+        &left_rows,
+        &right_rows,
+        &left_col,
+        &right_col,
+        &effective_constraint,
+        &right_alias_str,
+    )?;
+
+    // Apply the original WHERE on joined output. Predicates that were
+    // pushed down are redundantly re-checked here — harmless, since
+    // a row that satisfied them per-side still satisfies them post-join.
+    let filtered_rows = if let Some(selection) = &select.selection {
+        filter_rows(engine, joined_rows, selection)?
+    } else {
+        joined_rows
+    };
+
+    // Aggregation / projection mirror the legacy path.
+    let has_aggregates = select.projection.iter().any(|item| {
+        matches!(
+            item,
+            SelectItem::UnnamedExpr(Expr::Function(_))
+                | SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    ..
+                }
+        )
+    });
+    let has_group_by =
+        matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
+
+    if !has_aggregates && !has_group_by {
+        let projected_rows = project_columns(filtered_rows, select)?;
+        return Ok(Some(QueryResult::Rows {
+            data: projected_rows,
+        }));
+    }
+    let aggregated = execute_aggregation(&filtered_rows, select)?;
+    let result = if let Some(having) = &select.having {
+        filter_aggregated_rows(aggregated, having)?
+    } else {
+        aggregated
+    };
+    Ok(Some(QueryResult::Rows { data: result }))
+}
+
+// ─── Multi-join reordering (slice 6) ────────────────────────────────
+//
+// Pure-INNER multi-join queries (3+ tables) route through a greedy
+// reorderer that picks join order by table-level row-count estimates.
+// The executor walks the resulting left-deep tree, calling per-leaf
+// `Engine::select` (slices 1–3 wiring) and `run_join_algorithm`
+// (slices 4–5) at each step.
+//
+// Scope:
+// - Pure INNER chains only. Mixed INNER+OUTER falls through to legacy.
+// - Left-deep trees (one new table per step). Bushy trees deferred.
+// - Predicate-graph connectivity required: each join step must reuse
+//   an alias already in the accumulator. Cartesian re-orderings
+//   (no shared predicate) reject and fall through to source order.
+// - Without `ANALYZE`-populated row counts, the heuristic degenerates
+//   to source order. Tests seed stats manually to force reorder.
+
+/// Per-leaf info: the table, its alias, and any single-table
+/// pushdown predicates from the WHERE clause.
+#[derive(Debug, Clone)]
+struct MultiJoinLeaf {
+    table: String,
+    alias: String,
+    pushdown: Vec<WhereCondition>,
+}
+
+/// Edge in the join graph: an equi-join condition between two
+/// alias-qualified columns. Direction is unspecified at extraction
+/// time; the planner orients each edge as it builds the order.
+#[derive(Debug, Clone)]
+struct MultiJoinEdge {
+    a_alias: String,
+    a_col: String,
+    b_alias: String,
+    b_col: String,
+}
+
+/// A single join step in the executable plan. `left_alias` and
+/// `left_col` reference the accumulator (which carries every
+/// previously-joined alias); `right_*` references the new leaf
+/// being joined.
+#[derive(Debug, Clone)]
+struct MultiJoinStep {
+    /// New leaf being joined into the accumulator.
+    right: MultiJoinLeaf,
+    /// Alias of a table already in the accumulator that this step's
+    /// ON condition references. Kept for future alias-qualified
+    /// lookup; the current `lookup_join_value` uses bare-then-suffix
+    /// fallback which suffices when the joined columns are uniquely
+    /// named across leaves (the common case). Disambiguation by
+    /// alias is a follow-up.
+    #[allow(dead_code)]
+    left_alias: String,
+    /// Column on that left-side alias.
+    left_col: String,
+    /// Column on the right leaf.
+    right_col: String,
+}
+
+/// Executable multi-join plan. Left-deep: starts from `seed`, applies
+/// `steps` in order, each adding one new leaf.
+#[derive(Debug, Clone)]
+struct MultiJoinExecPlan {
+    seed: MultiJoinLeaf,
+    steps: Vec<MultiJoinStep>,
+}
+
+/// A segment of the join chain. INNER segments can reorder internally;
+/// OUTER segments are fixed anchors.
+#[derive(Debug, Clone)]
+enum JoinChainSegment {
+    /// Contiguous INNER joins. The first segment includes the FROM
+    /// table as its initial leaf; extension segments contain only
+    /// new leaves whose ON clauses reference the accumulator.
+    Inner {
+        leaves: Vec<MultiJoinLeaf>,
+        edges: Vec<MultiJoinEdge>,
+    },
+    /// A single LEFT OUTER or FULL OUTER anchor. Stays in place
+    /// regardless of stats; reordering across this would change SQL
+    /// semantics (rows that should be NULL-padded would be lost).
+    Outer {
+        right: MultiJoinLeaf,
+        join_type: crate::optimizer::JoinType,
+        edge: MultiJoinEdge,
+    },
+}
+
+/// Entry point: detect multi-join chain, segment it at OUTER
+/// boundaries, reorder each INNER segment independently, execute
+/// in segment order. Pure-INNER chains are the degenerate case
+/// (one segment, no anchors). Returns `Ok(None)` for shapes we
+/// don't handle (views, RIGHT OUTER, CROSS JOIN, USING, complex
+/// ON expressions) → legacy path.
+fn try_optimized_multi_join(
+    engine: &mut Engine,
+    select: &Select,
+) -> Result<Option<QueryResult>> {
+    use crate::optimizer::JoinType;
+    // Shape gate.
+    if select.from.len() != 1 || select.from[0].joins.len() < 2 {
+        return Ok(None);
+    }
+
+    // Extract FROM leaf.
+    let known_views: Vec<String> = engine.list_views().into_iter().map(|v| v.name).collect();
+    let (from_table, from_alias_opt) = match extract_table_with_alias(&select.from[0].relation) {
+        Ok(pair) => pair,
+        Err(_) => return Ok(None),
+    };
+    if known_views.contains(&from_table) {
+        return Ok(None);
+    }
+    let from_alias = from_alias_opt.unwrap_or_else(|| from_table.clone());
+    let from_leaf = MultiJoinLeaf {
+        table: from_table.clone(),
+        alias: from_alias.clone(),
+        pushdown: vec![],
+    };
+
+    // Build segments. Initial segment = FROM table; INNER joins
+    // append to the current Inner segment; OUTER joins close the
+    // current Inner segment and add an Outer anchor.
+    let mut segments: Vec<JoinChainSegment> = vec![JoinChainSegment::Inner {
+        leaves: vec![from_leaf],
+        edges: vec![],
+    }];
+    for join in &select.from[0].joins {
+        let (r_table, r_alias_opt) = match extract_table_with_alias(&join.relation) {
+            Ok(pair) => pair,
+            Err(_) => return Ok(None),
+        };
+        if known_views.contains(&r_table) {
+            return Ok(None);
+        }
+        let r_alias = r_alias_opt.unwrap_or_else(|| r_table.clone());
+        let r_leaf = MultiJoinLeaf {
+            table: r_table.clone(),
+            alias: r_alias.clone(),
+            pushdown: vec![],
+        };
+        match &join.join_operator {
+            JoinOperator::Inner(c) => {
+                let edge = match extract_qualified_edge(c) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                // Append to the last Inner segment, or start a new one
+                // (if the previous segment was an Outer anchor).
+                if let Some(JoinChainSegment::Inner { leaves, edges }) = segments.last_mut() {
+                    leaves.push(r_leaf);
+                    edges.push(edge);
+                } else {
+                    segments.push(JoinChainSegment::Inner {
+                        leaves: vec![r_leaf],
+                        edges: vec![edge],
+                    });
                 }
             }
-
-            result.push(json!(merged));
+            JoinOperator::LeftOuter(c) => {
+                let edge = match extract_qualified_edge(c) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                segments.push(JoinChainSegment::Outer {
+                    right: r_leaf,
+                    join_type: JoinType::LeftOuter,
+                    edge,
+                });
+            }
+            JoinOperator::FullOuter(c) => {
+                let edge = match extract_qualified_edge(c) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                segments.push(JoinChainSegment::Outer {
+                    right: r_leaf,
+                    join_type: JoinType::FullOuter,
+                    edge,
+                });
+            }
+            // RIGHT OUTER and CROSS JOIN: defer. The legacy path
+            // handles them (with the ON-orientation fix applied
+            // earlier in this slice).
+            _ => return Ok(None),
         }
     }
 
+    // Predicate pushdown: build the alias→table map across ALL
+    // segments, then push single-table predicates ONLY to INNER
+    // segment leaves. OUTER anchor right sides do NOT receive
+    // pushdown — filtering them per-side would drop rows that the
+    // join is supposed to NULL-pad.
+    if let Some(selection) = &select.selection {
+        let mut alias_to_table: HashMap<String, String> = HashMap::new();
+        for seg in &segments {
+            match seg {
+                JoinChainSegment::Inner { leaves, .. } => {
+                    for leaf in leaves {
+                        alias_to_table.insert(leaf.alias.clone(), leaf.table.clone());
+                        alias_to_table.insert(leaf.table.clone(), leaf.table.clone());
+                    }
+                }
+                JoinChainSegment::Outer { right, .. } => {
+                    // Recognize the alias so the post-join WHERE
+                    // can evaluate; do NOT enroll for pushdown.
+                    alias_to_table.insert(right.alias.clone(), right.table.clone());
+                    alias_to_table.insert(right.table.clone(), right.table.clone());
+                }
+            }
+        }
+        let mut pushdown_by_table: HashMap<String, Vec<WhereCondition>> = HashMap::new();
+        collect_pushdown_predicates(selection, &alias_to_table, &mut pushdown_by_table);
+        for seg in &mut segments {
+            if let JoinChainSegment::Inner { leaves, .. } = seg {
+                for leaf in leaves {
+                    if let Some(conds) = pushdown_by_table.remove(&leaf.table) {
+                        leaf.pushdown = conds;
+                    }
+                }
+            }
+        }
+    }
+
+    // Execute segments in order.
+    let mut accumulator: Vec<Value> = Vec::new();
+    let mut joined_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seed_alias: Option<String> = None;
+    let mut seed_table: Option<String> = None;
+    let mut initial_done = false;
+
+    for seg in segments {
+        match seg {
+            JoinChainSegment::Inner { leaves, edges } => {
+                if !initial_done {
+                    // Initial segment includes FROM. If it has just
+                    // FROM and no other leaves, the accumulator is
+                    // just FROM's rows; no joins to execute.
+                    if leaves.len() == 1 {
+                        accumulator = fetch_table_rows(engine, &leaves[0].table, leaves[0].pushdown.clone())?;
+                        seed_alias = Some(leaves[0].alias.clone());
+                        seed_table = Some(leaves[0].table.clone());
+                        joined_aliases.insert(leaves[0].alias.clone());
+                    } else {
+                        let plan = match build_multi_join_plan(engine, &leaves, &edges) {
+                            Some(p) => p,
+                            None => return Ok(None),
+                        };
+                        seed_alias = Some(plan.seed.alias.clone());
+                        seed_table = Some(plan.seed.table.clone());
+                        for leaf in &leaves {
+                            joined_aliases.insert(leaf.alias.clone());
+                        }
+                        accumulator = execute_multi_join_plan(engine, &plan)?;
+                    }
+                    initial_done = true;
+                } else {
+                    // Extension segment: greedy-order new leaves
+                    // against the existing accumulator's aliases.
+                    let steps = match plan_extension_steps(
+                        engine,
+                        &leaves,
+                        &edges,
+                        &joined_aliases,
+                    ) {
+                        Some(s) => s,
+                        None => return Ok(None),
+                    };
+                    for step in steps {
+                        accumulator = execute_join_step(
+                            engine,
+                            accumulator,
+                            &step,
+                            seed_alias.as_deref().unwrap_or(""),
+                            seed_table.as_deref().unwrap_or(""),
+                            JoinType::Inner,
+                        )?;
+                        joined_aliases.insert(step.right.alias.clone());
+                    }
+                }
+            }
+            JoinChainSegment::Outer { right, join_type, edge } => {
+                // Outer anchor: source-order, no reordering. Resolve
+                // edge direction (which side is the accumulator).
+                let (left_alias, left_col, right_col) =
+                    if joined_aliases.contains(&edge.a_alias) && edge.b_alias == right.alias {
+                        (edge.a_alias.clone(), edge.a_col.clone(), edge.b_col.clone())
+                    } else if joined_aliases.contains(&edge.b_alias) && edge.a_alias == right.alias {
+                        (edge.b_alias.clone(), edge.b_col.clone(), edge.a_col.clone())
+                    } else {
+                        return Ok(None);
+                    };
+                let step = MultiJoinStep {
+                    right: right.clone(),
+                    left_alias,
+                    left_col,
+                    right_col,
+                };
+                accumulator = execute_join_step(
+                    engine,
+                    accumulator,
+                    &step,
+                    seed_alias.as_deref().unwrap_or(""),
+                    seed_table.as_deref().unwrap_or(""),
+                    join_type,
+                )?;
+                joined_aliases.insert(right.alias.clone());
+            }
+        }
+    }
+
+    // Use accumulator as the joined_rows for downstream filter/project.
+    let joined_rows = accumulator;
+    let _ = from_table; // kept for symmetry; alias map covers lookup.
+    let _ = from_alias;
+
+    // Post-join WHERE filter. Pushed-down single-table predicates were
+    // already applied at the leaves; multi-table or unqualified
+    // predicates are re-checked here (and pushed ones are harmlessly
+    // re-checked too — see slice 4's commentary).
+    let filtered_rows = if let Some(selection) = &select.selection {
+        filter_rows(engine, joined_rows, selection)?
+    } else {
+        joined_rows
+    };
+
+    // Aggregation / projection mirror the single-join path.
+    let has_aggregates = select.projection.iter().any(|item| {
+        matches!(
+            item,
+            SelectItem::UnnamedExpr(Expr::Function(_))
+                | SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    ..
+                }
+        )
+    });
+    let has_group_by =
+        matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
+
+    if !has_aggregates && !has_group_by {
+        let projected_rows = project_columns(filtered_rows, select)?;
+        return Ok(Some(QueryResult::Rows {
+            data: projected_rows,
+        }));
+    }
+    let aggregated = execute_aggregation(&filtered_rows, select)?;
+    let result = if let Some(having) = &select.having {
+        filter_aggregated_rows(aggregated, having)?
+    } else {
+        aggregated
+    };
+    Ok(Some(QueryResult::Rows { data: result }))
+}
+
+/// Parse an ON condition into a `MultiJoinEdge`. Requires both sides
+/// to be `alias.col` form so the planner can map columns to tables
+/// independently of position. Anything else (USING, unprefixed
+/// names, AND chains, ranges) → `None`, falling through to legacy.
+fn extract_qualified_edge(constraint: &sqlparser::ast::JoinConstraint) -> Option<MultiJoinEdge> {
+    use sqlparser::ast::{BinaryOperator, Expr, JoinConstraint};
+    match constraint {
+        JoinConstraint::On(Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        }) => {
+            let (lhs_prefix, lhs_col) = unpack_qualified(left)?;
+            let (rhs_prefix, rhs_col) = unpack_qualified(right)?;
+            Some(MultiJoinEdge {
+                a_alias: lhs_prefix?,
+                a_col: lhs_col,
+                b_alias: rhs_prefix?,
+                b_col: rhs_col,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Plan an extension segment: order `new_leaves` such that each one
+/// has an edge connecting it to an alias that's already joined (in
+/// `pre_joined_aliases` or in a prior step of this segment). Picks
+/// the cheapest eligible leaf at each step. Returns `None` if any
+/// leaf can't be connected (disconnected predicate graph) — caller
+/// falls through to legacy.
+///
+/// Unlike `build_multi_join_plan`, there's no seed selection — the
+/// accumulator is already populated when we get here.
+fn plan_extension_steps(
+    engine: &Engine,
+    new_leaves: &[MultiJoinLeaf],
+    edges: &[MultiJoinEdge],
+    pre_joined_aliases: &std::collections::HashSet<String>,
+) -> Option<Vec<MultiJoinStep>> {
+    let row_count = |table: &str| -> usize {
+        engine
+            .query_optimizer()
+            .statistics_row_count(table)
+            .unwrap_or(0)
+    };
+
+    let mut joined: std::collections::HashSet<String> = pre_joined_aliases.clone();
+    let mut remaining: Vec<usize> = (0..new_leaves.len()).collect();
+    let mut steps: Vec<MultiJoinStep> = Vec::new();
+
+    while !remaining.is_empty() {
+        let mut best: Option<(usize, MultiJoinStep)> = None;
+        let mut best_cost: usize = usize::MAX;
+        for (pos, &idx) in remaining.iter().enumerate() {
+            let leaf = &new_leaves[idx];
+            for edge in edges {
+                let step = if edge.a_alias == leaf.alias && joined.contains(&edge.b_alias) {
+                    Some(MultiJoinStep {
+                        right: leaf.clone(),
+                        left_alias: edge.b_alias.clone(),
+                        left_col: edge.b_col.clone(),
+                        right_col: edge.a_col.clone(),
+                    })
+                } else if edge.b_alias == leaf.alias && joined.contains(&edge.a_alias) {
+                    Some(MultiJoinStep {
+                        right: leaf.clone(),
+                        left_alias: edge.a_alias.clone(),
+                        left_col: edge.a_col.clone(),
+                        right_col: edge.b_col.clone(),
+                    })
+                } else {
+                    None
+                };
+                if let Some(step) = step {
+                    let cost = row_count(&leaf.table);
+                    if cost < best_cost
+                        || (cost == best_cost
+                            && best.as_ref().map(|(p, _)| pos < *p).unwrap_or(true))
+                    {
+                        best_cost = cost;
+                        best = Some((pos, step));
+                    }
+                }
+            }
+        }
+        let (pos, step) = best?;
+        joined.insert(step.right.alias.clone());
+        remaining.remove(pos);
+        steps.push(step);
+    }
+    Some(steps)
+}
+
+/// Execute a single multi-join step against the running accumulator.
+/// Used by both inner-segment extensions and outer anchors —
+/// `join_type` distinguishes the two.
+///
+/// `seed_alias` and `seed_table` are the initial segment's seed
+/// (computed once and threaded through). The seed's columns are the
+/// only ones stored bare in the accumulator; every other alias's
+/// columns are stored under `{alias}.col` (always) and bare (when
+/// no collision). The qualified form is unambiguous regardless of
+/// which other tables are in the accumulator — we use it for any
+/// non-seed left-side column reference.
+fn execute_join_step(
+    engine: &mut Engine,
+    accumulator: Vec<Value>,
+    step: &MultiJoinStep,
+    seed_alias: &str,
+    seed_table: &str,
+    join_type: crate::optimizer::JoinType,
+) -> Result<Vec<Value>> {
+    let right_rows = fetch_table_rows(engine, &step.right.table, step.right.pushdown.clone())?;
+    let left_col_key = if step.left_alias == seed_alias {
+        step.left_col.clone()
+    } else {
+        format!("{}.{}", step.left_alias, step.left_col)
+    };
+    let join_node = engine.query_optimizer().plan_single_join(
+        seed_table,
+        &step.right.table,
+        &left_col_key,
+        &step.right_col,
+        join_type,
+    );
+    let constraint = synthesize_eq_constraint(&left_col_key, &step.right_col);
+    run_join_algorithm(
+        &join_node,
+        join_type,
+        &accumulator,
+        &right_rows,
+        &left_col_key,
+        &step.right_col,
+        &constraint,
+        &step.right.alias,
+    )
+}
+
+/// Greedy left-deep planner. Picks the cheapest seed leaf, then at
+/// each step picks the unjoined leaf that (a) has an edge to an
+/// already-joined alias and (b) minimizes the heuristic cost.
+///
+/// Heuristic cost = `row_count` from optimizer statistics. Without
+/// stats, all leaves look equal → source order is preserved (stable
+/// sort). With stats (test-seeded or real ANALYZE), smaller tables
+/// come first, which keeps intermediate join results smaller.
+fn build_multi_join_plan(
+    engine: &Engine,
+    leaves: &[MultiJoinLeaf],
+    edges: &[MultiJoinEdge],
+) -> Option<MultiJoinExecPlan> {
+    if leaves.is_empty() {
+        return None;
+    }
+    let row_count = |table: &str| -> usize {
+        engine
+            .query_optimizer()
+            .statistics_row_count(table)
+            .unwrap_or(0)
+    };
+
+    // Pick seed: the smallest leaf by row count. Stable on ties
+    // (source order). With no stats, all are 0 → source order wins.
+    let mut remaining: Vec<usize> = (0..leaves.len()).collect();
+    remaining.sort_by_key(|&i| (row_count(&leaves[i].table), i));
+    let seed_idx = remaining.remove(0);
+    let mut joined_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    joined_aliases.insert(leaves[seed_idx].alias.clone());
+
+    let mut steps: Vec<MultiJoinStep> = Vec::new();
+    while !remaining.is_empty() {
+        // For each remaining leaf, check whether some edge connects
+        // it to an already-joined alias. If yes, it's eligible.
+        let mut best: Option<(usize, MultiJoinStep)> = None;
+        let mut best_cost: usize = usize::MAX;
+        for (pos, &idx) in remaining.iter().enumerate() {
+            let leaf = &leaves[idx];
+            // Find an edge from this leaf to a joined alias.
+            for edge in edges {
+                let step = if edge.a_alias == leaf.alias && joined_aliases.contains(&edge.b_alias)
+                {
+                    Some(MultiJoinStep {
+                        right: leaf.clone(),
+                        left_alias: edge.b_alias.clone(),
+                        left_col: edge.b_col.clone(),
+                        right_col: edge.a_col.clone(),
+                    })
+                } else if edge.b_alias == leaf.alias
+                    && joined_aliases.contains(&edge.a_alias)
+                {
+                    Some(MultiJoinStep {
+                        right: leaf.clone(),
+                        left_alias: edge.a_alias.clone(),
+                        left_col: edge.a_col.clone(),
+                        right_col: edge.b_col.clone(),
+                    })
+                } else {
+                    None
+                };
+                if let Some(step) = step {
+                    let cost = row_count(&leaf.table);
+                    if cost < best_cost
+                        || (cost == best_cost && best.as_ref().map(|(p, _)| pos < *p).unwrap_or(true))
+                    {
+                        best_cost = cost;
+                        best = Some((pos, step));
+                    }
+                }
+            }
+        }
+        let (pos, step) = best?; // disconnected graph → fall through
+        joined_aliases.insert(step.right.alias.clone());
+        remaining.remove(pos);
+        steps.push(step);
+    }
+
+    Some(MultiJoinExecPlan {
+        seed: leaves[seed_idx].clone(),
+        steps,
+    })
+}
+
+/// Execute the reordered plan. Builds the accumulator from the seed,
+/// then folds each step through `run_join_algorithm`, picking
+/// NestedLoop vs Hash via `plan_single_join` based on the two
+/// already-known per-side row counts.
+fn execute_multi_join_plan(
+    engine: &mut Engine,
+    plan: &MultiJoinExecPlan,
+) -> Result<Vec<Value>> {
+    let mut accumulator = fetch_table_rows(engine, &plan.seed.table, plan.seed.pushdown.clone())?;
+    for step in &plan.steps {
+        let right_rows = fetch_table_rows(
+            engine,
+            &step.right.table,
+            step.right.pushdown.clone(),
+        )?;
+        // Resolve the accumulator-side column to its actual key. The
+        // seed's columns are stored bare; every other table's columns
+        // are stored both bare (when no collision with seed) AND
+        // alias-qualified (always). We pick the qualified form for
+        // non-seed aliases — it's unique and unambiguous regardless
+        // of which other tables happen to share the column name.
+        let left_col_key = if step.left_alias == plan.seed.alias {
+            step.left_col.clone()
+        } else {
+            format!("{}.{}", step.left_alias, step.left_col)
+        };
+        // Algorithm choice per step. We treat the accumulator's
+        // implicit "table" as the union of all already-joined leaves —
+        // the planner doesn't know intermediate cardinality, so we
+        // pass the seed's table as a stand-in for the optimizer's
+        // statistics lookup. Either way, NL is correct; Hash is a
+        // perf optimization.
+        let join_node = engine.query_optimizer().plan_single_join(
+            &plan.seed.table,
+            &step.right.table,
+            &left_col_key,
+            &step.right_col,
+            crate::optimizer::JoinType::Inner,
+        );
+        let constraint = synthesize_eq_constraint(&left_col_key, &step.right_col);
+        accumulator = run_join_algorithm(
+            &join_node,
+            crate::optimizer::JoinType::Inner,
+            &accumulator,
+            &right_rows,
+            &left_col_key,
+            &step.right_col,
+            &constraint,
+            &step.right.alias,
+        )?;
+    }
+    Ok(accumulator)
+}
+
+/// Extract (table_name, optional_alias) from a TableFactor::Table.
+fn extract_table_with_alias(table: &TableFactor) -> Result<(String, Option<String>)> {
+    match table {
+        TableFactor::Table { name, alias, .. } => Ok((
+            name.to_string(),
+            alias.as_ref().map(|a| a.name.value.clone()),
+        )),
+        _ => Err(DriftError::InvalidQuery(
+            "Complex table expressions not supported".to_string(),
+        )),
+    }
+}
+
+/// Fetch all rows from a table, applying the given per-table WHERE
+/// conditions through `Engine::select`. Empty conditions = full scan
+/// (which is itself optimizer-aware; nothing else activates without
+/// predicates to push).
+fn fetch_table_rows(
+    engine: &mut Engine,
+    table: &str,
+    conditions: Vec<WhereCondition>,
+) -> Result<Vec<Value>> {
+    let query = Query::Select {
+        table: table.to_string(),
+        conditions,
+        as_of: current_temporal_as_of(),
+        limit: None,
+    };
+    match engine.execute_query(query)? {
+        QueryResult::Rows { data } => Ok(data),
+        _ => Ok(vec![]),
+    }
+}
+
+/// Walk a WHERE expression, partitioning AND-leaves that name a
+/// specific table (via prefix matching the table name or its alias)
+/// into per-table predicate lists. Anything else (no prefix, OR-chain,
+/// function call, subquery) is left for the post-join filter. The
+/// caller still applies the full original WHERE to the joined output,
+/// so pushdown is a strict performance win — it can't change results.
+fn collect_pushdown_predicates(
+    expr: &Expr,
+    alias_to_table: &HashMap<String, String>,
+    pushdown: &mut HashMap<String, Vec<WhereCondition>>,
+) {
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
+            collect_pushdown_predicates(left, alias_to_table, pushdown);
+            collect_pushdown_predicates(right, alias_to_table, pushdown);
+        }
+        Expr::BinaryOp { left, op, right } => {
+            // Push only when the left side is a CompoundIdentifier
+            // whose prefix resolves to a known table, and the right
+            // side reduces to a constant. Anything more ambitious
+            // (column-to-column, function calls) stays residual.
+            let Some((table, column)) = extract_qualified_column(left, alias_to_table) else {
+                return;
+            };
+            let Ok(value) = expr_to_json_value(right) else {
+                return;
+            };
+            let operator = match op {
+                BinaryOperator::Eq => "=",
+                BinaryOperator::NotEq => "!=",
+                BinaryOperator::Lt => "<",
+                BinaryOperator::LtEq => "<=",
+                BinaryOperator::Gt => ">",
+                BinaryOperator::GtEq => ">=",
+                _ => return,
+            };
+            pushdown.entry(table).or_default().push(WhereCondition {
+                column,
+                operator: operator.to_string(),
+                value,
+            });
+        }
+        Expr::Between {
+            expr,
+            negated: false,
+            low,
+            high,
+        } => {
+            let Some((table, column)) = extract_qualified_column(expr, alias_to_table) else {
+                return;
+            };
+            let (Ok(low_v), Ok(high_v)) = (expr_to_json_value(low), expr_to_json_value(high))
+            else {
+                return;
+            };
+            let entry = pushdown.entry(table).or_default();
+            entry.push(WhereCondition {
+                column: column.clone(),
+                operator: ">=".to_string(),
+                value: low_v,
+            });
+            entry.push(WhereCondition {
+                column,
+                operator: "<=".to_string(),
+                value: high_v,
+            });
+        }
+        _ => {} // OR, NOT, subqueries, etc. — residual only.
+    }
+}
+
+/// If `expr` is `alias.column` where `alias` resolves to a known table
+/// in this query, return `(table_name, column_name)`. Otherwise None.
+fn extract_qualified_column(
+    expr: &Expr,
+    alias_to_table: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+            let alias = &parts[0].value;
+            let column = &parts[1].value;
+            alias_to_table
+                .get(alias)
+                .map(|t| (t.clone(), column.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Dispatch a single-join PlanNode to the right algorithm + join-type
+/// implementation. Pattern-matches on the PlanNode and on join_type
+/// orthogonally. Hash-join errors silently fall back to the NL variant
+/// of the same join type (slice-4 fallback convention).
+#[allow(clippy::too_many_arguments)]
+fn run_join_algorithm(
+    join_node: &crate::optimizer::PlanNode,
+    join_type: crate::optimizer::JoinType,
+    left_rows: &[Value],
+    right_rows: &[Value],
+    left_col: &str,
+    right_col: &str,
+    constraint: &sqlparser::ast::JoinConstraint,
+    right_alias: &str,
+) -> Result<Vec<Value>> {
+    use crate::optimizer::JoinType as JT;
+    use crate::optimizer::PlanNode;
+
+    let want_hash = matches!(join_node, PlanNode::HashJoin { .. });
+    let build_side = match join_node {
+        PlanNode::HashJoin { build_side, .. } => *build_side,
+        _ => crate::optimizer::JoinSide::Right,
+    };
+
+    // Try the chosen algorithm; on Err, fall back to the NL form of
+    // the same join type. This keeps weird-input behavior identical
+    // across algorithm choices.
+    if want_hash {
+        let hash_result = match join_type {
+            JT::Inner => perform_inner_hash_join(
+                left_rows, right_rows, left_col, right_col, build_side, right_alias,
+            ),
+            JT::LeftOuter => perform_left_outer_hash_join(
+                left_rows,
+                right_rows,
+                left_col,
+                right_col,
+                right_alias,
+            ),
+            JT::FullOuter => perform_full_outer_hash_join(
+                left_rows,
+                right_rows,
+                left_col,
+                right_col,
+                right_alias,
+            ),
+        };
+        if let Ok(rows) = hash_result {
+            return Ok(rows);
+        }
+        // fall through to NL fallback
+    }
+
+    match join_type {
+        JT::Inner => perform_inner_join(
+            left_rows.to_vec(),
+            right_rows.to_vec(),
+            constraint,
+            right_alias,
+        ),
+        JT::LeftOuter => perform_left_join(
+            left_rows.to_vec(),
+            right_rows.to_vec(),
+            constraint,
+            right_alias,
+        ),
+        JT::FullOuter => perform_full_outer_join(
+            left_rows.to_vec(),
+            right_rows.to_vec(),
+            constraint,
+            right_alias,
+        ),
+    }
+}
+
+/// Extract `(left_table_col, right_table_col)` from an `ON` clause,
+/// reordering based on the alias prefixes if the user wrote them in
+/// reverse FROM order (e.g. `FROM depts d LEFT JOIN users u ON
+/// u.dept_id = d.id` — the equality's left operand `u.dept_id`
+/// belongs to the JOIN's right side, not its left).
+///
+/// `extract_join_columns` (used by the legacy paths) returns columns
+/// in the source-text order of the equality, which is fine when ON
+/// matches FROM ordering. The optimizer-driven path needs the
+/// FROM-oriented version so it can hand each column to the correct
+/// per-side `Engine::select` call.
+///
+/// Returns `None` for any constraint shape we can't safely orient
+/// (USING is symmetric — same column on both sides — and falls
+/// through to a single name; complex ON conditions trip the inner
+/// helper).
+fn orient_join_columns_to_from(
+    constraint: &sqlparser::ast::JoinConstraint,
+    sql_left_alias: &Option<String>,
+    sql_right_alias: &Option<String>,
+) -> Option<(String, String)> {
+    use sqlparser::ast::{BinaryOperator, Expr, JoinConstraint};
+    match constraint {
+        JoinConstraint::On(Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        }) => {
+            let (lhs_prefix, lhs_col) = unpack_qualified(left)?;
+            let (rhs_prefix, rhs_col) = unpack_qualified(right)?;
+            // Match each operand's prefix against the FROM aliases. If
+            // the equality's LHS is the FROM-left, return as-is;
+            // otherwise swap.
+            let lhs_is_left = matches_alias(&lhs_prefix, sql_left_alias);
+            let lhs_is_right = matches_alias(&lhs_prefix, sql_right_alias);
+            let rhs_is_left = matches_alias(&rhs_prefix, sql_left_alias);
+            let rhs_is_right = matches_alias(&rhs_prefix, sql_right_alias);
+            if lhs_is_left && rhs_is_right {
+                Some((lhs_col, rhs_col))
+            } else if lhs_is_right && rhs_is_left {
+                Some((rhs_col, lhs_col))
+            } else {
+                // Ambiguous or unprefixed — fall back to the legacy
+                // source-order extraction. The optimized path may
+                // still produce wrong results for this query, but
+                // it's no worse than the legacy path was already.
+                extract_join_columns(constraint).ok()
+            }
+        }
+        _ => extract_join_columns(constraint).ok(),
+    }
+}
+
+fn unpack_qualified(expr: &sqlparser::ast::Expr) -> Option<(Option<String>, String)> {
+    match expr {
+        sqlparser::ast::Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+            Some((Some(parts[0].value.clone()), parts[1].value.clone()))
+        }
+        sqlparser::ast::Expr::Identifier(ident) => Some((None, ident.value.clone())),
+        _ => None,
+    }
+}
+
+fn matches_alias(prefix: &Option<String>, alias: &Option<String>) -> bool {
+    match (prefix, alias) {
+        (Some(p), Some(a)) => p == a,
+        _ => false,
+    }
+}
+
+/// Orient an ON clause for the legacy multi-join loop, where the
+/// accumulator's tables vary by step but the new right-side alias is
+/// always known. If the ON's LEFT operand prefix is `right_alias`,
+/// the constraint is reversed relative to FROM order — swap so that
+/// LHS belongs to the accumulator and RHS belongs to the new right.
+///
+/// Returns `Some(canonical_constraint)` only when the orientation is
+/// unambiguous. Returns `None` for cases the caller should leave
+/// alone (USING clauses, unprefixed columns, both operands prefixed
+/// with `right_alias` from a self-join). The legacy path's existing
+/// `extract_join_columns` handles those, with its known
+/// source-text-order limitation.
+fn orient_constraint_for_right_alias(
+    constraint: &sqlparser::ast::JoinConstraint,
+    right_alias: &str,
+) -> Option<sqlparser::ast::JoinConstraint> {
+    use sqlparser::ast::{BinaryOperator, Expr, JoinConstraint};
+    match constraint {
+        JoinConstraint::On(Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        }) => {
+            let (lhs_prefix, lhs_col) = unpack_qualified(left)?;
+            let (rhs_prefix, rhs_col) = unpack_qualified(right)?;
+            let lhs_matches = lhs_prefix.as_deref() == Some(right_alias);
+            let rhs_matches = rhs_prefix.as_deref() == Some(right_alias);
+            if lhs_matches && !rhs_matches {
+                Some(synthesize_eq_constraint(&rhs_col, &lhs_col))
+            } else if rhs_matches && !lhs_matches {
+                Some(constraint.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Synthesize a `JoinConstraint::On(left_col = right_col)` for the
+/// nested-loop fallback after a RIGHT→LEFT side swap. We can't reuse
+/// the user's original `sql_constraint` post-swap because its left and
+/// right columns refer to the pre-swap layout.
+fn synthesize_eq_constraint(
+    left_col: &str,
+    right_col: &str,
+) -> sqlparser::ast::JoinConstraint {
+    use sqlparser::ast::{BinaryOperator, Expr, Ident, JoinConstraint};
+    JoinConstraint::On(Expr::BinaryOp {
+        left: Box::new(Expr::Identifier(Ident::new(left_col))),
+        op: BinaryOperator::Eq,
+        right: Box::new(Expr::Identifier(Ident::new(right_col))),
+    })
+}
+
+/// LEFT OUTER hash join. Build hash on RIGHT (required: probe with the
+/// preserving side); for each LEFT row, emit one merged row per right
+/// match, OR a bare left row if no matches. Mirrors
+/// `perform_left_join`'s output shape exactly so downstream filter /
+/// projection don't care which algorithm ran.
+fn perform_left_outer_hash_join(
+    left_rows: &[Value],
+    right_rows: &[Value],
+    left_col: &str,
+    right_col: &str,
+    right_alias: &str,
+) -> Result<Vec<Value>> {
+    let mut bucket: HashMap<String, Vec<&Value>> = HashMap::new();
+    for row in right_rows {
+        let Some(val) = lookup_join_value(row, right_col) else {
+            continue;
+        };
+        if val.is_null() {
+            continue;
+        }
+        bucket.entry(json_to_hash_key(val)).or_default().push(row);
+    }
+    let right_keys = collect_row_keys(right_rows);
+
+    let mut result = Vec::with_capacity(left_rows.len());
+    for left_row in left_rows {
+        let probe_key = lookup_join_value(left_row, left_col)
+            .filter(|v| !v.is_null())
+            .map(json_to_hash_key);
+        let matches = probe_key.as_ref().and_then(|k| bucket.get(k));
+        match matches {
+            Some(rs) if !rs.is_empty() => {
+                for right_row in rs {
+                    result.push(merge_join_rows(left_row, right_row, right_alias));
+                }
+            }
+            _ => {
+                result.push(null_pad_right_into(left_row, &right_keys, right_alias));
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// FULL OUTER hash join. Build on RIGHT, track which right rows
+/// matched during the LEFT probe phase, then emit unmatched-right
+/// rows at the end. Output shape matches `perform_full_outer_join`.
+fn perform_full_outer_hash_join(
+    left_rows: &[Value],
+    right_rows: &[Value],
+    left_col: &str,
+    right_col: &str,
+    right_alias: &str,
+) -> Result<Vec<Value>> {
+    // Build phase: store (right_index, row) so we can mark matches.
+    let mut bucket: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, row) in right_rows.iter().enumerate() {
+        let Some(val) = lookup_join_value(row, right_col) else {
+            continue;
+        };
+        if val.is_null() {
+            continue;
+        }
+        bucket.entry(json_to_hash_key(val)).or_default().push(idx);
+    }
+
+    let mut matched_right: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    let mut result = Vec::new();
+    let right_keys = collect_row_keys(right_rows);
+    let left_keys = collect_row_keys(left_rows);
+
+    // LEFT-probe phase.
+    for left_row in left_rows {
+        let probe_key = lookup_join_value(left_row, left_col)
+            .filter(|v| !v.is_null())
+            .map(json_to_hash_key);
+        let matches = probe_key.as_ref().and_then(|k| bucket.get(k));
+        match matches {
+            Some(idxs) if !idxs.is_empty() => {
+                for &idx in idxs {
+                    matched_right.insert(idx);
+                    result.push(merge_join_rows(left_row, &right_rows[idx], right_alias));
+                }
+            }
+            _ => {
+                result.push(null_pad_right_into(left_row, &right_keys, right_alias));
+            }
+        }
+    }
+
+    // Unmatched-RIGHT phase. Pad with NULL for left's columns (same
+    // semantics as perform_full_outer_join).
+    for (idx, row) in right_rows.iter().enumerate() {
+        if !matched_right.contains(&idx) {
+            result.push(null_pad_left_into(row, &left_keys));
+        }
+    }
+    Ok(result)
+}
+
+/// Hash-join implementation for INNER JOIN. Builds a hash table on the
+/// `build_side` keyed by the join column, then probes with the other
+/// side. The merged row shape matches `perform_inner_join` so the
+/// downstream filter / projection code doesn't need to care which
+/// algorithm produced the result.
+///
+/// Returns `Err` if a join-column value is not hashable as a string
+/// (we use the JSON string representation as the hash key, so this is
+/// unlikely in practice — but the caller treats `Err` as "fall back to
+/// nested-loop" without surfacing it to the user).
+fn perform_inner_hash_join(
+    left_rows: &[Value],
+    right_rows: &[Value],
+    left_col: &str,
+    right_col: &str,
+    build_side: crate::optimizer::JoinSide,
+    right_alias: &str,
+) -> Result<Vec<Value>> {
+    use crate::optimizer::JoinSide;
+    let (build_rows, probe_rows, build_col, probe_col) = match build_side {
+        JoinSide::Right => (right_rows, left_rows, right_col, left_col),
+        JoinSide::Left => (left_rows, right_rows, left_col, right_col),
+    };
+
+    // Build phase: hash by join column value. Multiple rows with the
+    // same key form a Vec — required when the inner has duplicate keys.
+    let mut bucket: HashMap<String, Vec<&Value>> = HashMap::new();
+    for row in build_rows {
+        let Some(val) = lookup_join_value(row, build_col) else {
+            continue; // NULL join keys never match (SQL semantics).
+        };
+        if val.is_null() {
+            continue;
+        }
+        let key = json_to_hash_key(val);
+        bucket.entry(key).or_default().push(row);
+    }
+
+    // Probe phase. Output shape must match `perform_inner_join` so the
+    // executor's HashJoin → NestedLoop fallback is transparent: SQL-
+    // left columns first, SQL-right collisions prefixed with the right
+    // alias. The probe/build roles are an internal hash-join detail,
+    // not a row-order signal — `right_alias` always names the SQL
+    // right side regardless.
+    let mut result = Vec::with_capacity(probe_rows.len());
+    for probe_row in probe_rows {
+        let Some(val) = lookup_join_value(probe_row, probe_col) else {
+            continue;
+        };
+        if val.is_null() {
+            continue;
+        }
+        let key = json_to_hash_key(val);
+        let Some(matches) = bucket.get(&key) else {
+            continue;
+        };
+        for build_row in matches {
+            let (left_row, right_row) = match build_side {
+                JoinSide::Right => (probe_row, *build_row),
+                JoinSide::Left => (*build_row, probe_row),
+            };
+            result.push(merge_join_rows(left_row, right_row, right_alias));
+        }
+    }
+    Ok(result)
+}
+
+/// Stable string representation of a JSON value for hash-table keys.
+/// Strings stay as-is (so `"5"` and `5` don't collide); other values
+/// use their JSON repr. The same scheme `Index::insert` uses, so
+/// hash-join keys agree with index-lookup keys at the boundary.
+fn json_to_hash_key(value: &Value) -> String {
+    if let Some(s) = value.as_str() {
+        format!("s:{}", s)
+    } else {
+        format!("j:{}", value)
+    }
+}
+
+fn perform_cross_join(
+    left_rows: Vec<Value>,
+    right_rows: Vec<Value>,
+    right_alias: &str,
+) -> Vec<Value> {
+    let mut result = Vec::new();
+    for left_row in &left_rows {
+        for right_row in &right_rows {
+            result.push(merge_join_rows(left_row, right_row, right_alias));
+        }
+    }
     result
 }
 
@@ -1990,19 +3597,40 @@ fn execute_insert_values(
     };
 
     // Route based on transaction state. When the session is inside a
-    // transaction we buffer the event in the engine's transaction manager;
-    // the actual storage write happens at COMMIT. When auto-committing,
-    // `execute_query(Query::Insert)` handles both the PK uniqueness check
-    // and the immediate apply. Transactional INSERTs intentionally skip the
-    // PK uniqueness check until commit time — matching PostgreSQL, where
-    // unique-constraint violation surfaces on commit for deferred contexts
-    // and is the same shape of pre-existing limitation as the server's
-    // transaction buffer had.
+    // transaction we buffer the event in the engine's transaction
+    // manager; the actual storage write happens at COMMIT. PK
+    // uniqueness is checked at INSERT time against both the
+    // transaction's buffered writes (for sibling-row collisions) and
+    // the committed state (for collisions with rows outside this
+    // transaction). This matches PostgreSQL's default immediate-
+    // constraint behavior. On violation, the transaction enters the
+    // aborted state — every subsequent statement (except ROLLBACK)
+    // surfaces "current transaction is aborted".
+    //
+    // Auto-commit INSERTs (no active transaction) route through
+    // `execute_query(Query::Insert)`, which already performs the same
+    // uniqueness check via the engine's executor — unchanged.
     let result = if let Some(txn_id) = current_transaction() {
         let pk_field = engine.get_table_primary_key(table)?;
         let primary_key = final_data.get(&pk_field).cloned().ok_or_else(|| {
             DriftError::InvalidQuery(format!("Missing primary key field '{}'", pk_field))
         })?;
+        // Combined buffer-then-committed visibility check. A pending
+        // SoftDelete in the buffer masks any committed row for this
+        // PK (read-your-writes), so the standard delete-then-insert
+        // pattern works.
+        match engine.pk_visibility_in_transaction(txn_id, table, &primary_key)? {
+            crate::engine::PkVisibility::Active => {
+                mark_txn_aborted();
+                return Err(DriftError::InvalidQuery(format!(
+                    "duplicate key value violates unique constraint on table \"{}\": key ({})=({}) already exists",
+                    table, pk_field, primary_key
+                )));
+            }
+            crate::engine::PkVisibility::Deleted | crate::engine::PkVisibility::Absent => {
+                // Free to proceed.
+            }
+        }
         let event = crate::events::Event::new_insert(
             table.to_string(),
             primary_key,
@@ -2046,12 +3674,25 @@ fn extract_table_name_from_join(table: &TableFactor) -> Result<String> {
 }
 
 fn parse_where_clause(expr: &sqlparser::ast::Expr) -> Result<Vec<WhereCondition>> {
-    // Simplified WHERE clause parsing
+    // Lower the WHERE expression to a flat AND-chain of WhereConditions
+    // that the engine can match per row (and that the optimizer can
+    // coalesce into IndexLookup/IndexScan access plans). Anything we
+    // don't structurally understand (subqueries, OR, function calls)
+    // makes the caller fall back to row-level SQL evaluation, so it's
+    // safe to return an empty list rather than erroring.
     match expr {
+        sqlparser::ast::Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
+            let mut conds = parse_where_clause(left)?;
+            conds.extend(parse_where_clause(right)?);
+            Ok(conds)
+        }
         sqlparser::ast::Expr::BinaryOp { left, op, right } => {
             let column = extract_column_from_expr(left)?;
             let value = expr_to_json_value(right)?;
-
             let operator = match op {
                 BinaryOperator::Eq => "=",
                 BinaryOperator::NotEq => "!=",
@@ -2065,12 +3706,37 @@ fn parse_where_clause(expr: &sqlparser::ast::Expr) -> Result<Vec<WhereCondition>
                     ))
                 }
             };
-
             Ok(vec![WhereCondition {
                 column,
                 operator: operator.to_string(),
                 value,
             }])
+        }
+        // SQL `x BETWEEN low AND high` is inclusive on both sides.
+        // Lower to `x >= low AND x <= high`. `NOT BETWEEN` would need
+        // OR semantics, which the engine doesn't represent today —
+        // leave it to row-level SQL evaluation (return empty list).
+        sqlparser::ast::Expr::Between {
+            expr,
+            negated: false,
+            low,
+            high,
+        } => {
+            let column = extract_column_from_expr(expr)?;
+            let low_val = expr_to_json_value(low)?;
+            let high_val = expr_to_json_value(high)?;
+            Ok(vec![
+                WhereCondition {
+                    column: column.clone(),
+                    operator: ">=".to_string(),
+                    value: low_val,
+                },
+                WhereCondition {
+                    column,
+                    operator: "<=".to_string(),
+                    value: high_val,
+                },
+            ])
         }
         _ => Ok(vec![]),
     }
@@ -2300,15 +3966,11 @@ fn execute_group_by_aggregation(
                     }
                 }
                 SelectItem::UnnamedExpr(Expr::CompoundIdentifier(idents)) => {
-                    // Handle table.column
-                    if let Some(column) = idents.last() {
-                        if let Some(first_row) = group_rows.first() {
-                            if let Some(val) = first_row.get(&column.value) {
-                                result_row.insert(column.value.clone(), val.clone());
-                            } else if let Some(val) =
-                                first_row.get(format!("right_{}", column.value))
-                            {
-                                result_row.insert(column.value.clone(), val.clone());
+                    // Handle table.column with alias-aware resolution.
+                    if let Some(first_row) = group_rows.first() {
+                        if let Some(val) = resolve_qualified_column(idents, first_row) {
+                            if let Some(column) = idents.last() {
+                                result_row.insert(column.value.clone(), val);
                             }
                         }
                     }
@@ -2824,6 +4486,20 @@ fn evaluate_where_expression(expr: &Expr, row: &Value) -> Result<bool> {
                 )),
             }
         }
+        // `x IS NULL` and `x IS NOT NULL`. The OUTER JOIN anti-join
+        // pattern (`WHERE right.col IS NULL`) depends on this — the
+        // pre-existing default of `Ok(true)` for unmatched expressions
+        // silently accepted every row, turning anti-join queries into
+        // "return everything" instead of "return unmatched". Latent
+        // bug exposed by the LEFT JOIN slice; fixed here.
+        Expr::IsNull(inner) => {
+            let v = evaluate_value_expression(inner, row)?;
+            Ok(v.is_null())
+        }
+        Expr::IsNotNull(inner) => {
+            let v = evaluate_value_expression(inner, row)?;
+            Ok(!v.is_null())
+        }
         _ => Ok(true), // For now, accept other expressions as true
     }
 }
@@ -2928,32 +4604,26 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
         Expr::CompoundIdentifier(parts) => {
             // Handle table.column notation
             if parts.len() == 2 {
-                let _table_alias = &parts[0].value;
+                let table_alias = &parts[0].value;
                 let column = &parts[1].value;
 
-                // For correlated subqueries, we need to check both current and outer contexts
-                // The table alias should help us decide, but we don't track aliases yet
-                // So we'll use a heuristic: check current row first, then outer
+                // Alias-aware resolution: try `{alias}.{column}` first.
+                // Joined rows have right-side collisions keyed this way
+                // (see `merge_join_rows`). When the user writes
+                // `d.name` and depts.name collided with users.name,
+                // this finds depts's value. Non-colliding right-side
+                // columns and all left-side columns fall through to
+                // the bare-name lookup below.
+                let qualified = format!("{}.{}", table_alias, column);
+                if let Some(row_obj) = row.as_object() {
+                    if let Some(val) = row_obj.get(&qualified) {
+                        return Ok(val.clone());
+                    }
+                }
 
-                // For correlated subqueries, we need to check the table alias
-                // to determine if we should use current row or outer row
-
-                // Since we don't track which table alias belongs to which query level,
-                // we'll use a simple heuristic: If the table alias is 'u' (commonly used
-                // for the outer query in our tests), look in outer context first
-
-                // Check if this looks like an outer table reference
-                // In the subquery "SELECT ... FROM orders o WHERE o.user_id = u.id",
-                // 'o' is the inner table and 'u' is the outer table
-
-                // Heuristic: If we're in a correlated subquery context and the column exists
-                // in the outer row, AND the table alias doesn't match common inner aliases,
-                // prefer the outer value
-
-                // Determine if this is an outer table reference based on table alias
-                // In a correlated subquery context, we need to distinguish between:
-                // - Inner table references (e.g., e2.dept in subquery FROM employees e2)
-                // - Outer table references (e.g., e1.dept referring to outer query's e1)
+                // For correlated subqueries, we need to check both current and outer contexts.
+                // The table alias should help us decide, but we don't track full alias
+                // scope yet — so we use a heuristic: check current row first, then outer.
                 let is_outer_reference = OUTER_ROW_CONTEXT.with(|context| {
                     if context.borrow().is_some() {
                         // We're in a correlated subquery context
@@ -3375,12 +5045,14 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                     }
                 }
                 SelectItem::UnnamedExpr(Expr::CompoundIdentifier(idents)) => {
-                    // Handle table.column notation
-                    if let Some(column) = idents.last() {
-                        if let Some(val) = row.get(&column.value) {
-                            projected_row.insert(column.value.clone(), val.clone());
-                        } else if let Some(val) = row.get(format!("right_{}", column.value)) {
-                            projected_row.insert(column.value.clone(), val.clone());
+                    // `alias.col`: try the alias-prefixed key first
+                    // (right-side collisions are keyed this way after
+                    // `merge_join_rows`), then fall back to bare column.
+                    // Output column name = bare column (PostgreSQL
+                    // convention: prefix is for resolution only).
+                    if let Some(val) = resolve_qualified_column(idents, &row) {
+                        if let Some(column) = idents.last() {
+                            projected_row.insert(column.value.clone(), val);
                         }
                     }
                 }
@@ -3388,48 +5060,8 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                     expr: Expr::CompoundIdentifier(idents),
                     alias,
                 } => {
-                    // For multiple tables with same column names, we need to find the right one
-                    // The pattern is: first table's columns are unprefixed,
-                    // second table's conflicting columns get t1_ prefix,
-                    // third table's conflicting columns get t2_ prefix, etc.
-                    if idents.len() >= 2 {
-                        let table_alias = &idents[0].value;
-                        let column = &idents[1].value;
-
-                        // Based on the query pattern:
-                        // orders o -> base table (left)
-                        // customers c -> first JOIN (t1_ prefix)
-                        // products p -> second JOIN (t2_ prefix)
-
-                        // The issue is that when JOINing, the first conflicting column gets t1_,
-                        // But we need to know which table each prefix belongs to.
-                        // Since "name" appears in both customers and products tables,
-                        // after the first JOIN, customers.name might be just "name"
-                        // and after second JOIN, products.name gets prefixed
-
-                        let val = if table_alias == "c" {
-                            // customers table - look for name (might be unprefixed if it came first)
-                            row.get(column)
-                                .or_else(|| row.get(format!("t1_{}", column)))
-                        } else if table_alias == "p" {
-                            // products table - likely prefixed due to conflict
-                            row.get(format!("t1_{}", column))
-                                .or_else(|| row.get(format!("t2_{}", column)))
-                                .or_else(|| row.get(column))
-                        } else if table_alias == "o" {
-                            // orders table - original left table
-                            row.get(column)
-                        } else {
-                            row.get(column)
-                        };
-
-                        if let Some(v) = val {
-                            projected_row.insert(alias.value.clone(), v.clone());
-                        }
-                    } else if let Some(column) = idents.last() {
-                        if let Some(val) = row.get(&column.value) {
-                            projected_row.insert(alias.value.clone(), val.clone());
-                        }
+                    if let Some(val) = resolve_qualified_column(idents, &row) {
+                        projected_row.insert(alias.value.clone(), val);
                     }
                 }
                 SelectItem::Wildcard(_) => {
@@ -3594,11 +5226,25 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                                 }
                             }
                             Expr::CompoundIdentifier(parts) => {
-                                // Handle table.column notation
+                                // Alias-aware resolution. The row may
+                                // arrive un-projected (raw joined
+                                // shape: bare left columns + `d.col`
+                                // for right-side collisions) OR
+                                // pre-projected (already keyed by the
+                                // bare column name from a prior
+                                // project_columns pass). Try the bare
+                                // column first (idempotency: preserve
+                                // a prior projection's value), then
+                                // alias-aware lookup (`alias.col`,
+                                // then bare).
                                 let col_name =
                                     parts.last().map(|i| i.value.clone()).unwrap_or_default();
                                 if let Some(value) = row_map.get(&col_name) {
                                     projected_row.insert(col_name, value.clone());
+                                } else if let Some(value) =
+                                    resolve_qualified_column(parts, &row)
+                                {
+                                    projected_row.insert(col_name, value);
                                 }
                             }
                             Expr::Value(val) => {
@@ -3644,6 +5290,23 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                                 let col_name = ident.value.clone();
                                 if let Some(value) = row_map.get(&col_name) {
                                     projected_row.insert(alias.value.clone(), value.clone());
+                                }
+                            }
+                            Expr::CompoundIdentifier(parts) => {
+                                // Idempotency: if the row already
+                                // carries the alias key (from a
+                                // prior project_columns pass), keep
+                                // that value verbatim — re-resolving
+                                // against the projected row's bare
+                                // names would null it out. Otherwise,
+                                // resolve `alias.col` against the
+                                // raw row using alias-aware lookup.
+                                if let Some(value) = row_map.get(&alias.value) {
+                                    projected_row.insert(alias.value.clone(), value.clone());
+                                } else if let Some(value) =
+                                    resolve_qualified_column(parts, &row)
+                                {
+                                    projected_row.insert(alias.value.clone(), value);
                                 }
                             }
                             Expr::Subquery(_) => {
@@ -3842,6 +5505,7 @@ fn execute_sql_update(
     };
 
     // Update each matching row
+    let pk_field = engine.get_table_primary_key(&table_name)?;
     let mut update_count = 0;
     for row in rows_to_update {
         let old_row = row.clone();
@@ -3900,30 +5564,90 @@ fn execute_sql_update(
             crate::triggers::TriggerResult::Continue => updated_row.clone(),
         };
 
-        // Get the primary key value from final_row
-        let primary_key = if let Some(row_obj) = final_row.as_object() {
-            row_obj.get("id").cloned().unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        };
+        // Extract OLD and NEW primary keys. The hardcoded "id" pull
+        // from earlier was a latent bug: any table with a non-`id`
+        // PK had its UPDATE buffered under the wrong key, and the
+        // committed Patch then merged into the wrong row (or no row
+        // at all). Both PKs come from `schema.primary_key`.
+        let old_pk = old_row.get(&pk_field).cloned().unwrap_or(Value::Null);
+        let new_pk = final_row.get(&pk_field).cloned().unwrap_or(Value::Null);
 
-        // Buffer through the transaction manager when inside a transaction;
-        // otherwise apply immediately via Query::Patch (which goes through
-        // the engine's normal apply_event path).
-        if let Some(txn_id) = current_transaction() {
-            let event = crate::events::Event::new_patch(
-                table_name.clone(),
-                primary_key,
-                final_row.clone(),
-            );
-            engine.apply_event_in_transaction(txn_id, event)?;
+        let pk_changed = old_pk != new_pk;
+
+        if pk_changed {
+            // PK-change semantics: PostgreSQL models this as DELETE
+            // old + INSERT new. We do the same in the buffer (two
+            // events) and in auto-commit (two storage applies). The
+            // new PK must not collide with anything visible.
+            //
+            // Slice 1's `pk_visibility_in_transaction` does the
+            // right thing here: a buffered `SoftDelete` masks any
+            // committed row, so reusing a PK whose holder was
+            // deleted earlier in this transaction works.
+            if let Some(txn_id) = current_transaction() {
+                match engine.pk_visibility_in_transaction(txn_id, &table_name, &new_pk)? {
+                    crate::engine::PkVisibility::Active => {
+                        mark_txn_aborted();
+                        return Err(DriftError::InvalidQuery(format!(
+                            "duplicate key value violates unique constraint on table \"{}\": key ({})=({}) already exists",
+                            table_name, pk_field, new_pk
+                        )));
+                    }
+                    crate::engine::PkVisibility::Deleted
+                    | crate::engine::PkVisibility::Absent => {
+                        let delete_event = crate::events::Event::new_soft_delete(
+                            table_name.clone(),
+                            old_pk.clone(),
+                        );
+                        let insert_event = crate::events::Event::new_insert(
+                            table_name.clone(),
+                            new_pk.clone(),
+                            final_row.clone(),
+                        );
+                        engine.apply_event_in_transaction(txn_id, delete_event)?;
+                        engine.apply_event_in_transaction(txn_id, insert_event)?;
+                    }
+                }
+            } else {
+                // Auto-commit: check committed state only (no buffer).
+                // Each row applies independently; a mid-loop error
+                // leaves prior-row changes committed. Same atomicity
+                // limitation as today's auto-commit DML; documented.
+                if engine.pk_exists_committed(&table_name, &new_pk)? {
+                    return Err(DriftError::InvalidQuery(format!(
+                        "duplicate key value violates unique constraint on table \"{}\": key ({})=({}) already exists",
+                        table_name, pk_field, new_pk
+                    )));
+                }
+                let delete_event = crate::events::Event::new_soft_delete(
+                    table_name.clone(),
+                    old_pk.clone(),
+                );
+                let insert_event = crate::events::Event::new_insert(
+                    table_name.clone(),
+                    new_pk.clone(),
+                    final_row.clone(),
+                );
+                engine.apply_event(delete_event)?;
+                engine.apply_event(insert_event)?;
+            }
         } else {
-            let patch_query = Query::Patch {
-                table: table_name.clone(),
-                primary_key,
-                updates: final_row.clone(),
-            };
-            engine.execute_query(patch_query)?;
+            // No PK change: regular Patch keyed by the unchanged PK.
+            if let Some(txn_id) = current_transaction() {
+                let event = crate::events::Event::new_patch(
+                    table_name.clone(),
+                    old_pk,
+                    final_row.clone(),
+                );
+                engine.apply_event_in_transaction(txn_id, event)?;
+            } else {
+                let patch_query = Query::Patch {
+                    table: table_name.clone(),
+                    primary_key: old_pk,
+                    updates: final_row.clone(),
+                };
+                engine.execute_query(patch_query)?;
+            }
         }
 
         // Execute AFTER UPDATE triggers

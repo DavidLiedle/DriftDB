@@ -239,9 +239,15 @@ impl ExplainPlan {
                 left,
                 right,
                 condition,
+                join_type,
                 cost,
             } => {
-                output.push_str(&format!("{}Nested Loop", prefix));
+                let label = match join_type {
+                    crate::optimizer::JoinType::Inner => "Nested Loop",
+                    crate::optimizer::JoinType::LeftOuter => "Nested Loop Left Join",
+                    crate::optimizer::JoinType::FullOuter => "Nested Loop Full Join",
+                };
+                output.push_str(&format!("{}{}", prefix, label));
                 if options.costs {
                     output.push_str(&format!("  (rows={:.0})", cost.rows));
                 }
@@ -260,9 +266,15 @@ impl ExplainPlan {
                 right,
                 condition,
                 build_side,
+                join_type,
                 cost,
             } => {
-                output.push_str(&format!("{}Hash Join", prefix));
+                let label = match join_type {
+                    crate::optimizer::JoinType::Inner => "Hash Join",
+                    crate::optimizer::JoinType::LeftOuter => "Hash Left Join",
+                    crate::optimizer::JoinType::FullOuter => "Hash Full Join",
+                };
+                output.push_str(&format!("{}{}", prefix, label));
                 if options.costs {
                     output.push_str(&format!("  (rows={:.0})", cost.rows));
                 }
@@ -739,10 +751,27 @@ fn build_select_plan(engine: &Engine, select: &Select) -> Result<PlanNode> {
             let right = build_table_factor_plan(engine, &join.relation)?;
             let condition = build_join_condition(&join.join_operator);
             let rows = plan_rows(&node).max(plan_rows(&right));
+            // EXPLAIN's PlanNode tree displays the SQL join type as-is.
+            // The executor path normalizes RIGHT → LEFT, but EXPLAIN
+            // reflects the user's source-order ask: a RIGHT JOIN in
+            // the query stays a RIGHT-shaped tree here so the rendered
+            // plan matches the SQL the user typed.
+            let join_type = match &join.join_operator {
+                sqlparser::ast::JoinOperator::Inner(_) => crate::optimizer::JoinType::Inner,
+                sqlparser::ast::JoinOperator::LeftOuter(_)
+                | sqlparser::ast::JoinOperator::RightOuter(_) => {
+                    crate::optimizer::JoinType::LeftOuter
+                }
+                sqlparser::ast::JoinOperator::FullOuter(_) => {
+                    crate::optimizer::JoinType::FullOuter
+                }
+                _ => crate::optimizer::JoinType::Inner,
+            };
             node = PlanNode::NestedLoopJoin {
                 left: Box::new(node),
                 right: Box::new(right),
                 condition,
+                join_type,
                 cost: scan_cost(rows),
             };
         }

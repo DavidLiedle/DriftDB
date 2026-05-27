@@ -26,6 +26,7 @@ use crate::index::IndexManager;
 use crate::monitoring::{MonitoringConfig, MonitoringSystem, SystemMetrics};
 use crate::mvcc::IsolationLevel as MVCCIsolationLevel;
 use crate::observability::Metrics;
+use crate::optimizer::QueryOptimizer;
 use crate::procedures::{ProcedureDefinition, ProcedureManager, ProcedureResult};
 use crate::query::{Query, QueryResult};
 use crate::query_cancellation::{
@@ -51,6 +52,36 @@ use crate::wal::{WalConfig, WalManager};
 pub struct TableStats {
     pub row_count: usize,
     pub size_bytes: u64,
+}
+
+/// What the latest buffered event for a PK is. Used internally for
+/// computing `PkVisibility::*` against a transaction's write set.
+#[derive(Debug, Clone, Copy)]
+pub enum BufferEventKind {
+    /// `Insert` or `Patch` — row is present in the transaction's view.
+    Active,
+    /// `SoftDelete` — transaction has logically removed the row.
+    Deleted,
+}
+
+/// Result of the PK uniqueness check from a transaction's perspective.
+/// Combines the transaction's pending writes with committed state per
+/// the read-your-writes rule (a pending `SoftDelete` masks a committed
+/// row; a pending `Insert` is visible even though committed state
+/// doesn't have it yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkVisibility {
+    /// The PK is present from the transaction's perspective (in the
+    /// buffer or in committed state). A new INSERT under this PK
+    /// must be rejected as a unique-constraint violation.
+    Active,
+    /// The PK is buffered as deleted by this transaction. A new
+    /// INSERT under this PK is the standard delete-then-insert
+    /// pattern and should be allowed.
+    Deleted,
+    /// The PK is not present anywhere visible to the transaction.
+    /// INSERT is free to proceed.
+    Absent,
 }
 
 pub struct Engine {
@@ -80,12 +111,22 @@ pub struct Engine {
     security_monitor: Option<Arc<SecurityMonitor>>,
     query_performance: Option<Arc<QueryPerformanceOptimizer>>,
     query_cancellation: Arc<QueryCancellationManager>,
+    /// Cost-based planner whose output drives access-method selection in
+    /// [`Engine::select`]. Initialized empty; index registrations are
+    /// pushed in by table-load/create/index sites below.
+    pub(crate) query_optimizer: Arc<QueryOptimizer>,
 }
 
 impl Engine {
     /// Get the base path of the database
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+
+    /// Access the query optimizer used to plan SELECT execution. Exposed
+    /// so callers can inspect the chosen plan (e.g. EXPLAIN, tests).
+    pub fn query_optimizer(&self) -> &QueryOptimizer {
+        &self.query_optimizer
     }
 
     pub fn open<P: AsRef<Path>>(base_path: P) -> Result<Self> {
@@ -146,6 +187,7 @@ impl Engine {
             security_monitor: None,
             query_performance: None,
             query_cancellation,
+            query_optimizer: Arc::new(QueryOptimizer::new()),
         };
 
         let tables_dir = base_path.join("tables");
@@ -240,6 +282,7 @@ impl Engine {
             security_monitor: None,
             query_performance: None,
             query_cancellation,
+            query_optimizer: Arc::new(QueryOptimizer::new()),
         })
     }
 
@@ -261,7 +304,32 @@ impl Engine {
         self.snapshots
             .insert(table_name.to_string(), Arc::new(snapshot_mgr));
 
+        self.register_indexes_with_optimizer(table_name);
         Ok(())
+    }
+
+    /// Push the table's indexed-column set into the query optimizer so the
+    /// planner can propose `IndexLookup` plans. Called after any structural
+    /// change (table load, table create, index create).
+    pub(crate) fn register_indexes_with_optimizer(&self, table_name: &str) {
+        let Some(storage) = self.tables.get(table_name) else {
+            return;
+        };
+        let indexed: Vec<String> = storage.schema().indexed_columns().into_iter().collect();
+        if indexed.is_empty() {
+            return;
+        }
+        // Use the on-disk state size as a row_count hint so the cost model
+        // has something realistic to compare against; falls back to 10_000
+        // (large enough to make table-scan look expensive vs. index lookup)
+        // if reconstruction fails for any reason.
+        let row_count_hint = storage
+            .reconstruct_state_at(None)
+            .map(|s| s.len())
+            .unwrap_or(0)
+            .max(10_000);
+        self.query_optimizer
+            .register_table_indexes(table_name, &indexed, row_count_hint);
     }
 
     /// Enable encryption at rest with the specified master password
@@ -522,6 +590,7 @@ impl Engine {
         self.snapshots
             .insert(name.to_string(), Arc::new(snapshot_mgr));
 
+        self.register_indexes_with_optimizer(name);
         Ok(())
     }
 
@@ -564,6 +633,7 @@ impl Engine {
         self.snapshots
             .insert(name.to_string(), Arc::new(snapshot_mgr));
 
+        self.register_indexes_with_optimizer(name);
         Ok(())
     }
 
@@ -624,6 +694,17 @@ impl Engine {
         // Build the index from existing data
         index_mgr.build_index_from_data(column_name, &state)?;
 
+        // Release the index manager lock before touching the optimizer so we
+        // don't hold two locks at once. The new column may not appear in the
+        // on-disk schema yet; register the optimizer-side index directly.
+        drop(index_mgr);
+        let row_count_hint = state.len().max(10_000);
+        self.query_optimizer.register_table_indexes(
+            table_name,
+            &[column_name.to_string()],
+            row_count_hint,
+        );
+
         // Update the table schema to include this indexed column
         // Note: This is simplified - in a full implementation we'd update the schema metadata
 
@@ -641,7 +722,14 @@ impl Engine {
 
         if let Some(index_mgr) = self.indexes.get(&event.table_name) {
             let mut index_mgr = index_mgr.write();
-            index_mgr.update_indexes(&event, &storage.schema().indexed_columns())?;
+            // Single source of truth: the IndexManager's loaded indexes.
+            // The schema's `index: bool` flag isn't updated when CREATE
+            // INDEX runs (a documented limitation in `create_index`), so
+            // relying on it would silently skip post-creation indexes.
+            // The manager's own key set always reflects every index that
+            // actually exists.
+            let active: HashSet<String> = index_mgr.indexed_column_names();
+            index_mgr.update_indexes(&event, &active)?;
             index_mgr.save_all()?;
         }
 
@@ -822,6 +910,81 @@ impl Engine {
 
     pub fn apply_event_in_transaction(&self, txn_id: u64, event: Event) -> Result<()> {
         self.transaction_manager.write().add_write(txn_id, event)
+    }
+
+    /// SAVEPOINT support — push/release/rollback-to operate on the
+    /// transaction's savepoint stack. See `TransactionManager` for
+    /// the snapshot-based mechanics.
+    pub fn create_savepoint(&self, txn_id: u64, name: &str) -> Result<()> {
+        self.transaction_manager.write().create_savepoint(txn_id, name)
+    }
+
+    pub fn release_savepoint(&self, txn_id: u64, name: &str) -> Result<()> {
+        self.transaction_manager.write().release_savepoint(txn_id, name)
+    }
+
+    pub fn rollback_to_savepoint(&self, txn_id: u64, name: &str) -> Result<()> {
+        self.transaction_manager
+            .write()
+            .rollback_to_savepoint(txn_id, name)
+    }
+
+    /// Does this primary key exist in the table's current committed
+    /// state? Reconstructs current state and probes for the PK string.
+    ///
+    /// This is the storage-level "row exists" check that PK uniqueness
+    /// enforcement needs. It costs an event-log replay per call —
+    /// same as `Engine::select` with a PK equality predicate, which
+    /// is what the auto-commit `Query::Insert` dispatch already does.
+    /// Faster lookup is queued for a future slice; this matches the
+    /// existing performance profile.
+    pub fn pk_exists_committed(
+        &self,
+        table_name: &str,
+        primary_key: &serde_json::Value,
+    ) -> Result<bool> {
+        let storage = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+        let state = storage.reconstruct_state_at(None)?;
+        Ok(state.contains_key(&primary_key.to_string()))
+    }
+
+    /// The transaction's view of whether a PK exists. Three states:
+    /// `Active` — the buffer has an Insert/Patch for this PK (or it
+    /// has no buffered event but the row is in committed state).
+    /// `Deleted` — the buffer's latest event for this PK is
+    /// `SoftDelete` (the transaction has logically removed the row;
+    /// a fresh INSERT under the same PK is the standard
+    /// delete-then-insert pattern). `Absent` — no buffered event
+    /// AND no committed row.
+    ///
+    /// The buffer's view shadows committed state: a pending
+    /// `SoftDelete` masks an existing committed row from the
+    /// transaction's perspective.
+    pub fn pk_visibility_in_transaction(
+        &self,
+        txn_id: u64,
+        table_name: &str,
+        primary_key: &serde_json::Value,
+    ) -> Result<PkVisibility> {
+        let pk_str = primary_key.to_string();
+        let buffer_view = self
+            .transaction_manager
+            .read()
+            .write_set_event_kind(txn_id, &pk_str)?;
+        match buffer_view {
+            Some(BufferEventKind::Active) => Ok(PkVisibility::Active),
+            Some(BufferEventKind::Deleted) => Ok(PkVisibility::Deleted),
+            None => {
+                if self.pk_exists_committed(table_name, primary_key)? {
+                    Ok(PkVisibility::Active)
+                } else {
+                    Ok(PkVisibility::Absent)
+                }
+            }
+        }
     }
 
     pub fn read_in_transaction(
@@ -1264,106 +1427,150 @@ impl Engine {
             ColumnStatistics, Histogram, HistogramBucket, IndexStatistics, TableStatistics,
         };
 
+        const HIGH_CARD_CAP: usize = 10_000;
+        const HISTOGRAM_BUCKETS: usize = 100;
+
+        let start = std::time::Instant::now();
+
         let storage = self
             .tables
             .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
-        // Get current state to analyze
+        // Materialize the current state once. ANALYZE scans every
+        // event-log replay; cost is O(events) per analyze call.
         let current_state = storage.reconstruct_state_at(None)?;
         let row_count = current_state.len();
 
-        // Calculate average row size
         let total_size: usize = current_state.values().map(|v| v.to_string().len()).sum();
         let avg_row_size = total_size.checked_div(row_count).unwrap_or(0);
-
-        // Get actual storage size
         let total_size_bytes = storage.calculate_size_bytes()?;
 
-        // Collect column statistics
-        let mut column_stats = HashMap::new();
-        let schema = storage.schema();
-
-        for column in &schema.columns {
-            let mut values = Vec::new();
-            let mut null_count = 0;
-
-            // Collect all values for this column
-            for row in current_state.values() {
-                if let Some(value) = row.get(&column.name) {
-                    if value.is_null() {
-                        null_count += 1;
-                    } else {
-                        values.push(value.clone());
-                    }
-                } else {
-                    null_count += 1;
+        // Schemaless column discovery: walk every row's keys, not just
+        // schema.columns. DriftDB tables are append-typed within a
+        // schema but the column set can grow by what INSERTs carry.
+        // Sampling only what the declared schema knows would miss
+        // any post-CREATE-TABLE columns.
+        let mut observed_columns: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for row in current_state.values() {
+            if let serde_json::Value::Object(obj) = row {
+                for k in obj.keys() {
+                    observed_columns.insert(k.clone());
                 }
             }
+        }
 
-            // Calculate statistics
-            let distinct_values: HashSet<_> = values.iter().collect();
-            let distinct_count = distinct_values.len();
+        let mut column_stats = HashMap::new();
+        for column_name in &observed_columns {
+            // distinct-value tracking with a cap. Once we exceed
+            // HIGH_CARD_CAP unique values we stop populating the set;
+            // distinct_count reports the cap value (a floor on the
+            // real cardinality). Bounds memory on wide tables.
+            let mut distinct_keys: Option<std::collections::HashSet<String>> =
+                Some(std::collections::HashSet::new());
+            let mut null_count: usize = 0;
+            let mut min_value: Option<serde_json::Value> = None;
+            let mut max_value: Option<serde_json::Value> = None;
+            let mut values: Vec<serde_json::Value> = Vec::with_capacity(row_count);
 
-            // Find min/max values
-            let (min_value, max_value) = if !values.is_empty() {
-                let sorted: Vec<String> = values
-                    .iter()
-                    .filter_map(|v| {
-                        v.as_str()
-                            .map(String::from)
-                            .or_else(|| v.as_i64().map(|n| n.to_string()))
-                            .or_else(|| v.as_f64().map(|n| n.to_string()))
-                    })
-                    .collect();
-
-                if !sorted.is_empty() {
-                    let min = sorted.iter().min().map(|s| serde_json::json!(s));
-                    let max = sorted.iter().max().map(|s| serde_json::json!(s));
-                    (min, max)
+            for row in current_state.values() {
+                let val = match row.get(column_name) {
+                    Some(v) if !v.is_null() => v,
+                    _ => {
+                        // DriftDB schemaless: missing column ≡ NULL ≡
+                        // increments null_count. The bug-fix slice
+                        // for the predicate module already aligned
+                        // on this; ANALYZE follows.
+                        null_count += 1;
+                        continue;
+                    }
+                };
+                // min/max via the canonical JSON ordering. The
+                // previous string-conversion approach gave wrong
+                // results for numeric columns (lex-order on stringified
+                // numbers).
+                use std::cmp::Ordering;
+                if let Some(cur) = &min_value {
+                    if crate::query::predicate::compare_json_values(val, cur) == Ordering::Less {
+                        min_value = Some(val.clone());
+                    }
                 } else {
-                    (None, None)
+                    min_value = Some(val.clone());
                 }
-            } else {
-                (None, None)
-            };
-
-            // Create histogram with up to 10 buckets
-            let histogram = if values.len() > 10 {
-                let bucket_size = values.len() / 10;
-                let mut buckets = Vec::new();
-
-                for i in 0..10 {
-                    let start = i * bucket_size;
-                    let end = ((i + 1) * bucket_size).min(values.len());
-                    if start < values.len() {
-                        let bucket_values = &values[start..end];
-                        if !bucket_values.is_empty() {
-                            buckets.push(HistogramBucket {
-                                lower_bound: bucket_values.first().unwrap().clone(),
-                                upper_bound: bucket_values.last().unwrap().clone(),
-                                frequency: bucket_values.len(),
-                                min_value: bucket_values.first().unwrap().clone(),
-                                max_value: bucket_values.last().unwrap().clone(),
-                                distinct_count: bucket_values.len(),
-                            });
-                        }
+                if let Some(cur) = &max_value {
+                    if crate::query::predicate::compare_json_values(val, cur) == Ordering::Greater {
+                        max_value = Some(val.clone());
+                    }
+                } else {
+                    max_value = Some(val.clone());
+                }
+                if let Some(set) = &mut distinct_keys {
+                    set.insert(val.to_string());
+                    if set.len() > HIGH_CARD_CAP {
+                        distinct_keys = None;
                     }
                 }
+                values.push(val.clone());
+            }
 
-                let bucket_count = buckets.len();
+            let distinct_count = distinct_keys
+                .as_ref()
+                .map(|s| s.len())
+                .unwrap_or(HIGH_CARD_CAP);
+
+            // Equi-depth histogram: sort values, divide into N
+            // buckets each holding ~total/N entries. Each bucket's
+            // bounds are its first/last value after sort.
+            // Significantly better than the prior implementation,
+            // which sliced an unsorted Vec into N chunks — those
+            // buckets had no monotonic ordering of bounds, making
+            // them useless for selectivity estimation.
+            let histogram = if values.len() >= HISTOGRAM_BUCKETS {
+                values.sort_by(crate::query::predicate::compare_json_values);
+                let bucket_count = HISTOGRAM_BUCKETS.min(values.len());
+                let bucket_size = values.len() / bucket_count;
+                let mut buckets = Vec::with_capacity(bucket_count);
+                for i in 0..bucket_count {
+                    let start_idx = i * bucket_size;
+                    let end_idx = if i + 1 == bucket_count {
+                        values.len()
+                    } else {
+                        (i + 1) * bucket_size
+                    };
+                    let slice = &values[start_idx..end_idx];
+                    if slice.is_empty() {
+                        continue;
+                    }
+                    let lo = slice.first().unwrap().clone();
+                    let hi = slice.last().unwrap().clone();
+                    let mut bucket_distinct: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for v in slice {
+                        bucket_distinct.insert(v.to_string());
+                    }
+                    buckets.push(HistogramBucket {
+                        lower_bound: lo.clone(),
+                        upper_bound: hi.clone(),
+                        frequency: slice.len(),
+                        min_value: lo,
+                        max_value: hi,
+                        distinct_count: bucket_distinct.len(),
+                    });
+                }
+                let count = buckets.len();
                 Some(Histogram {
                     buckets,
-                    bucket_count,
+                    bucket_count: count,
                 })
             } else {
                 None
             };
 
             column_stats.insert(
-                column.name.clone(),
+                column_name.clone(),
                 ColumnStatistics {
-                    column_name: column.name.clone(),
+                    column_name: column_name.clone(),
                     distinct_values: distinct_count,
                     null_count,
                     min_value,
@@ -1373,42 +1580,48 @@ impl Engine {
             );
         }
 
-        // Collect index statistics
+        // Index statistics. Reads from the IndexManager (the single
+        // source of truth post-bug-fix slice), not from the schema's
+        // index flag — CREATE INDEX doesn't update the schema flag,
+        // so trusting the schema would miss post-creation indexes.
         let mut index_stats = HashMap::new();
         if let Some(index_mgr) = self.indexes.get(table_name) {
-            let index_mgr = index_mgr.read();
-            for index_name in schema.indexed_columns() {
-                // Get index metadata
-                if let Some(index) = index_mgr.get_index(&index_name) {
-                    // Count unique keys in the index
+            let mgr = index_mgr.read();
+            for index_name in mgr.indexed_column_names() {
+                if let Some(index) = mgr.get_index(&index_name) {
                     let unique_keys = index.len();
-
                     index_stats.insert(
                         index_name.clone(),
                         IndexStatistics {
                             index_name: index_name.clone(),
                             unique_keys,
-                            depth: 3,                            // B-tree typical depth
-                            size_bytes: unique_keys as u64 * 64, // Estimate
+                            depth: 3,
+                            size_bytes: unique_keys as u64 * 64,
                         },
                     );
                 }
             }
         }
 
+        let column_count = observed_columns.len();
         Ok(TableStatistics {
             table_name: table_name.to_string(),
             row_count,
-            column_count: storage.schema().columns.len(),
+            column_count,
             avg_row_size,
             total_size_bytes,
             data_size_bytes: total_size_bytes,
+            // The struct keeps two synonymous fields from an earlier
+            // session; we populate both with identical data so either
+            // consumer (optimizer reads `column_stats`; stats.rs reads
+            // `column_statistics`) sees the same values. Consolidating
+            // to one field is queued for a cleanup slice.
             column_stats: column_stats.clone(),
             column_statistics: column_stats,
             index_stats,
             last_updated: chrono::Utc::now().timestamp() as u64,
             collection_method: "scan".to_string(),
-            collection_duration_ms: 0,
+            collection_duration_ms: start.elapsed().as_millis() as u64,
         })
     }
 
@@ -1479,6 +1692,28 @@ impl Engine {
         } else {
             Err(DriftError::Other(format!("No index on column: {}", column)))
         }
+    }
+
+    /// Look up rows whose indexed value falls within the given JSON
+    /// bounds. Either bound may be `None` (half-open range).
+    ///
+    /// Returns matching primary keys in unspecified order.
+    pub fn range_by_index(
+        &self,
+        table_name: &str,
+        column: &str,
+        start: Option<(&serde_json::Value, /*inclusive:*/ bool)>,
+        end: Option<(&serde_json::Value, /*inclusive:*/ bool)>,
+    ) -> Result<HashSet<String>> {
+        let index_mgr = self
+            .indexes
+            .get(table_name)
+            .ok_or_else(|| DriftError::Other(format!("No indexes for table: {}", table_name)))?;
+        let mgr_guard = index_mgr.read();
+        let index = mgr_guard
+            .get_index(column)
+            .ok_or_else(|| DriftError::Other(format!("No index on column: {}", column)))?;
+        Ok(index.range(start, end))
     }
 
     /// Get a single row by primary key

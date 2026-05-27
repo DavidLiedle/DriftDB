@@ -47,6 +47,18 @@ pub enum TransactionState {
 }
 
 /// A database transaction
+/// A named snapshot of the transaction's write_set, recorded by
+/// `SAVEPOINT name`. `ROLLBACK TO SAVEPOINT name` restores
+/// `write_set` from `write_set_snapshot` and discards every savepoint
+/// after this one. `RELEASE SAVEPOINT name` discards the named
+/// savepoint AND every savepoint after it (per PostgreSQL: nested
+/// savepoints are released along with their parent).
+#[derive(Debug, Clone)]
+pub struct Savepoint {
+    pub name: String,
+    pub write_set_snapshot: HashMap<String, Event>,
+}
+
 pub struct Transaction {
     pub id: u64,
     pub isolation: IsolationLevel,
@@ -57,6 +69,13 @@ pub struct Transaction {
     pub write_set: HashMap<String, Event>, // Pending writes
     pub locked_keys: HashSet<String>,      // Keys locked for this transaction
     pub timeout: Duration,
+    /// SAVEPOINT stack. Innermost (most-recent) savepoint last.
+    /// Snapshot-based: each entry holds a clone of the write_set at
+    /// the moment SAVEPOINT was issued. Memory cost = sum of write_set
+    /// sizes at each save point; acceptable for typical transactions.
+    /// A log-based design would be more efficient but requires event
+    /// inversion logic; documented as a future optimization.
+    pub savepoints: Vec<Savepoint>,
 }
 
 impl Transaction {
@@ -71,6 +90,7 @@ impl Transaction {
             write_set: HashMap::new(),
             locked_keys: HashSet::new(),
             timeout: Duration::from_secs(30),
+            savepoints: Vec::new(),
         }
     }
 
@@ -639,6 +659,103 @@ impl TransactionManager {
         let key = event.primary_key.to_string();
         txn_guard.write_set.insert(key, event);
         Ok(())
+    }
+
+    /// Push a SAVEPOINT marker. PostgreSQL allows duplicate names —
+    /// the new savepoint shadows the older same-named one; a later
+    /// `ROLLBACK TO name` resolves to the most recent (innermost)
+    /// matching savepoint via reverse iteration.
+    pub fn create_savepoint(&mut self, txn_id: u64, name: &str) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?;
+        let mut txn_guard = txn.lock();
+        let snapshot = txn_guard.write_set.clone();
+        txn_guard.savepoints.push(Savepoint {
+            name: name.to_string(),
+            write_set_snapshot: snapshot,
+        });
+        Ok(())
+    }
+
+    /// Release a SAVEPOINT: discard the named savepoint AND every
+    /// nested savepoint after it. PostgreSQL behavior — the inner
+    /// work is "released" to the parent savepoint or transaction;
+    /// the named savepoint can no longer be rolled back to.
+    pub fn release_savepoint(&mut self, txn_id: u64, name: &str) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?;
+        let mut txn_guard = txn.lock();
+        // Find the most recent matching savepoint (PG behavior on
+        // duplicate names: shadow innermost).
+        let idx = txn_guard
+            .savepoints
+            .iter()
+            .rposition(|sp| sp.name == name)
+            .ok_or_else(|| {
+                DriftError::InvalidQuery(format!("savepoint \"{}\" does not exist", name))
+            })?;
+        // Truncate from this index inclusive — releases the named
+        // savepoint AND every nested savepoint inside it.
+        txn_guard.savepoints.truncate(idx);
+        Ok(())
+    }
+
+    /// Roll back to a SAVEPOINT: restore `write_set` from the named
+    /// savepoint's snapshot; discard every savepoint after it
+    /// (including the target — PG keeps the target available for
+    /// future ROLLBACK TO, so we re-push it via the snapshot).
+    ///
+    /// Actually PG keeps the savepoint after ROLLBACK TO; subsequent
+    /// `ROLLBACK TO name` can target it again. We preserve the
+    /// savepoint by leaving its entry in place and only truncating
+    /// AFTER it.
+    pub fn rollback_to_savepoint(&mut self, txn_id: u64, name: &str) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?;
+        let mut txn_guard = txn.lock();
+        let idx = txn_guard
+            .savepoints
+            .iter()
+            .rposition(|sp| sp.name == name)
+            .ok_or_else(|| {
+                DriftError::InvalidQuery(format!("savepoint \"{}\" does not exist", name))
+            })?;
+        // Restore write_set from the named savepoint's snapshot.
+        let snapshot = txn_guard.savepoints[idx].write_set_snapshot.clone();
+        txn_guard.write_set = snapshot;
+        // Discard every savepoint nested INSIDE this one. The named
+        // savepoint itself stays available for future ROLLBACK TO.
+        txn_guard.savepoints.truncate(idx + 1);
+        Ok(())
+    }
+
+    /// Classify the latest buffered event (if any) for a PK in this
+    /// transaction. Returns `None` when the buffer has no event for
+    /// the PK — the caller then falls back to committed-state lookup.
+    pub fn write_set_event_kind(
+        &self,
+        txn_id: u64,
+        pk_str: &str,
+    ) -> Result<Option<crate::engine::BufferEventKind>> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns
+            .get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?;
+        let txn_guard = txn.lock();
+        Ok(txn_guard.write_set.get(pk_str).map(|event| {
+            match event.event_type {
+                crate::events::EventType::SoftDelete => {
+                    crate::engine::BufferEventKind::Deleted
+                }
+                _ => crate::engine::BufferEventKind::Active,
+            }
+        }))
     }
 
     pub fn simple_commit(&mut self, txn_id: u64) -> Result<Vec<Event>> {

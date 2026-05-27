@@ -28,6 +28,80 @@ pub struct QueryPlan {
     pub cacheable: bool,
 }
 
+/// A bound on a range scan. `inclusive == true` means the bound's value
+/// itself is part of the range (`>=` or `<=`); `false` excludes it (`>`
+/// or `<`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeBound {
+    pub value: serde_json::Value,
+    pub inclusive: bool,
+}
+
+
+/// Combine an existing lower bound with a new candidate, keeping the
+/// stricter (greater value, or equal-and-exclusive). Used to fold
+/// multiple `>`/`>=` predicates on the same column into one IndexScan.
+fn tighter_start(
+    existing: Option<RangeBound>,
+    candidate_value: serde_json::Value,
+    candidate_inclusive: bool,
+) -> Option<RangeBound> {
+    let candidate = RangeBound {
+        value: candidate_value,
+        inclusive: candidate_inclusive,
+    };
+    match existing {
+        None => Some(candidate),
+        Some(cur) => {
+            let ord = crate::query::predicate::compare_json_values(&candidate.value, &cur.value);
+            use std::cmp::Ordering;
+            match ord {
+                Ordering::Greater => Some(candidate),
+                Ordering::Less => Some(cur),
+                // Equal values: exclusive bound is stricter than inclusive.
+                Ordering::Equal => {
+                    if !candidate.inclusive {
+                        Some(candidate)
+                    } else {
+                        Some(cur)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Combine an existing upper bound with a new candidate, keeping the
+/// stricter (smaller value, or equal-and-exclusive).
+fn tighter_end(
+    existing: Option<RangeBound>,
+    candidate_value: serde_json::Value,
+    candidate_inclusive: bool,
+) -> Option<RangeBound> {
+    let candidate = RangeBound {
+        value: candidate_value,
+        inclusive: candidate_inclusive,
+    };
+    match existing {
+        None => Some(candidate),
+        Some(cur) => {
+            let ord = crate::query::predicate::compare_json_values(&candidate.value, &cur.value);
+            use std::cmp::Ordering;
+            match ord {
+                Ordering::Less => Some(candidate),
+                Ordering::Greater => Some(cur),
+                Ordering::Equal => {
+                    if !candidate.inclusive {
+                        Some(candidate)
+                    } else {
+                        Some(cur)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Individual step in query plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlanStep {
@@ -37,12 +111,15 @@ pub enum PlanStep {
         estimated_rows: usize,
         cost: f64,
     },
-    /// Index scan
+    /// Index scan with range bounds. Either bound may be `None` for a
+    /// half-open range (`age > 30` with no upper limit). Bounds carry the
+    /// JSON value AND inclusivity so the executor knows whether `> 30`
+    /// (exclusive) or `>= 30` (inclusive) was meant.
     IndexScan {
         table: String,
         index: String,
-        start_key: Option<String>,
-        end_key: Option<String>,
+        start: Option<RangeBound>,
+        end: Option<RangeBound>,
         estimated_rows: usize,
         cost: f64,
     },
@@ -214,6 +291,7 @@ impl QueryOptimizer {
         let mut estimated_cost = 0.0;
         let mut estimated_rows = self.estimate_table_rows(table);
         let mut uses_index = false;
+        let mut chosen_access: Option<PlanStep> = None;
 
         // Step 1: Handle time travel if specified
         if let Some(as_of) = as_of {
@@ -237,6 +315,7 @@ impl QueryOptimizer {
                 plan,
                 PlanStep::IndexScan { .. } | PlanStep::IndexLookup { .. }
             );
+            chosen_access = Some(plan.clone());
             estimated_rows = self.rows_after_step(&plan, estimated_rows);
             estimated_cost += self.cost_of_step(&plan);
             steps.push(plan);
@@ -251,21 +330,50 @@ impl QueryOptimizer {
             estimated_cost += scan_cost;
         }
 
-        // Step 3: Apply remaining filters
-        for condition in conditions {
-            if !self.is_condition_covered_by_index(condition, uses_index) {
-                let selectivity = self.estimate_selectivity(table, condition);
-                let filter_cost = self.cost_model.filter_cost(estimated_rows);
-
-                steps.push(PlanStep::Filter {
-                    predicate: condition.clone(),
-                    selectivity,
-                    cost: filter_cost,
-                });
-
-                estimated_rows = (estimated_rows as f64 * selectivity) as usize;
-                estimated_cost += filter_cost;
-            }
+        // Step 3: Apply remaining filters in the order the optimizer chose.
+        //
+        // Ordering policy (cheapest first):
+        // 1. Structural cost class (operator shape + index awareness).
+        //    Cheap ops like `IS NULL` / equality on indexed columns run
+        //    before expensive ones like `LIKE` patterns.
+        // 2. Selectivity estimate (lower selectivity = fewer rows pass
+        //    through = run first to short-circuit AND chains earlier).
+        //    Stats-driven; degenerates to a constant when no
+        //    column_stats are present, so class is the dominant signal
+        //    without ANALYZE.
+        // 3. Source order — stable sort preserves it as a deterministic
+        //    tiebreaker so the same query always produces the same plan.
+        let indexed_columns: Vec<String> = self
+            .statistics
+            .read()
+            .get(table)
+            .map(|s| s.index_stats.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut residual: Vec<(u8, f64, usize, &WhereCondition)> = conditions
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !self.is_condition_covered_by_index(c, chosen_access.as_ref()))
+            .map(|(i, c)| {
+                let class = Self::predicate_cost_class(c, &indexed_columns);
+                let selectivity = self.estimate_selectivity(table, c);
+                (class, selectivity, i, c)
+            })
+            .collect();
+        // Stable sort: equal keys retain source order.
+        residual.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+        for (_, selectivity, _, condition) in residual {
+            let filter_cost = self.cost_model.filter_cost(estimated_rows);
+            steps.push(PlanStep::Filter {
+                predicate: condition.clone(),
+                selectivity,
+                cost: filter_cost,
+            });
+            estimated_rows = (estimated_rows as f64 * selectivity) as usize;
+            estimated_cost += filter_cost;
         }
 
         // Step 4: Apply limit if specified
@@ -287,41 +395,79 @@ impl QueryOptimizer {
         })
     }
 
-    /// Generate possible access plans for a table
+    /// Generate possible access plans for a table.
+    ///
+    /// For each indexed column, considers the predicates that target it:
+    /// - If any equality predicate exists, emit an `IndexLookup` (point
+    ///   query — strictly more selective than a range, and the index
+    ///   structure supports it directly).
+    /// - Otherwise, fold all range predicates on that column into a
+    ///   single `IndexScan` with combined `start`/`end` bounds. Multiple
+    ///   bounds on the same side (e.g. `age > 18 AND age > 21`) tighten
+    ///   to the strictest. Non-range non-equality operators (`!=`,
+    ///   `LIKE`, `IN`) don't drive index access — they remain residual
+    ///   `Filter` steps.
     fn generate_access_plans(&self, table: &str, conditions: &[WhereCondition]) -> Vec<PlanStep> {
         let mut plans = Vec::new();
         let stats = self.statistics.read();
 
         if let Some(table_stats) = stats.get(table) {
-            // Check each index
             for index_name in table_stats.index_stats.keys() {
-                // Check if any condition can use this index
-                for condition in conditions {
-                    if condition.column == *index_name {
-                        let selectivity = self.estimate_selectivity(table, condition);
-                        let estimated_rows = (table_stats.row_count as f64 * selectivity) as usize;
+                let matching: Vec<&WhereCondition> = conditions
+                    .iter()
+                    .filter(|c| c.column == *index_name)
+                    .collect();
+                if matching.is_empty() {
+                    continue;
+                }
 
-                        if condition.operator == "=" {
-                            // Point lookup
-                            plans.push(PlanStep::IndexLookup {
-                                table: table.to_string(),
-                                index: index_name.clone(),
-                                key: condition.value.to_string(),
-                                estimated_rows: 1,
-                                cost: self.cost_model.index_lookup_cost(),
-                            });
-                        } else {
-                            // Range scan
-                            plans.push(PlanStep::IndexScan {
-                                table: table.to_string(),
-                                index: index_name.clone(),
-                                start_key: Some(condition.value.to_string()),
-                                end_key: None,
-                                estimated_rows,
-                                cost: self.cost_model.index_scan_cost(estimated_rows),
-                            });
+                // Prefer equality.
+                if let Some(eq) = matching
+                    .iter()
+                    .find(|c| c.operator == "=" || c.operator == "==")
+                {
+                    plans.push(PlanStep::IndexLookup {
+                        table: table.to_string(),
+                        index: index_name.clone(),
+                        key: eq.value.to_string(),
+                        estimated_rows: 1,
+                        cost: self.cost_model.index_lookup_cost(),
+                    });
+                    continue;
+                }
+
+                // Otherwise coalesce ranges into a single IndexScan.
+                let mut start: Option<RangeBound> = None;
+                let mut end: Option<RangeBound> = None;
+                for cond in &matching {
+                    match cond.operator.as_str() {
+                        ">" => start = tighter_start(start.take(), cond.value.clone(), false),
+                        ">=" => start = tighter_start(start.take(), cond.value.clone(), true),
+                        "<" => end = tighter_end(end.take(), cond.value.clone(), false),
+                        "<=" => end = tighter_end(end.take(), cond.value.clone(), true),
+                        _ => {} // !=, LIKE, IN — not index-usable
+                    }
+                }
+                if start.is_some() || end.is_some() {
+                    // Selectivity = product over the range predicates that
+                    // contributed bounds; that's a rough estimate but good
+                    // enough to make the IndexScan cheaper than a full scan
+                    // for typical queries.
+                    let mut selectivity = 1.0;
+                    for cond in &matching {
+                        if matches!(cond.operator.as_str(), ">" | ">=" | "<" | "<=") {
+                            selectivity *= self.estimate_selectivity(table, cond);
                         }
                     }
+                    let estimated_rows = ((table_stats.row_count as f64) * selectivity) as usize;
+                    plans.push(PlanStep::IndexScan {
+                        table: table.to_string(),
+                        index: index_name.clone(),
+                        start,
+                        end,
+                        estimated_rows,
+                        cost: self.cost_model.index_scan_cost(estimated_rows),
+                    });
                 }
             }
         }
@@ -414,19 +560,20 @@ impl QueryOptimizer {
                 // Use statistics to estimate selectivity
                 let non_null_selectivity = match condition.operator.as_str() {
                     "=" => {
-                        // Point query selectivity
+                        // Point-query selectivity: uniform-distribution
+                        // estimate, 1 / distinct_values. Histograms
+                        // are NOT consulted here even when present —
+                        // equi-depth histograms record bucket frequency
+                        // (≈ total_rows / bucket_count), which doesn't
+                        // depend on cardinality, so they can't
+                        // distinguish a 2-distinct-value column from a
+                        // 1000-distinct one. Use the column's
+                        // distinct_values directly. PostgreSQL uses
+                        // `most_common_values` for the same purpose;
+                        // we don't track MCVs yet, so falling back to
+                        // uniform-distribution is the right move.
                         if col_stats.distinct_values > 0 {
-                            // Check if we have histogram data for more accurate estimate
-                            if let Some(histogram) = &col_stats.histogram {
-                                self.estimate_equality_selectivity_with_histogram(
-                                    &condition.value,
-                                    histogram,
-                                    table_stats.row_count,
-                                )
-                            } else {
-                                // Uniform distribution assumption
-                                1.0 / col_stats.distinct_values as f64
-                            }
+                            1.0 / col_stats.distinct_values as f64
                         } else {
                             0.1 // Default
                         }
@@ -470,23 +617,14 @@ impl QueryOptimizer {
         }
     }
 
-    /// Estimate selectivity for equality using histogram
-    fn estimate_equality_selectivity_with_histogram(
-        &self,
-        value: &serde_json::Value,
-        histogram: &Histogram,
-        total_rows: usize,
-    ) -> f64 {
-        // Find the bucket containing the value
-        for bucket in &histogram.buckets {
-            if self.value_in_range(value, &bucket.lower_bound, &bucket.upper_bound) {
-                // Estimate based on bucket frequency
-                return bucket.frequency as f64 / total_rows as f64;
-            }
-        }
-        // Value not in histogram
-        0.01
-    }
+    // `estimate_equality_selectivity_with_histogram` lived here until
+    // slice 9. Slice 8's analysis showed equi-depth histograms can't
+    // distinguish cardinality for equality queries — every bucket
+    // holds ~total_rows / bucket_count rows by construction, so the
+    // estimate didn't depend on the column's actual cardinality.
+    // Equality now uses `1 / distinct_values` directly. PostgreSQL
+    // solves the same problem with most_common_values (MCV) lists;
+    // adding MCV tracking is a future slice.
 
     /// Estimate selectivity for range queries using histogram
     fn estimate_range_selectivity_with_histogram(
@@ -607,10 +745,191 @@ impl QueryOptimizer {
         }
     }
 
-    /// Check if condition is covered by index
-    fn is_condition_covered_by_index(&self, condition: &WhereCondition, uses_index: bool) -> bool {
-        // Simplified: assume index covers equality conditions on indexed column
-        uses_index && condition.operator == "="
+    /// Build a `PlanNode` tree for a single equi-join. This is the
+    /// optimizer's entry point for join queries; the executor pattern-
+    /// matches on the returned node to dispatch the join algorithm.
+    ///
+    /// The returned tree shape is:
+    /// ```text
+    ///   <NestedLoopJoin|HashJoin>
+    ///     ├── left:  TableScan(left_table)
+    ///     └── right: TableScan(right_table)
+    /// ```
+    ///
+    /// Per-side predicates are NOT included here — they are pushed
+    /// through `Engine::select` by the caller, which already honors the
+    /// flat `QueryPlan` for per-side access (slices 1–3 wiring). The
+    /// join-level plan only chooses the *algorithm*. This is the
+    /// hybrid-contract boundary: PlanNode tree at the join site, flat
+    /// QueryPlan at each leaf.
+    ///
+    /// Algorithm choice heuristic (in order):
+    ///
+    /// 1. Inner side (right) has an index on its join column → NestedLoop.
+    ///    Each outer row becomes an index lookup; this composes with
+    ///    slice-1 wiring at the leaves.
+    /// 2. Symmetric: left has an index on its join column, right doesn't
+    ///    → NestedLoop with `build_side = Left` (advisory; the executor
+    ///    doesn't reorder).
+    /// 3. Either estimate exceeds `NL_THRESHOLD` (1000) → Hash. Build
+    ///    on the smaller side; probe with the larger.
+    /// 4. Otherwise → NestedLoop. Always-correct fallback.
+    ///
+    /// Without `ANALYZE`, table row counts come from the
+    /// `register_table_indexes` hint (10_000), which exceeds the
+    /// threshold — so unindexed two-table joins default to Hash. That's
+    /// the safer default for unknown-cardinality joins: nested loop is
+    /// O(N*M) and explodes; hash is O(N+M).
+    pub fn plan_single_join(
+        &self,
+        left_table: &str,
+        right_table: &str,
+        left_join_col: &str,
+        right_join_col: &str,
+        join_type: JoinType,
+    ) -> PlanNode {
+        let stats = self.statistics.read();
+        let left_rows = stats.get(left_table).map(|s| s.row_count).unwrap_or(0);
+        let right_rows = stats.get(right_table).map(|s| s.row_count).unwrap_or(0);
+        let right_indexed = stats
+            .get(right_table)
+            .map(|s| s.index_stats.contains_key(right_join_col))
+            .unwrap_or(false);
+        let left_indexed = stats
+            .get(left_table)
+            .map(|s| s.index_stats.contains_key(left_join_col))
+            .unwrap_or(false);
+        drop(stats);
+
+        let left = Box::new(PlanNode::TableScan {
+            table: left_table.to_string(),
+            predicates: vec![],
+            cost: Cost::seq_scan((left_rows as f64 / 100.0).max(1.0), left_rows as f64),
+        });
+        let right = Box::new(PlanNode::TableScan {
+            table: right_table.to_string(),
+            predicates: vec![],
+            cost: Cost::seq_scan((right_rows as f64 / 100.0).max(1.0), right_rows as f64),
+        });
+        let condition = JoinCondition {
+            left_col: left_join_col.to_string(),
+            right_col: right_join_col.to_string(),
+            op: ComparisonOp::Eq,
+            raw_text: None,
+        };
+
+        const NL_THRESHOLD: usize = 1000;
+
+        // OUTER joins constrain the hash-build side: LEFT and FULL must
+        // build on the RIGHT (preserving side probes; build side is the
+        // one we may need to mark "matched" for unmatched-row emission).
+        // NL handles every join type with a single uniform loop, so
+        // these constraints only apply to the Hash branch below.
+
+        // Rule 1: indexed inner-side join column → NestedLoop.
+        if right_indexed && !left_indexed {
+            return PlanNode::NestedLoopJoin {
+                left,
+                right,
+                condition,
+                join_type,
+                cost: Cost::seq_scan(1.0, left_rows.max(1) as f64),
+            };
+        }
+        // Rule 2: indexed left → NestedLoop (symmetric).
+        if left_indexed && !right_indexed {
+            return PlanNode::NestedLoopJoin {
+                left,
+                right,
+                condition,
+                join_type,
+                cost: Cost::seq_scan(1.0, right_rows.max(1) as f64),
+            };
+        }
+        // Rule 3: large side → Hash, build on smaller side BUT OUTER
+        // joins force build_side = Right (need to probe with the
+        // preserving side and mark matches for FULL OUTER).
+        if left_rows > NL_THRESHOLD || right_rows > NL_THRESHOLD {
+            let build_side = match join_type {
+                JoinType::LeftOuter | JoinType::FullOuter => JoinSide::Right,
+                JoinType::Inner => {
+                    if left_rows < right_rows {
+                        JoinSide::Left
+                    } else {
+                        JoinSide::Right
+                    }
+                }
+            };
+            return PlanNode::HashJoin {
+                left,
+                right,
+                condition,
+                build_side,
+                join_type,
+                cost: Cost::seq_scan(1.0, (left_rows + right_rows) as f64),
+            };
+        }
+        // Rule 4: NestedLoop default.
+        PlanNode::NestedLoopJoin {
+            left,
+            right,
+            condition,
+            join_type,
+            cost: Cost::seq_scan(1.0, (left_rows * right_rows.max(1)) as f64),
+        }
+    }
+
+    /// Structural cost class for a residual predicate. Lower = cheaper to
+    /// evaluate, so should run first to short-circuit AND chains earlier.
+    ///
+    /// This is a deliberately coarse heuristic that doesn't require column
+    /// statistics. It captures operator shape (`IS NULL` is a single `.get()`;
+    /// `LIKE` walks a pattern) and a hint about index-eligibility — equality
+    /// on an indexed column tends to be highly selective even when it ends
+    /// up as a residual (e.g. when a different index was chosen for access).
+    ///
+    /// When real column statistics are populated by `ANALYZE`, selectivity
+    /// estimates refine the order within a class; this function only
+    /// determines the gross bucketing.
+    fn predicate_cost_class(condition: &WhereCondition, indexed_columns: &[String]) -> u8 {
+        let op = condition.operator.as_str();
+        let col_is_indexed = indexed_columns.iter().any(|c| c == &condition.column);
+        match op {
+            "IS NULL" | "IS NOT NULL" => 0,
+            "=" | "==" | "!=" | "<>" if col_is_indexed => 1,
+            "=" | "==" | "!=" | "<>" => 2,
+            "<" | "<=" | ">" | ">=" => 3,
+            "IN" | "NOT IN" => 4,
+            "LIKE" => 5,
+            _ => 6,
+        }
+    }
+
+    /// Check if condition is folded into the chosen access step.
+    ///
+    /// A condition is "covered" when its column matches the access
+    /// index AND its operator matches what that access mode encodes:
+    /// - `IndexLookup` covers `=` (the single key it probes).
+    /// - `IndexScan` covers `<`/`<=`/`>`/`>=` (the bounds it walks).
+    ///
+    /// Other operators on the indexed column (`!=`, `LIKE`, `IN`) still
+    /// need a residual `Filter` step.
+    fn is_condition_covered_by_index(
+        &self,
+        condition: &WhereCondition,
+        access_step: Option<&PlanStep>,
+    ) -> bool {
+        match access_step {
+            Some(PlanStep::IndexLookup { index, .. }) => {
+                condition.column == *index
+                    && (condition.operator == "=" || condition.operator == "==")
+            }
+            Some(PlanStep::IndexScan { index, .. }) => {
+                condition.column == *index
+                    && matches!(condition.operator.as_str(), ">" | ">=" | "<" | "<=")
+            }
+            _ => false,
+        }
     }
 
     /// Estimate rows in table
@@ -676,9 +995,75 @@ impl QueryOptimizer {
         format!("{:?}", query) // Simple serialization
     }
 
-    /// Update table statistics
+    /// Update table statistics. Also clears the plan cache: cached
+    /// plans were computed against the prior `column_stats` /
+    /// `row_count`, so post-ANALYZE the same query may want a
+    /// different access method or filter order. `register_table_indexes`
+    /// already invalidates here for the same reason; this is the
+    /// missing counterpart for the ANALYZE-driven entry point.
     pub fn update_statistics(&self, table: &str, stats: TableStatistics) {
         self.statistics.write().insert(table.to_string(), stats);
+        self.plan_cache.write().clear();
+    }
+
+    /// Register the set of indexed columns for a table so the planner can
+    /// propose `IndexLookup` plans without requiring prior `ANALYZE`.
+    ///
+    /// `row_count_hint` seeds the row count used for cost estimation. It does
+    /// not need to be exact; it just needs to be large enough that a
+    /// `TableScan` looks more expensive than an `IndexLookup` (the cost model
+    /// at default settings flips the choice around ~700 rows). A real
+    /// `ANALYZE` later will overwrite this via [`Self::update_statistics`].
+    /// Row-count estimate for a table from the optimizer's statistics
+    /// store. Returns `None` when the table hasn't been registered
+    /// (no index registrations, no `ANALYZE`). The multi-join
+    /// reordering planner consumes this as the dominant cost signal.
+    pub fn statistics_row_count(&self, table: &str) -> Option<usize> {
+        self.statistics.read().get(table).map(|s| s.row_count)
+    }
+
+    pub fn register_table_indexes(
+        &self,
+        table: &str,
+        indexed_columns: &[String],
+        row_count_hint: usize,
+    ) {
+        let mut stats_map = self.statistics.write();
+        let entry = stats_map
+            .entry(table.to_string())
+            .or_insert_with(|| TableStatistics {
+                table_name: table.to_string(),
+                row_count: row_count_hint,
+                column_count: 0,
+                avg_row_size: 0,
+                total_size_bytes: 0,
+                data_size_bytes: 0,
+                column_stats: HashMap::new(),
+                column_statistics: HashMap::new(),
+                index_stats: HashMap::new(),
+                last_updated: 0,
+                collection_method: "engine_register".to_string(),
+                collection_duration_ms: 0,
+            });
+        // Bump the row count if our hint is higher than the existing value
+        // (e.g., later registrations see a larger table) but never shrink it,
+        // so a real ANALYZE's row_count is preserved.
+        if row_count_hint > entry.row_count {
+            entry.row_count = row_count_hint;
+        }
+        for col in indexed_columns {
+            entry
+                .index_stats
+                .entry(col.clone())
+                .or_insert_with(|| IndexStatistics {
+                    index_name: col.clone(),
+                    unique_keys: 0,
+                    depth: 1,
+                    size_bytes: 0,
+                });
+        }
+        // A registration change invalidates cached plans for this table.
+        self.plan_cache.write().clear();
     }
 
     /// Clear plan cache
@@ -686,23 +1071,12 @@ impl QueryOptimizer {
         self.plan_cache.write().clear();
     }
 
-    /// Optimize multiple conditions by reordering for efficiency
-    #[allow(dead_code)]
-    fn optimize_condition_order(
-        &self,
-        table: &str,
-        conditions: &[WhereCondition],
-    ) -> Vec<WhereCondition> {
-        let mut conditions = conditions.to_vec();
-
-        // Sort conditions by selectivity (most selective first)
-        conditions.sort_by_cached_key(|cond| {
-            let selectivity = self.estimate_selectivity(table, cond);
-            (selectivity * 1000.0) as i64 // Convert to integer for stable sorting
-        });
-
-        conditions
-    }
+    // `optimize_condition_order` lived here as a `#[allow(dead_code)]`
+    // helper that sorted purely on `estimate_selectivity`. That signal
+    // degenerates to a constant without column statistics, so the helper
+    // would have produced source order in practice. Predicate reordering
+    // now lives inline in `optimize_select` and combines a structural
+    // cost class with the selectivity estimate.
 
     /// Analyze query patterns and suggest new indexes
     pub fn suggest_indexes(&self, table: &str) -> Vec<String> {
@@ -847,6 +1221,8 @@ pub enum PlanNode {
         left: Box<PlanNode>,
         right: Box<PlanNode>,
         condition: JoinCondition,
+        #[serde(default = "default_join_type")]
+        join_type: JoinType,
         cost: Cost,
     },
     /// Hash join
@@ -855,6 +1231,8 @@ pub enum PlanNode {
         right: Box<PlanNode>,
         condition: JoinCondition,
         build_side: JoinSide,
+        #[serde(default = "default_join_type")]
+        join_type: JoinType,
         cost: Cost,
     },
     /// Sort-merge join
@@ -1011,10 +1389,29 @@ pub struct JoinCondition {
     pub raw_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinSide {
     Left,
     Right,
+}
+
+/// Join type for `PlanNode::NestedLoopJoin` / `PlanNode::HashJoin`. The
+/// SQL `RIGHT OUTER JOIN` shape is normalized to `LeftOuter` at the
+/// executor before reaching `plan_single_join` (PostgreSQL convention:
+/// swap the sides). `LeftOuter` and `FullOuter` are the only OUTER
+/// shapes the planner sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JoinType {
+    Inner,
+    LeftOuter,
+    FullOuter,
+}
+
+/// Backward-compatible default so older serialized PlanNode payloads
+/// (pre-OUTER-JOIN slice) deserialize as INNER. Keeps EXPLAIN snapshots
+/// stable across versions.
+fn default_join_type() -> JoinType {
+    JoinType::Inner
 }
 
 /// Sort key
@@ -1187,6 +1584,7 @@ impl CostOptimizer {
                         right,
                         condition,
                         build_side,
+                        join_type,
                         cost,
                     } => {
                         let (left_preds, right_preds, remaining) =
@@ -1217,6 +1615,7 @@ impl CostOptimizer {
                             right: new_right,
                             condition,
                             build_side,
+                            join_type,
                             cost,
                         };
 
@@ -1489,6 +1888,7 @@ impl CostOptimizer {
                 left,
                 right,
                 condition,
+                join_type,
                 ..
             } => {
                 let left_cost = self.estimate_cost(&left)?;
@@ -1501,15 +1901,23 @@ impl CostOptimizer {
                         left,
                         right,
                         condition,
+                        join_type,
                         cost: self.estimate_join_cost(&left_cost, &right_cost, &[], &[], &[]),
                     })
                 } else if right_cost.size < self.params.work_mem as f64 * 1024.0 {
-                    // Hash join if right side fits in memory
+                    // Hash join if right side fits in memory.
+                    // OUTER joins force build_side = Right (see
+                    // `plan_single_join` for the same constraint).
+                    let build_side = match join_type {
+                        JoinType::LeftOuter | JoinType::FullOuter => JoinSide::Right,
+                        JoinType::Inner => JoinSide::Right,
+                    };
                     Ok(PlanNode::HashJoin {
                         left,
                         right,
                         condition,
-                        build_side: JoinSide::Right,
+                        build_side,
+                        join_type,
                         cost: self.estimate_join_cost(&left_cost, &right_cost, &[], &[], &[]),
                     })
                 } else {
@@ -2254,6 +2662,7 @@ mod cost_tests {
                 raw_text: None,
             },
             build_side: JoinSide::Right,
+            join_type: JoinType::Inner,
             cost: Cost::default(),
         };
 
