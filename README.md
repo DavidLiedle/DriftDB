@@ -136,8 +136,8 @@ The following features have been architecturally designed with varying levels of
 
 ```bash
 # Quick start with Docker
-git clone https://github.com/driftdb/driftdb
-cd driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
+cd DriftDB
 ./scripts/docker-quickstart.sh
 
 # Connect to DriftDB
@@ -149,12 +149,13 @@ psql -h localhost -p 5433 -d driftdb -U driftdb
 
 ```bash
 # Clone and build from source
-git clone https://github.com/driftdb/driftdb
-cd driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
+cd DriftDB
 make build
 
-# Or install with cargo
-cargo install driftdb-cli driftdb-server
+# Or install the binaries with cargo (these crates are not on crates.io;
+# `driftdb-server` there is an unrelated project)
+cargo install --path crates/driftdb-cli && cargo install --path crates/driftdb-server
 ```
 
 ### 60-Second Demo

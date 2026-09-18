@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "DriftDB Contributors", email = "contact@driftdb.io"}
+    {name = "DriftDB Contributors"}
 ]
 keywords = ["database", "time-travel", "append-only", "audit-log", "event-sourcing"]
 classifiers = [
@@ -42,7 +42,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/davidliedle/DriftDB"
-Documentation = "https://driftdb.io/docs"
+Documentation = "https://github.com/DavidLiedle/DriftDB/tree/main/docs"
 Repository = "https://github.com/davidliedle/DriftDB"
 Issues = "https://github.com/davidliedle/DriftDB/issues"
 

@@ -14,8 +14,10 @@ Official Python client for [DriftDB](https://github.com/davidliedle/DriftDB) - a
 
 ## Installation
 
+The `driftdb` name on PyPI belongs to an unrelated project, so install this client from the repository:
+
 ```bash
-pip install driftdb
+pip install "git+https://github.com/DavidLiedle/DriftDB.git#subdirectory=clients/python"
 ```
 
 ## Quick Start
@@ -362,12 +364,11 @@ MIT License - see [LICENSE](../../LICENSE) for details.
 ## Links
 
 - **GitHub**: https://github.com/davidliedle/DriftDB
-- **Documentation**: https://driftdb.io/docs
-- **PyPI**: https://pypi.org/project/driftdb/
+- **Documentation**: https://github.com/DavidLiedle/DriftDB/tree/main/docs
 - **Issues**: https://github.com/davidliedle/DriftDB/issues
 
 ## Support
 
-- 📖 Read the [documentation](https://driftdb.io/docs)
+- 📖 Read the [documentation](https://github.com/DavidLiedle/DriftDB/tree/main/docs)
 - 💬 Ask questions in [GitHub Discussions](https://github.com/davidliedle/DriftDB/discussions)
 - 🐛 Report bugs on [GitHub Issues](https://github.com/davidliedle/DriftDB/issues)

@@ -3,8 +3,8 @@
 ## Installation
 
 ```bash
-# Install the admin tool
-cargo install driftdb-admin
+# Install the admin tool (from a clone of the repository; not on crates.io)
+cargo install --path crates/driftdb-admin
 
 # Or build from source
 cargo build --release --bin driftdb-admin
