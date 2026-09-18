@@ -19,8 +19,8 @@
 ### From Source
 ```bash
 # Clone repository
-git clone https://github.com/your-org/DriftDB.git
-cd DriftDB/driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
+cd DriftDB
 
 # Build release version
 cargo build --release
@@ -320,9 +320,8 @@ rsync -av /var/lib/driftdb/data/ /backup/driftdb/
 
 ## 📞 Support
 
-- GitHub Issues: https://github.com/your-org/DriftDB/issues
-- Documentation: https://docs.driftdb.io
-- Community: https://discord.gg/driftdb
+- GitHub Issues: https://github.com/DavidLiedle/DriftDB/issues
+- Documentation: https://github.com/DavidLiedle/DriftDB/tree/main/docs
 
 ## 📄 License
 

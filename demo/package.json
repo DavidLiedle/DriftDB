@@ -23,11 +23,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/driftdb/driftdb.git",
+    "url": "https://github.com/DavidLiedle/DriftDB.git",
     "directory": "demo"
   },
   "bugs": {
-    "url": "https://github.com/driftdb/driftdb/issues"
+    "url": "https://github.com/DavidLiedle/DriftDB/issues"
   },
-  "homepage": "https://driftdb.com"
+  "homepage": "https://github.com/DavidLiedle/DriftDB"
 }
