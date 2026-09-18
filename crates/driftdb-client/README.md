@@ -1,6 +1,6 @@
 # DriftDB Client - Native Rust Client Library
 
-A high-level, ergonomic Rust client library for [DriftDB](https://github.com/driftdb/driftdb) with first-class support for time-travel queries.
+A high-level, ergonomic Rust client library for [DriftDB](https://github.com/DavidLiedle/DriftDB) with first-class support for time-travel queries.
 
 ## Features
 
@@ -13,11 +13,11 @@ A high-level, ergonomic Rust client library for [DriftDB](https://github.com/dri
 
 ## Quick Start
 
-Add to your `Cargo.toml`:
+`driftdb-client` isn't published on crates.io yet, so depend on it from Git. Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-driftdb-client = "0.8.0-alpha"
+driftdb-client = { git = "https://github.com/DavidLiedle/DriftDB" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -237,4 +237,4 @@ MIT
 
 ## Contributing
 
-Contributions welcome! Please open an issue or PR on the [DriftDB repository](https://github.com/driftdb/driftdb).
+Contributions welcome! Please open an issue or PR on the [DriftDB repository](https://github.com/DavidLiedle/DriftDB).

@@ -6,8 +6,13 @@ Get up and running with DriftDB in under 5 minutes!
 
 ### Option 1: Using Cargo (Recommended)
 
+DriftDB isn't published on crates.io (the `driftdb` crate there is an unrelated project), so install the binaries from a clone:
+
 ```bash
-cargo install driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
+cd DriftDB
+cargo install --path crates/driftdb-cli
+cargo install --path crates/driftdb-server
 ```
 
 ### Option 2: From Source
@@ -22,8 +27,11 @@ cargo build --release
 ### Option 3: Docker
 
 ```bash
-docker pull driftdb/driftdb:latest
-docker run -d -p 5432:5432 -v $(pwd)/data:/data driftdb/driftdb
+# There is no official image on Docker Hub; build it from this repository.
+git clone https://github.com/DavidLiedle/DriftDB.git
+cd DriftDB
+docker build -t driftdb .
+docker run -d -p 5432:5432 -v $(pwd)/data:/data driftdb
 ```
 
 ## Starting the Server
