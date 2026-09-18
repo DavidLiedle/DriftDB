@@ -14,12 +14,12 @@ Official JavaScript/TypeScript client for [DriftDB](https://github.com/davidlied
 
 ## Installation
 
+The `driftdb` name on npm belongs to an unrelated project, so install this client from a clone of the repository:
+
 ```bash
-npm install driftdb
-# or
-yarn add driftdb
-# or
-pnpm add driftdb
+git clone https://github.com/DavidLiedle/DriftDB.git
+(cd DriftDB/clients/javascript && npm install)   # installs dev deps and builds dist/
+npm install ./DriftDB/clients/javascript
 ```
 
 ## Quick Start
@@ -507,12 +507,11 @@ MIT License - see [LICENSE](../../LICENSE) for details.
 ## Links
 
 - **GitHub**: https://github.com/davidliedle/DriftDB
-- **Documentation**: https://driftdb.io/docs
-- **npm**: https://www.npmjs.com/package/driftdb
+- **Documentation**: https://github.com/DavidLiedle/DriftDB/tree/main/docs
 - **Issues**: https://github.com/davidliedle/DriftDB/issues
 
 ## Support
 
-- 📖 Read the [documentation](https://driftdb.io/docs)
+- 📖 Read the [documentation](https://github.com/DavidLiedle/DriftDB/tree/main/docs)
 - 💬 Ask questions in [GitHub Discussions](https://github.com/davidliedle/DriftDB/discussions)
 - 🐛 Report bugs on [GitHub Issues](https://github.com/davidliedle/DriftDB/issues)
