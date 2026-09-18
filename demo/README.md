@@ -383,10 +383,9 @@ MIT License - Same as DriftDB
 
 ## Links
 
-- [DriftDB Repository](https://github.com/driftdb/driftdb)
-- [DriftDB Documentation](https://docs.driftdb.com)
-- [Report Issues](https://github.com/driftdb/driftdb/issues)
-- [Community Discord](https://discord.gg/driftdb)
+- [DriftDB Repository](https://github.com/DavidLiedle/DriftDB)
+- [DriftDB Documentation](https://github.com/DavidLiedle/DriftDB/tree/main/docs)
+- [Report Issues](https://github.com/DavidLiedle/DriftDB/issues)
 
 ## Credits
 
@@ -403,7 +402,9 @@ Special thanks to:
 
 Install DriftDB:
 ```bash
-cargo install driftdb-server
+git clone https://github.com/DavidLiedle/DriftDB.git
+cd DriftDB
+cargo install --path crates/driftdb-server
 driftdb-server --data-path ./data
 ```
 
