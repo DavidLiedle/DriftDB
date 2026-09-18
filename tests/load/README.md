@@ -408,7 +408,7 @@ To add new load tests:
 
 - [k6 Documentation](https://k6.io/docs/)
 - [k6 Examples](https://k6.io/docs/examples/)
-- [DriftDB Documentation](https://driftdb.io/docs)
+- [DriftDB Documentation](https://github.com/DavidLiedle/DriftDB/tree/main/docs)
 - [Performance Testing Best Practices](https://k6.io/docs/testing-guides/)
 
 ## License
